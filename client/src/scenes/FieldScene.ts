@@ -1,7 +1,11 @@
 import Phaser from "phaser";
 import { api } from "../api/client";
+import { store } from "../systems/store";
 import { LocalGameClock } from "../systems/clock";
+import { promptNewGame } from "../ui/NewGame";
+import { ShopPanel } from "../ui/Shop";
 import { Hud, UI_FONT } from "../ui/Hud";
+import { BATTLE_KEY } from "./BattleScene";
 
 export const FIELD_KEY = "field";
 
@@ -12,7 +16,6 @@ const WORLD_W = MAP_COLS * TILE;
 const WORLD_H = MAP_ROWS * TILE;
 const PLAYER_SPEED = 150;
 
-// Tile ids are 1-based; order matches tools/gen_placeholder_assets.mjs.
 const T = {
   GRASS: 1,
   ROAD: 2,
@@ -33,15 +36,15 @@ interface Building {
   w: number;
   h: number;
   label: string;
+  shop?: string;
 }
 
-// Town layout per docs/DESIGN.md §4 sketch (tile coords).
 const BUILDINGS: Building[] = [
   { x: 4, y: 4, w: 10, h: 6, label: "剑阳道馆" },
   { x: 18, y: 4, w: 10, h: 6, label: "玄铁堂" },
   { x: 32, y: 4, w: 10, h: 6, label: "烟雨小筑" },
-  { x: 4, y: 16, w: 8, h: 6, label: "药铺" },
-  { x: 15, y: 16, w: 8, h: 6, label: "铁匠铺" },
+  { x: 4, y: 16, w: 8, h: 6, label: "药铺", shop: "clinic" },
+  { x: 15, y: 16, w: 8, h: 6, label: "铁匠铺", shop: "smith" },
   { x: 26, y: 16, w: 12, h: 8, label: "客栈" },
   { x: 80, y: 18, w: 10, h: 7, label: "破庙" },
 ];
@@ -54,6 +57,18 @@ const POI_RECTS: { name: string; x: number; y: number; w: number; h: number }[] 
   { name: "后山崖", x: 53, y: 32, w: 47, h: 28 },
   { name: "清溪镇", x: 1, y: 2, w: 97, h: 28 },
 ];
+
+// Shop interaction uses the building footprint plus a 2-tile door margin:
+// the buildings themselves are solid tiles the player can never stand on.
+const SHOP_AREAS: { shop: string; label: string; x: number; y: number; w: number; h: number }[] =
+  BUILDINGS.filter((b) => b.shop).map((b) => ({
+    shop: b.shop!,
+    label: b.label,
+    x: b.x - 2,
+    y: b.y - 2,
+    w: b.w + 4,
+    h: b.h + 4,
+  }));
 
 function mulberry32(seed: number): () => number {
   let a = seed;
@@ -74,9 +89,7 @@ function buildMap(): number[][] {
     grid[12][x] = T.ROAD;
     grid[13][x] = T.ROAD;
   }
-  // Gate avenue: from the main street through the gate into the wilds.
   for (let y = 12; y <= 38; y++) for (let x = 48; x <= 51; x++) grid[y][x] = T.ROAD;
-  // Wilderness trail below the wall.
   for (let x = 8; x <= 90; x++) {
     grid[38][x] = T.ROAD;
     grid[39][x] = T.ROAD;
@@ -88,28 +101,22 @@ function buildMap(): number[][] {
     }
   }
 
-  // 练武场: open sand ground.
   for (let y = 5; y <= 16; y++) for (let x = 52; x <= 69; x++) grid[y][x] = T.SAND;
-  // Pond.
   for (let y = 24; y <= 27; y++) for (let x = 72; x <= 78; x++) grid[y][x] = T.WATER;
-  // Well by the gate.
   grid[25][44] = T.WELL;
   grid[25][45] = T.WELL;
   grid[26][44] = T.WELL;
   grid[26][45] = T.WELL;
 
-  // Town wall, gate kept open at the avenue.
   for (let y = 30; y <= 31; y++) for (let x = 0; x <= 99; x++) grid[y][x] = T.WALL;
   for (let y = 30; y <= 31; y++) for (let x = 48; x <= 51; x++) grid[y][x] = T.ROAD;
 
-  // 东山林地 trees (fixed seed → reproducible on both ends later).
   const treeRnd = mulberry32(20261016);
   for (let y = 34; y <= 58; y++) {
     for (let x = 1; x <= 45; x++) {
       if (grid[y][x] === T.GRASS && treeRnd() < 0.13) grid[y][x] = T.TREE;
     }
   }
-  // 后山崖 rocks with a solid cliff ridge along the bottom edge.
   const rockRnd = mulberry32(4396);
   for (let y = 34; y <= 58; y++) {
     for (let x = 54; x <= 98; x++) {
@@ -119,18 +126,42 @@ function buildMap(): number[][] {
   return grid;
 }
 
+interface MobSprite {
+  sprite: Phaser.Physics.Arcade.Sprite;
+  label: Phaser.GameObjects.Text;
+}
+
 export class FieldScene extends Phaser.Scene {
   private player!: Phaser.Physics.Arcade.Sprite;
   private playerLabel!: Phaser.GameObjects.Text;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private wasd!: Record<"W" | "A" | "S" | "D", Phaser.Input.Keyboard.Key>;
+  private keyE!: Phaser.Input.Keyboard.Key;
+  private keyEsc!: Phaser.Input.Keyboard.Key;
   private hud!: Hud;
   private clock = new LocalGameClock();
   private poi = "";
   private poiTimer = 0;
+  private mobSprites = new Map<string, MobSprite>();
+  private mobCollider: Phaser.Physics.Arcade.Collider | null = null;
+  private battleLock = false;
+  private booted = false;
+  private immunityUntil = 0;
+  private shopPanel: ShopPanel | null = null;
 
   constructor() {
     super(FIELD_KEY);
+  }
+
+  init(data: { fledFrom?: string }): void {
+    this.battleLock = false;
+    this.mobSprites = new Map();
+    this.mobCollider = null;
+    this.shopPanel = null;
+    this.poi = "";
+    if (data?.fledFrom) {
+      this.events.once("postcreate", () => this.pushAwayFrom(data.fledFrom!));
+    }
   }
 
   create(): void {
@@ -141,7 +172,8 @@ export class FieldScene extends Phaser.Scene {
 
     this.physics.world.setBounds(0, 0, WORLD_W, WORLD_H);
 
-    this.player = this.physics.add.sprite(49.5 * TILE, 27.5 * TILE, "player");
+    const spawn = store.player?.pos ?? { x: 792, y: 440 };
+    this.player = this.physics.add.sprite(spawn.x, spawn.y, "player");
     this.player.setCollideWorldBounds(true);
     this.player.setBodySize(12, 12);
     this.physics.add.collider(this.player, layer);
@@ -161,6 +193,7 @@ export class FieldScene extends Phaser.Scene {
 
     this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
     this.cameras.main.startFollow(this.player, true, 0.12, 0.12);
+    this.cameras.main.fadeIn(250);
 
     this.hud = new Hud(this);
 
@@ -170,6 +203,11 @@ export class FieldScene extends Phaser.Scene {
       "W" | "A" | "S" | "D",
       Phaser.Input.Keyboard.Key
     >;
+    this.keyE = kb.addKey("E");
+    this.keyEsc = kb.addKey("ESC");
+
+    this.syncMobs();
+    this.time.addEvent({ delay: 10000, loop: true, callback: () => void this.pollRefresh() });
 
     void this.bootstrap();
   }
@@ -204,8 +242,9 @@ export class FieldScene extends Phaser.Scene {
   }
 
   private async bootstrap(): Promise<void> {
+    let state;
     try {
-      const state = await api.gameState();
+      state = await store.refresh();
       this.clock.anchor(
         state.clock.game_sec,
         state.clock.real_ts,
@@ -216,6 +255,27 @@ export class FieldScene extends Phaser.Scene {
       return;
     }
 
+    if (!store.player) {
+      store.uiBlocked = true;
+      const name = await promptNewGame();
+      try {
+        await api.newGame(name);
+        state = await store.refresh();
+        this.clock.anchor(state.clock.game_sec, state.clock.real_ts, state.clock.time_scale);
+      } catch (e) {
+        this.hud.setNet(`开档失败：${e instanceof Error ? e.message : "未知错误"}`);
+      } finally {
+        store.uiBlocked = false;
+      }
+    }
+
+    if (store.player) {
+      const p = store.player;
+      this.player.setPosition(p.pos.x, p.pos.y);
+      this.hud.update(p);
+      this.syncMobs();
+    }
+
     let net = "服务器 已连接";
     try {
       const health = await api.health();
@@ -224,21 +284,133 @@ export class FieldScene extends Phaser.Scene {
       else if (!o.chat_model_ok || !o.embed_model_ok) net += " · Ollama 模型缺失";
       else net += " · Ollama 就绪";
     } catch {
-      // Keep the plain connected state; health is a secondary signal.
+      /* keep the plain connected state */
     }
     this.hud.setNet(net);
+    this.booted = true;
+
+    if (state.battle) {
+      this.scene.start(BATTLE_KEY, { battle: state.battle, player: state.player });
+    }
+  }
+
+  private async pollRefresh(): Promise<void> {
+    if (this.battleLock || store.uiBlocked) return;
+    try {
+      const s = await store.refresh();
+      this.clock.anchor(s.clock.game_sec, s.clock.real_ts, s.clock.time_scale);
+      this.hud.update(store.player);
+      this.syncMobs();
+    } catch {
+      /* transient network error, next poll retries */
+    }
+  }
+
+  private syncMobs(): void {
+    const alive = new Map(store.mobs.filter((m) => m.alive).map((m) => [m.id, m]));
+    for (const [id, entry] of this.mobSprites) {
+      if (!alive.has(id)) {
+        entry.sprite.destroy();
+        entry.label.destroy();
+        this.mobSprites.delete(id);
+      }
+    }
+    for (const [id, m] of alive) {
+      if (this.mobSprites.has(id)) continue;
+      const sprite = this.physics.add.sprite(m.x, m.y, m.type);
+      sprite.setImmovable(true);
+      this.physics.world.enableBody(sprite);
+      sprite.body.allowGravity = false;
+      sprite.body.setCircle(8);
+      sprite.setData("mobId", id);
+      sprite.setDepth(20);
+      const label = this.add
+        .text(m.x, m.y - 16, m.name, {
+          fontFamily: UI_FONT,
+          fontSize: m.type === "boss" ? "14px" : "12px",
+          color: m.type === "boss" ? "#d8938c" : "#c9ccd4",
+          stroke: "#16181d",
+          strokeThickness: 3,
+        })
+        .setOrigin(0.5)
+        .setDepth(21);
+      this.mobSprites.set(id, { sprite, label });
+    }
+    if (this.mobCollider) this.mobCollider.destroy();
+    const sprites = [...this.mobSprites.values()].map((e) => e.sprite);
+    if (sprites.length > 0) {
+      this.mobCollider = this.physics.add.overlap(
+        this.player,
+        sprites,
+        (p, m) => this.onMobTouch(p as Phaser.Physics.Arcade.Sprite, m as Phaser.Physics.Arcade.Sprite),
+      );
+    } else {
+      this.mobCollider = null;
+    }
+  }
+
+  private pushAwayFrom(mobId: string): void {
+    const m = store.mobs.find((x) => x.id === mobId);
+    if (!m) return;
+    const dx = this.player.x - m.x;
+    const dy = this.player.y - m.y;
+    const len = Math.hypot(dx, dy) || 1;
+    this.player.setPosition(
+      this.player.x + (dx / len) * 60,
+      this.player.y + (dy / len) * 60,
+    );
+    this.immunityUntil = this.time.now + 2500;
+  }
+
+  private async onMobTouch(_p: Phaser.Physics.Arcade.Sprite, mob: Phaser.Physics.Arcade.Sprite): Promise<void> {
+    if (!this.booted || this.battleLock || this.time.now < this.immunityUntil || store.uiBlocked || !store.player) {
+      return;
+    }
+    this.battleLock = true;
+    this.player.setVelocity(0, 0);
+    const mobId = mob.getData("mobId") as string;
+    try {
+      const resp = await api.battleStart(mobId, { x: this.player.x, y: this.player.y });
+      this.cameras.main.fadeOut(300);
+      this.cameras.main.once("camerafadeoutcomplete", () => {
+        this.scene.start(BATTLE_KEY, { battle: resp.battle, player: resp.player });
+      });
+    } catch {
+      this.battleLock = false;
+    }
   }
 
   update(_time: number, delta: number): void {
+    if (Phaser.Input.Keyboard.JustDown(this.keyEsc) && this.shopPanel) {
+      this.shopPanel.close(() => {
+        this.shopPanel = null;
+        store.uiBlocked = false;
+      });
+      return;
+    }
+
+    const shopHere = this.shopNearby();
+    if (shopHere && !this.shopPanel && !store.uiBlocked) {
+      this.hud.setHint(`${shopHere.label} · E 逛店　·　WASD 移动`);
+      if (Phaser.Input.Keyboard.JustDown(this.keyE)) {
+        void this.openShop(shopHere.shop);
+        return;
+      }
+    } else {
+      this.hud.setHint("WASD / 方向键 移动");
+    }
+
     let vx = 0;
     let vy = 0;
-    if (this.cursors.left.isDown || this.wasd.A.isDown) vx -= 1;
-    if (this.cursors.right.isDown || this.wasd.D.isDown) vx += 1;
-    if (this.cursors.up.isDown || this.wasd.W.isDown) vy -= 1;
-    if (this.cursors.down.isDown || this.wasd.S.isDown) vy += 1;
-    if (vx !== 0 && vy !== 0) {
-      vx *= Math.SQRT1_2;
-      vy *= Math.SQRT1_2;
+    if (!store.uiBlocked && !this.shopPanel && !this.battleLock) {
+      if (this.cursors.left.isDown || this.wasd.A.isDown) vx -= 1;
+      if (this.cursors.right.isDown || this.wasd.D.isDown) vx += 1;
+      if (this.cursors.up.isDown || this.wasd.W.isDown) vy -= 1;
+      if (this.cursors.down.isDown || this.wasd.S.isDown) vy += 1;
+      if (vx !== 0 && vy !== 0) {
+        vx *= Math.SQRT1_2;
+        vy *= Math.SQRT1_2;
+      }
     }
     this.player.setVelocity(vx * PLAYER_SPEED, vy * PLAYER_SPEED);
     this.playerLabel.setPosition(this.player.x, this.player.y - 13);
@@ -254,6 +426,49 @@ export class FieldScene extends Phaser.Scene {
         this.hud.setPoi(name ? `地点 ${name}` : "地点 野外");
       }
     }
+  }
+
+  private async openShop(shopId: string): Promise<void> {
+    store.uiBlocked = true;
+    try {
+      const info = await api.shop(shopId);
+      this.shopPanel = new ShopPanel(
+        this,
+        info,
+        () => store.player?.gold ?? 0,
+        async (itemId) => {
+          try {
+            const resp = await api.buy(shopId, itemId, 1, {
+              x: this.player.x,
+              y: this.player.y,
+            });
+            store.player = resp.player;
+            this.hud.update(resp.player);
+            return null;
+          } catch (e) {
+            return e instanceof Error ? e.message : "购买失败";
+          }
+        },
+        () => {
+          this.shopPanel = null;
+          store.uiBlocked = false;
+        },
+      );
+    } catch (e) {
+      store.uiBlocked = false;
+      this.hud.setNet(`商店加载失败：${e instanceof Error ? e.message : "未知错误"}`);
+    }
+  }
+
+  private shopNearby(): { shop: string; label: string } | null {
+    const tx = Math.floor(this.player.x / TILE);
+    const ty = Math.floor(this.player.y / TILE);
+    for (const a of SHOP_AREAS) {
+      if (tx >= a.x && tx < a.x + a.w && ty >= a.y && ty < a.y + a.h) {
+        return { shop: a.shop, label: a.label };
+      }
+    }
+    return null;
   }
 
   private currentPoi(): string {

@@ -23,10 +23,84 @@
       canvas {
         display: block;
       }
+      #newgame-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        align-items: center;
+        justify-content: center;
+        background: rgba(10, 11, 14, 0.82);
+        font-family: "Noto Serif SC", "Songti SC", "SimSun", serif;
+      }
+      #newgame-overlay .panel {
+        width: 340px;
+        padding: 28px 30px;
+        background: #23262e;
+        border: 1px solid #3a3f4a;
+        border-radius: 6px;
+        text-align: center;
+      }
+      #newgame-overlay .title {
+        font-size: 26px;
+        letter-spacing: 14px;
+        color: #e8e6e0;
+        margin-bottom: 6px;
+      }
+      #newgame-overlay .sub {
+        font-size: 13px;
+        color: #9aa0ab;
+        margin-bottom: 22px;
+      }
+      #ng-name {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 9px 12px;
+        background: #16181d;
+        border: 1px solid #3a3f4a;
+        border-radius: 4px;
+        color: #e8e6e0;
+        font-family: inherit;
+        font-size: 15px;
+        outline: none;
+      }
+      #ng-name:focus {
+        border-color: #8a7444;
+      }
+      #ng-start {
+        margin-top: 16px;
+        width: 100%;
+        padding: 10px;
+        background: #8a7444;
+        border: none;
+        border-radius: 4px;
+        color: #f5f3ec;
+        font-family: inherit;
+        font-size: 15px;
+        cursor: pointer;
+      }
+      #ng-start:hover {
+        background: #a08a50;
+      }
+      #ng-error {
+        margin-top: 10px;
+        font-size: 12px;
+        color: #b3564f;
+        min-height: 16px;
+      }
     </style>
   </head>
   <body>
     <div id="game"></div>
+    <div id="newgame-overlay">
+      <div class="panel">
+        <div class="title">侠</div>
+        <div class="sub">报个名号，闯荡清溪镇</div>
+        <input id="ng-name" maxlength="12" placeholder="少侠名号（≤12字）" />
+        <button id="ng-start">踏入江湖</button>
+        <div id="ng-error"></div>
+      </div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

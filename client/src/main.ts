@@ -1,6 +1,8 @@
 import Phaser from "phaser";
+import { store } from "./systems/store";
 import { BootScene } from "./scenes/BootScene";
 import { FieldScene } from "./scenes/FieldScene";
+import { BattleScene } from "./scenes/BattleScene";
 
 const game = new Phaser.Game({
   type: Phaser.AUTO,
@@ -11,8 +13,10 @@ const game = new Phaser.Game({
   pixelArt: true,
   physics: { default: "arcade", arcade: { gravity: { x: 0, y: 0 } } },
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
-  scene: [BootScene, FieldScene],
+  scene: [BootScene, FieldScene, BattleScene],
 });
 
-// Debug handle for browser console / automated smoke checks.
-(window as unknown as Record<string, unknown>).__xia = game;
+// Debug handles for browser console / automated smoke checks.
+const w = window as unknown as Record<string, unknown>;
+w.__xia = game;
+w.__xiaStore = store;

@@ -11,6 +11,9 @@ export class BootScene extends Phaser.Scene {
   preload(): void {
     this.load.image("tiles", "assets/tiles.png");
     this.load.image("player", "assets/player.png");
+    this.load.image("wolf", "assets/wolf.png");
+    this.load.image("bandit", "assets/bandit.png");
+    this.load.image("boss", "assets/boss.png");
   }
 
   create(): void {

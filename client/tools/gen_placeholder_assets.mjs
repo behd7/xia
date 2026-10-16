@@ -119,4 +119,16 @@ writeFileSync(join(ASSETS_DIR, "tiles.png"), tiles);
 const player = bordered(16, 16, "#e8e6e0", "#23262e");
 writeFileSync(join(ASSETS_DIR, "player.png"), player);
 
-console.log(`generated: tiles.png (${TILES.length} tiles), player.png -> ${ASSETS_DIR}`);
+// Mob blocks (docs/DESIGN.md §4): wolf gray, bandit brown, boss dark red.
+const MOBS = [
+  ["wolf", "#7d8590", "#565c66"],
+  ["bandit", "#8a6a4a", "#5f4a33"],
+  ["boss", "#7a3f3f", "#52282a"],
+];
+for (const [name, fill, edge] of MOBS) {
+  writeFileSync(join(ASSETS_DIR, `${name}.png`), bordered(16, 16, fill, edge));
+}
+
+console.log(
+  `generated: tiles.png (${TILES.length} tiles), player.png, ${MOBS.map((m) => `${m[0]}.png`).join(", ")} -> ${ASSETS_DIR}`,
+);
