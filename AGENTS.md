@@ -1,6 +1,6 @@
 # AGENTS.md
 
-本文件是每个新会话的行动指南。M0 脚手架已完成（client/server 可运行，浏览器走动验收通过），实现工作请从里程碑 M1 战斗循环开始。
+本文件是每个新会话的行动指南。M0 脚手架、M1 战斗循环已完成（浏览器实测验收），实现工作请从里程碑 M2 成长系统开始。
 
 ## 项目是什么
 
@@ -57,6 +57,8 @@ cd server && uv venv .venv && uv pip install -r requirements.txt
 cd client && npm install && npm run dev               # client → http://localhost:5173
 ```
 
+本机 shell 可能配了 `http_proxy`（7897 端口）：server 里 httpx 默认信任环境代理，会把 Ollama 健康检查也送进代理而误报"不可达"。启动 server 前缀加 `NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1`；用 curl 验证本地接口也要 `--noproxy '*'`。
+
 client 走 Vite 代理把 `/api` 转发到 8000（server 也开了 CORS，但正常开发无需直连 8000）。
 
 ## 已知坑（改动前必须知道）
@@ -69,36 +71,39 @@ client 走 Vite 代理把 `/api` 转发到 8000（server 也开了 CORS，但正
 - **记忆双库分工**：记忆正文/元数据在 SQLite（反思按时间序、八卦按参与人过滤、调试查询都要用，Chroma 元数据不支持排序与列表值），Chroma 只做 ANN 向量检索；换 embedding 模型时删 Chroma 集合、从 SQLite 全量重嵌入重建。
 - **记忆控制噪声**：同场目击入忆仅限战斗与大额消费（≥100 两）两类显著事件，不要扩大范围。
 - **占位资产双端同步**：`client/public/assets/` 由 `client/tools/gen_placeholder_assets.mjs` 生成（`npm run assets`，dev/build 预脚本自动跑），产物 gitignore、不入库。新增/调整 tile 时必须同步改脚本里的 `TILES` 数组和 `FieldScene` 里的 `T` 常量——tile id 从 1 开始按数组顺序对应，两端不一致地图就错位。
-- **无头浏览器验证（WSL）**：WSL 内没有中文字体（`fc-list :lang=zh` 为空），headless Chromium 里汉字全是方框；需用 playwright-core + `~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome`（免下载浏览器），并用 `FONTCONFIG_FILE` 指向含 `<dir>/mnt/c/Windows/Fonts</dir>` 的临时 fontconfig 才能渲染汉字。Windows 宿主浏览器无此问题。首次无头冷加载可能超 15s（TS 按需编译 + 软渲染），等待超时放宽到 45s。
+- **无头浏览器验证（WSL）**：WSL 内没有中文字体（`fc-list :lang=zh` 为空），headless Chromium 里汉字全是方框；用 playwright-core + `~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome`（免下载浏览器），并用 `FONTCONFIG_FILE` 指向含 `<dir>/mnt/c/Windows/Fonts</dir>` 的临时 fontconfig 才能渲染汉字。Windows 宿主浏览器无此问题。首次无头冷加载可能超 15s（TS 按需编译 + 软渲染），等待超时放宽到 45s。两条补充：① 指向整个 Windows 字体目录时 fontcache 写入不可靠，把 `NotoSerifSC-VF.ttf` 复制到测试目录、fontconfig 只指该目录更稳；② CDP 瞬时 keydown+keyup 不触发 Phaser 的 JustDown，测试脚本按键要按住 ≥150ms 再松开（真实按键远超一帧，应用本身无此问题）。
+- **Phaser 场景实例复用（M1 踩坑）**：`scene.start` 重启场景会销毁全部游戏对象，但**场景类的实例字段跨重启存活**——`busy` 标志、Text 数组（logTexts）、对象池若不在 `create()`/`init()` 里重置，下一场战斗会对已销毁对象调 `setText`，直接崩掉渲染循环（报错为 `Cannot read properties of null (reading 'drawImage')`，实际是 Frame.data 为 null，别被字面意思带偏）。战斗内浮字等高频 UI 用对象池复用，不在动画 onComplete 里 destroy 热路径对象（软渲染 mid-frame destroy 也会崩）。
+- **地图交互与出生点约定**：建筑是实心瓦片、玩家站不进去，商店等 E 交互判定用建筑外扩 2 格的门口区（FieldScene 的 SHOP_AREAS）；怪物出生点放野外土路行（ROAD），避免与确定性随机树/崖重叠导致不可达。
+- **战斗数据分工**：战斗进行态存 `battle.state_json` + `active` 列（敌方快照/回合/药剂用量），玩家 HP/MP 以 player 行为单一事实源——断线重入靠这个约定，M2 加技能 Buff 时先想清楚进 state_json 还是 player 行。怪物存活存 kv `mob_kills`（击杀时间戳，60s 重生）。
 - **杀 dev server 用端口，别用 pkill -f**：`pkill -f "uvicorn ..."` 会匹配到自己这条 bash 命令行里同样含该文本的部分而自杀。用 `fuser -k 8000/tcp` / TaskStop，或 `pkill -f "app[.]main"`（字符类技巧）。
 
-## 目录结构（M0 后现状）
+## 目录结构（M1 后现状）
 
 ```
 Xia/
 ├─ docs/DESIGN.md          # 设计 SSOT
 ├─ client/                 # Vite + Phaser 3 + TS
 │  ├─ src/
-│  │  ├─ main.ts           # 入口；挂 window.__xia 调试句柄（浏览器控制台/冒烟脚本用）
-│  │  ├─ scenes/           # BootScene（载入资产）/ FieldScene（地图构建+走动+相机+POI）
-│  │  ├─ ui/               # Hud（时辰/POI/服务器状态）；Dialogue/Battle/Shop 待 M1+
-│  │  ├─ systems/          # clock.ts（客户端时钟推算）；日程推算等待 M3+
+│  │  ├─ main.ts           # 入口；挂 window.__xia / __xiaStore 调试句柄（浏览器控制台/冒烟脚本用）
+│  │  ├─ scenes/           # BootScene（载入资产）/ FieldScene（地图+走动+怪物+商店入口+POI）/ BattleScene（回合战斗 UI）
+│  │  ├─ ui/               # Hud（时辰/POI/HP/MP/经验/银两）、Bars（状态条）、Shop（商店面板）、NewGame（取名 DOM overlay）；Dialogue 待 M3+
+│  │  ├─ systems/          # clock.ts（本地时钟推算）/ store.ts（玩家+怪物状态单例，10s 轮询）；日程推算等待 M3+
 │  │  └─ api/              # server HTTP 封装
 │  ├─ tools/gen_placeholder_assets.mjs   # 占位 PNG 生成脚本（见「已知坑」）
 │  └─ public/assets/      # 生成产物，gitignore
 ├─ server/
 │  ├─ app/
-│  │  ├─ main.py config.py db.py llm.py  # 已建；llm.py 目前只有 Ollama tags 健康检查，对话/信号量/llm_log 待 M3
-│  │  ├─ game/             # clock.py 已建；player/inventory/shop/battle(规则AI)/save 待 M1+
+│  │  ├─ main.py config.py db.py llm.py  # llm.py 目前只有 Ollama tags 健康检查，对话/信号量/llm_log 待 M3
+│  │  ├─ game/             # M1 已建：data（静态数据+物品/怪物/商店表+种子）player inventory mobs battle shop clock；属性分配/装备/技能待 M2
 │  │  └─ agent/            # 待 M3+：memory(RAG·Chroma), npc, dialogue, reflection, gossip, scheduler
-│  ├─ data/               # xia.db（§8 全量 schema 已建）+ chroma/（待 M3），均 gitignore
+│  ├─ data/               # xia.db + chroma/（向量库），均 gitignore
 │  └─ requirements.txt
 └─ README.md
 ```
 
 ## 实施顺序
 
-按 DESIGN.md §13 里程碑推进：M0 脚手架已完成（server/client 跑通、Ollama 健康检查、占位地图+走动，浏览器实测验收）→ M1 战斗循环 → M2 成长/拜师 → M3 NPC 记忆+RAG+对话 → M4 反思/八卦/主动搭话。每个里程碑交付可玩 build；调试观察主要靠 `GET /api/debug/npc/{id}`（好感、记忆流、反思、关系摘要）。
+按 DESIGN.md §13 里程碑推进：M0 脚手架、M1 战斗循环已完成（野怪/回合制/药剂/商店/存档/死亡复活，无头浏览器全流程实测零错误）→ M2 成长系统 → M3 NPC 记忆+RAG+对话 → M4 反思/八卦/主动搭话。每个里程碑交付可玩 build；调试观察主要靠 `GET /api/debug/npc/{id}`（好感、记忆流、反思、关系摘要）。
 
 ## Git 提交规范：任务完成自动提交
 
