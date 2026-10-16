@@ -44,8 +44,8 @@
 |---|---|
 | 客户端 | Web：Phaser 3 + TypeScript + Vite |
 | Agent 后端 | Python FastAPI（单进程，承载游戏逻辑 + NPC 智能体） |
-| 存储 | SQLite（游戏状态 + 记忆 + 向量，WAL 模式） |
-| 向量检索 | V1 不引入外部向量库：embedding 以 float32 BLOB 存 SQLite，numpy 暴力余弦相似度（7 NPC × 千级记忆 < 1ms，够用；后续可换 sqlite-vec/Qdrant） |
+| 存储 | SQLite（游戏状态 + 记忆记录，WAL 模式，记忆的 SSOT）+ ChromaDB（向量索引，PersistentClient 本地目录） |
+| 向量检索 | **ChromaDB**：单集合 `memories`（cosine 空间）存 embedding 做 ANN 检索；记忆正文与元数据仍在 SQLite，Chroma 为可全量重建的派生索引 |
 | 对话模型 | Ollama `qwen3:4b-instruct`（Q4 量化，禁用思考模式） |
 | 向量模型 | Ollama `qwen3-embedding:0.6b`（Q8 量化，1024 维，向量归一化后存库） |
 | 美术 | 第一版全部占位图（色块+汉字标签），后期替换 |
@@ -72,7 +72,7 @@
                                                               │ qwen3-emb:0.6b│
                                                               └─────────────┘
                                                       ┌──────────────┐
-                                                      │ xia.db SQLite │
+                                                      │ xia.db SQLite + chroma/ (ChromaDB) │
                                                       └──────────────┘
 ```
 
@@ -264,7 +264,7 @@
 { npc_id, 游戏时间戳, kind: event|reflection|gossip,
   content: 自然语言一句话,
   participants: [玩家/其他NPC], poi: 地点,
-  importance: 1~10, embedding: float32[1024] }
+  importance: 1~10, embedding: float32[1024]（存 Chroma，不入 SQLite） }
 ```
 
 **事件入忆规则（"与我有关"的判定）**：
@@ -290,7 +290,7 @@ w_rel=1.0, w_rec=0.8, w_imp=0.5（可配）
 recency: 半衰期 = 3 游戏日
 ```
 
-先按相似度预筛 top20，再算综合分取 **top 6** 送入 prompt。历史对话最近 3 轮直接平铺进 prompt（不走检索）。
+检索分两步：Chroma 以输入 embedding 查询（`where {"npc_id": id}` 过滤）取**相似度 top20**，再在应用侧算三因子综合分重排取 **top 6** 送入 prompt——Chroma 只算向量相似度，recency/importance 加权必须自己排。历史对话最近 3 轮直接平铺进 prompt（不走检索）。
 
 ### 6.5 好感度系统
 
@@ -396,7 +396,7 @@ LLM_CONCURRENCY=2
 | 八卦改写 | 后台低频 | ~400 / ~80 | 仅 importance≥7 |
 | 记忆 embedding | 每条记忆 | — | `/api/embed` 批量 |
 
-embedding：`POST /api/embed {"model": ..., "input": [...]}`，向量 L2 归一化后 float32 存储，cosine=点积。
+embedding：`POST /api/embed {"model": ..., "input": [...]}`，向量 L2 归一化后 upsert 进 Chroma 集合（**恒显式传 embeddings，禁用 Chroma 默认嵌入函数**）。
 
 ### 7.3 结构化输出
 
@@ -433,7 +433,7 @@ npc_state(npc_id, affinity, last_reflection_at, mem_since_reflection,
 memory(id, npc_id, ts_game,           -- 游戏时钟
        kind,                           -- event|reflection|gossip
        content, participants_json, poi, importance,
-       embedding BLOB, created_at_real)
+       created_at_real)               -- 向量不入 SQLite，存 Chroma（见下）
 relationship(npc_id, target_kind,     -- player|npc
              target_id, summary, updated_at)
 
@@ -442,6 +442,13 @@ battle(id, player_id, target_kind, target_id, state_json, active, created_at)
 llm_log(id, purpose, model, in_tokens, out_tokens, ms, ok, created_at)
 kv(k, v)  -- 全局：时钟偏移、初始化标记等
 ```
+
+**Chroma 集合 `memories`**（PersistentClient 本地目录，`hnsw:space=cosine`）：
+
+- id = memory.id；document = content；embedding = Ollama 1024 维（L2 归一化）；metadata = {npc_id, kind, importance, ts_game, poi}；
+- 写入顺序：SQLite 落库分配 id → 同一写锁内 Chroma upsert（先 SQLite 后 Chroma）；
+- 索引是**派生数据**：换 embedding 模型或索引损坏时，删集合从 SQLite 全量重嵌入重建——SQLite 不存向量正是为了留这条退路；
+- Chroma 元数据不支持排序与列表值，反思（按时间取最近 30 条）、八卦/关系（按参与人过滤）等查询走 SQLite，Chroma 只做 ANN。
 
 索引：`memory(npc_id, ts_game)`、`memory(npc_id, importance)`。WAL 模式 + 单写队列（asyncio.Lock）避免后台反思与对话写冲突。
 
@@ -515,10 +522,10 @@ Xia/
 │  ├─ app/
 │  │  ├─ main.py  config.py  db.py
 │  │  ├─ game/                 # player, inventory, shop, battle(规则AI), save
-│  │  ├─ agent/                # memory(RAG), npc, dialogue, reflection, gossip, scheduler
+│  │  ├─ agent/                # memory(RAG·Chroma), npc, dialogue, reflection, gossip, scheduler
 │  │  └─ llm.py                # ollama 客户端 + 信号量 + llm_log
-│  ├─ data/xia.db              # gitignore
-│  └─ requirements.txt         # fastapi uvicorn numpy httpx pydantic-settings
+│  ├─ data/                    # xia.db + chroma/（向量库），均 gitignore
+│  └─ requirements.txt         # fastapi uvicorn numpy httpx pydantic-settings chromadb
 └─ README.md
 ```
 
@@ -551,6 +558,7 @@ Xia/
 | RECENCY_HALF_LIFE | 3 游戏日 | 记忆新鲜度衰减 |
 | RAG_TOP_K | 6 | 检索条数 |
 | W_REL / W_REC / W_IMP | 1.0 / 0.8 / 0.5 | 检索权重 |
+| CHROMA_DIR | server/data/chroma | Chroma 向量库目录（可删重建） |
 | LLM_CONCURRENCY | 2 | 全局信号量 |
 | MAX_DIALOGUE_DELTA | ±3 | 对话单回合好感变化上限 |
 
@@ -564,7 +572,8 @@ Xia/
 - 长对话上下文膨胀 → 只平铺最近 3 轮，长程信息靠记忆流+关系摘要承载；
 - 好感被 LLM 漂移 → 单回合 clamp ±3，规则类增益（送礼/切磋）优先；
 - SQLite 写并发（对话 vs 后台反思）→ WAL + 单写队列；
-- 记忆噪声（同场目击过多）→ 目击仅限战斗/大额消费两类显著事件。
+- 记忆噪声（同场目击过多）→ 目击仅限战斗/大额消费两类显著事件；
+- ChromaDB 三坑：默认 embedding function 会静默下载 onnx MiniLM（英文向，检索必错）→ 建集合 `embedding_function=None`、恒显式传 embeddings；默认相似度空间是 l2 → 建集合加 `metadata={"hnsw:space": "cosine"}`；离线遥测报错噪声 → `Settings(anonymized_telemetry=False)`。
 
 **开放问题（默认值先行，欢迎推翻）**：
 1. 数值表（§5）为首版拍脑袋值，需 M1 后实测调平；

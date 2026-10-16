@@ -14,7 +14,7 @@
 |---|---|
 | 客户端 | Phaser 3 + TypeScript + Vite（浏览器运行） |
 | 后端 | Python FastAPI 单进程，同时承载游戏逻辑与 NPC 智能体 |
-| 存储 | SQLite 单文件（WAL 模式），游戏状态+记忆+向量同库；**V1 不引入外部向量库**，embedding 存 float32 BLOB，numpy 暴力余弦检索 |
+| 存储 | SQLite 单文件（WAL 模式）存游戏状态+记忆记录（**记忆的 SSOT**）；向量检索用 **ChromaDB**（PersistentClient 本地目录，cosine 空间单集合 memories），Chroma 是可从 SQLite 全量重嵌入重建的派生索引 |
 | 对话模型 | 本地 Ollama `qwen3:4b-instruct`（4bit 量化） |
 | 向量模型 | 本地 Ollama `qwen3-embedding:0.6b`（8bit 量化，1024 维，入库前 L2 归一化） |
 | 美术 | 第一版全部占位图（色块+汉字标签脚本生成），后期替换 |
@@ -30,7 +30,7 @@
 3. **战斗为同步请求-响应**：`POST /api/battle/action` 一次返回双方结算结果。不用 WebSocket。
 4. **LLM 调用永不阻塞玩法**：所有 LLM 结构化输出必须走 校验 → 重试一次(temperature 0.3) → 模板兜底 的链路；JSON 解析失败时用模板回复，游戏可继续。
 5. **好感度防漂移**：LLM 单回合好感变化 clamp ±3；送礼/切磋等规则类增益以规则为准。
-6. **SQLite 单写队列**：对话写入与后台反思/八卦任务并发写库，用 asyncio.Lock 串行化 + WAL，不要改成多连接并行写。
+6. **SQLite 单写队列**：对话写入与后台反思/八卦任务并发写库，用 asyncio.Lock 串行化 + WAL，不要改成多连接并行写。记忆写入 = SQLite 落库 → 同一锁内 Chroma upsert（先 SQLite 后 Chroma）。
 7. **LLM 全局信号量**（默认 2）统一限流，优先级：对话 > 搭话 > 关系摘要 > 反思 > 八卦。所有调用写 `llm_log` 表供实验分析。
 
 ## 环境与配置
@@ -45,7 +45,7 @@ LLM_TIMEOUT=20
 LLM_CONCURRENCY=2
 ```
 
-可调参数集中在 server 端 config（时间流速、好感阈值 70、反思/八卦周期、RAG 权重与 top-k 等），清单见 DESIGN.md §14。
+可调参数集中在 server 端 config（时间流速、好感阈值 70、反思/八卦周期、RAG 权重与 top-k、ChromaDB 目录等），清单见 DESIGN.md §14。server 依赖 chromadb（向量库），清单见 DESIGN.md §12。
 
 ## 已知坑（改动前必须知道）
 
@@ -53,6 +53,8 @@ LLM_CONCURRENCY=2
 - **4B 模型 JSON 不稳**：靠 `/api/chat` + `format: "json"` 提高成功率，但兜底链路（见上）是必需品，不是可选项。
 - **本地推理延迟 2~5s**：对话请求是同步的，前端必须显示等待指示；记忆检索与 prompt 组装并行做。
 - **游戏时钟**：1 现实秒 = 1 游戏分（可配），一个游戏日 ≈ 24 现实分钟。记忆时间戳、NPC 日程、recency 衰减（半衰期 3 游戏日）全部基于游戏时间，不要混用现实时间。
+- **ChromaDB 三坑**：① 建集合用 `embedding_function=None` 且 add/query 恒显式传 embeddings——否则 Chroma 会静默下载 onnx MiniLM（英文向），检索全错；② 集合默认相似度空间是 l2，须以 `metadata={"hnsw:space": "cosine"}` 建集合（向量入库前仍 L2 归一化）；③ `Settings(anonymized_telemetry=False)` 关遥测，免离线时 PostHog 报错刷日志。
+- **记忆双库分工**：记忆正文/元数据在 SQLite（反思按时间序、八卦按参与人过滤、调试查询都要用，Chroma 元数据不支持排序与列表值），Chroma 只做 ANN 向量检索；换 embedding 模型时删 Chroma 集合、从 SQLite 全量重嵌入重建。
 - **记忆控制噪声**：同场目击入忆仅限战斗与大额消费（≥100 两）两类显著事件，不要扩大范围。
 
 ## 计划目录结构
@@ -65,9 +67,9 @@ Xia/
 │  ├─ app/
 │  │  ├─ main.py config.py db.py
 │  │  ├─ game/             # player, inventory, shop, battle(规则AI), save
-│  │  ├─ agent/            # memory(RAG), npc, dialogue, reflection, gossip, scheduler
+│  │  ├─ agent/            # memory(RAG·Chroma), npc, dialogue, reflection, gossip, scheduler
 │  │  └─ llm.py            # ollama 客户端 + 信号量 + llm_log
-│  └─ data/xia.db          # gitignore
+│  └─ data/               # xia.db + chroma/（向量库），均 gitignore
 └─ README.md
 ```
 
