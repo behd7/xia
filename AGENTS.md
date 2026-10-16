@@ -1,6 +1,6 @@
 # AGENTS.md
 
-本文件是每个新会话的行动指南。项目尚未开始编码（当前仅有设计文档），实现工作请从里程碑 M0 开始。
+本文件是每个新会话的行动指南。M0 脚手架已完成（client/server 可运行，浏览器走动验收通过），实现工作请从里程碑 M1 战斗循环开始。
 
 ## 项目是什么
 
@@ -39,43 +39,66 @@
 
 ```env
 OLLAMA_HOST=http://localhost:11434
-CHAT_MODEL=qwen3:4b-instruct        # 实际 tag 可能形如 qwen3:4b-instruct-q4_K_M
-EMBED_MODEL=qwen3-embedding:0.6b
+CHAT_MODEL=qwen3:4b-instruct-2507-q4_K_M   # 本机实际 tag，server/.env 已配好
+EMBED_MODEL=qwen3-embedding:0.6b-q8_0
 LLM_TIMEOUT=20
 LLM_CONCURRENCY=2
 ```
 
-可调参数集中在 server 端 config（时间流速、好感阈值 70、反思/八卦周期、RAG 权重与 top-k、ChromaDB 目录等），清单见 DESIGN.md §14。server 依赖 chromadb（向量库），清单见 DESIGN.md §12。
+可调参数集中在 server 端 config（`server/app/config.py`，pydantic-settings 读 `.env`，§14 清单已全量落入：时间流速、好感阈值 70、反思/八卦周期、RAG 权重与 top-k、ChromaDB 目录等）。server 依赖 chromadb（向量库），清单见 DESIGN.md §12。
+
+### 本地运行
+
+Python 侧用 **uv**（`~/.local/bin/uv`）管理虚拟环境——本机 python3 无 pip 且缺 python3-venv，`python3 -m venv` 不可用，不要尝试。依赖装在 `server/.venv`（gitignore）：
+
+```bash
+cd server && uv venv .venv && uv pip install -r requirements.txt
+.venv/bin/uvicorn app.main:app --reload --port 8000   # server
+cd client && npm install && npm run dev               # client → http://localhost:5173
+```
+
+client 走 Vite 代理把 `/api` 转发到 8000（server 也开了 CORS，但正常开发无需直连 8000）。
 
 ## 已知坑（改动前必须知道）
 
 - **qwen3 思考模式**：对话/结构化输出必须禁用思考——请求体加 `"think": false`；旧版 Ollama 不支持该字段时退化为 system 附加 `/no_think`。
 - **4B 模型 JSON 不稳**：靠 `/api/chat` + `format: "json"` 提高成功率，但兜底链路（见上）是必需品，不是可选项。
 - **本地推理延迟 2~5s**：对话请求是同步的，前端必须显示等待指示；记忆检索与 prompt 组装并行做。
-- **游戏时钟**：1 现实秒 = 1 游戏分（可配），一个游戏日 ≈ 24 现实分钟。记忆时间戳、NPC 日程、recency 衰减（半衰期 3 游戏日）全部基于游戏时间，不要混用现实时间。
+- **游戏时钟**：1 现实秒 = 1 游戏分（可配），一个游戏日 ≈ 24 现实分钟。记忆时间戳、NPC 日程、recency 衰减（半衰期 3 游戏日）全部基于游戏时间，不要混用现实时间。时钟 anchor 存 kv（`clock_anchor_real/game`），**服务器停机期间游戏时间照常流逝**（偏移语义，重启续走）；客户端 `systems/clock.ts` 用同一 anchor 本地推算 HUD，不做轮询。
 - **ChromaDB 三坑**：① 建集合用 `embedding_function=None` 且 add/query 恒显式传 embeddings——否则 Chroma 会静默下载 onnx MiniLM（英文向），检索全错；② 集合默认相似度空间是 l2，须以 `metadata={"hnsw:space": "cosine"}` 建集合（向量入库前仍 L2 归一化）；③ `Settings(anonymized_telemetry=False)` 关遥测，免离线时 PostHog 报错刷日志。
 - **记忆双库分工**：记忆正文/元数据在 SQLite（反思按时间序、八卦按参与人过滤、调试查询都要用，Chroma 元数据不支持排序与列表值），Chroma 只做 ANN 向量检索；换 embedding 模型时删 Chroma 集合、从 SQLite 全量重嵌入重建。
 - **记忆控制噪声**：同场目击入忆仅限战斗与大额消费（≥100 两）两类显著事件，不要扩大范围。
+- **占位资产双端同步**：`client/public/assets/` 由 `client/tools/gen_placeholder_assets.mjs` 生成（`npm run assets`，dev/build 预脚本自动跑），产物 gitignore、不入库。新增/调整 tile 时必须同步改脚本里的 `TILES` 数组和 `FieldScene` 里的 `T` 常量——tile id 从 1 开始按数组顺序对应，两端不一致地图就错位。
+- **无头浏览器验证（WSL）**：WSL 内没有中文字体（`fc-list :lang=zh` 为空），headless Chromium 里汉字全是方框；需用 playwright-core + `~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome`（免下载浏览器），并用 `FONTCONFIG_FILE` 指向含 `<dir>/mnt/c/Windows/Fonts</dir>` 的临时 fontconfig 才能渲染汉字。Windows 宿主浏览器无此问题。首次无头冷加载可能超 15s（TS 按需编译 + 软渲染），等待超时放宽到 45s。
+- **杀 dev server 用端口，别用 pkill -f**：`pkill -f "uvicorn ..."` 会匹配到自己这条 bash 命令行里同样含该文本的部分而自杀。用 `fuser -k 8000/tcp` / TaskStop，或 `pkill -f "app[.]main"`（字符类技巧）。
 
-## 计划目录结构
+## 目录结构（M0 后现状）
 
 ```
 Xia/
 ├─ docs/DESIGN.md          # 设计 SSOT
-├─ client/                 # Vite + Phaser 3 + TS（scenes / ui / systems / api）
+├─ client/                 # Vite + Phaser 3 + TS
+│  ├─ src/
+│  │  ├─ main.ts           # 入口；挂 window.__xia 调试句柄（浏览器控制台/冒烟脚本用）
+│  │  ├─ scenes/           # BootScene（载入资产）/ FieldScene（地图构建+走动+相机+POI）
+│  │  ├─ ui/               # Hud（时辰/POI/服务器状态）；Dialogue/Battle/Shop 待 M1+
+│  │  ├─ systems/          # clock.ts（客户端时钟推算）；日程推算等待 M3+
+│  │  └─ api/              # server HTTP 封装
+│  ├─ tools/gen_placeholder_assets.mjs   # 占位 PNG 生成脚本（见「已知坑」）
+│  └─ public/assets/      # 生成产物，gitignore
 ├─ server/
 │  ├─ app/
-│  │  ├─ main.py config.py db.py
-│  │  ├─ game/             # player, inventory, shop, battle(规则AI), save
-│  │  ├─ agent/            # memory(RAG·Chroma), npc, dialogue, reflection, gossip, scheduler
-│  │  └─ llm.py            # ollama 客户端 + 信号量 + llm_log
-│  └─ data/               # xia.db + chroma/（向量库），均 gitignore
+│  │  ├─ main.py config.py db.py llm.py  # 已建；llm.py 目前只有 Ollama tags 健康检查，对话/信号量/llm_log 待 M3
+│  │  ├─ game/             # clock.py 已建；player/inventory/shop/battle(规则AI)/save 待 M1+
+│  │  └─ agent/            # 待 M3+：memory(RAG·Chroma), npc, dialogue, reflection, gossip, scheduler
+│  ├─ data/               # xia.db（§8 全量 schema 已建）+ chroma/（待 M3），均 gitignore
+│  └─ requirements.txt
 └─ README.md
 ```
 
 ## 实施顺序
 
-按 DESIGN.md §13 里程碑推进：M0 脚手架（跑通+Ollama 健康检查）→ M1 战斗循环 → M2 成长/拜师 → M3 NPC 记忆+RAG+对话 → M4 反思/八卦/主动搭话。每个里程碑交付可玩 build；调试观察主要靠 `GET /api/debug/npc/{id}`（好感、记忆流、反思、关系摘要）。
+按 DESIGN.md §13 里程碑推进：M0 脚手架已完成（server/client 跑通、Ollama 健康检查、占位地图+走动，浏览器实测验收）→ M1 战斗循环 → M2 成长/拜师 → M3 NPC 记忆+RAG+对话 → M4 反思/八卦/主动搭话。每个里程碑交付可玩 build；调试观察主要靠 `GET /api/debug/npc/{id}`（好感、记忆流、反思、关系摘要）。
 
 ## Git 提交规范：任务完成自动提交
 
