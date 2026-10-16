@@ -1,0 +1,19 @@
+# Python
+server/.venv/
+__pycache__/
+*.pyc
+
+# Secrets & local data (never commit)
+server/.env
+server/data/
+
+# Node
+client/node_modules/
+client/dist/
+
+# Generated placeholder assets (see client/tools/gen_placeholder_assets.mjs)
+client/public/assets/
+
+# Misc
+.DS_Store
+.qoder/
