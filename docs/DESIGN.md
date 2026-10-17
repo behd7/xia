@@ -459,10 +459,10 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记等
 | Method | Path | 说明 |
 |---|---|---|
 | POST | `/api/game/new` | 新档 `{name}`（覆盖旧档需确认标记） |
-| GET | `/api/game/state` | 玩家全量状态+游戏时钟 |
+| GET | `/api/game/state` | 玩家全量状态+游戏时钟+`npcs` 花名册（id/slug/好感/地点） |
 | GET | `/api/npcs/state` | 全 NPC 位置推算参数/暂停标记/是否待搭话 |
 | POST | `/api/npc/{id}/greet` | 请求主动搭话（阈值+冷却判定） |
-| POST | `/api/npc/{id}/talk` | `{message}` → `{reply, affinity, end}` |
+| POST | `/api/npc/{id}/talk` | `{message}` → `{reply, affinity, end, player}`（LLM 生成，RAG 检索记忆） |
 | POST | `/api/npc/{id}/gift` | `{item_id}` |
 | POST | `/api/npc/{id}/challenge` | 请求切磋 → 进入战斗 |
 | POST | `/api/npc/{id}/apprentice` | 请求拜师（条件校验+仪式台词） |
@@ -475,7 +475,7 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记等
 | POST | `/api/game/skill/equip` | `{skill_id, equip}` 主动技装入/卸出战斗栏（≤3） |
 | POST | `/api/game/skill/upgrade` | `{skill_id}` 修炼点升级（20×当前级） |
 | POST | `/api/sect/join` | `{sect_id}` 拜师（M2 纯条件：无门派且等级≥3；M3 换对话式+好感） |
-| POST | `/api/battle/start` | `{target_type: mob|npc, target_id}` |
+| POST | `/api/battle/start` | `{target_type: mob, target_id}` 野外怪物战斗；NPC 切磋经 `/api/npc/{id}/challenge` |
 | POST | `/api/battle/action` | `{action: attack|skill|item|flee, id?}` → 结算后全量战况 |
 | GET | `/api/battle/state` | 断线重入 |
 | GET | `/api/debug/npc/{id}` | **实验观察**：好感、反思、关系摘要、最近 50 条记忆 |
@@ -487,14 +487,14 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记等
 
 ## 10. 客户端 UI
 
-当前实现在 `xia-ai-town/`，`client/` 已停用。采用纸墨浅色面板、低饱和玉绿像素城镇与朱砂点缀；1440×900 逻辑画布保持比例缩放，地图镜头跟随玩家。左侧角色状态与玩法提示，右侧小地图及人物录，底部快捷操作栏。实际玩法对接 `server/app/main.py` 的 M0–M2 路由；下列 NPC 对话与好感 UI 属于 M3/M4 目标，当前人物仅静态展示，不模拟未实现的服务器能力。
+当前实现在 `xia-ai-town/`，`client/` 已停用。采用纸墨浅色面板、低饱和玉绿像素城镇与朱砂点缀；1440×900 逻辑画布保持比例缩放，地图镜头跟随玩家。左侧角色状态与玩法提示，右侧小地图及人物录，底部快捷操作栏。实际玩法对接 `server/app/main.py` 的 M0–M3 路由；NPC 对话、好感、拜师/切磋/送礼已在 Godot 客户端开放（M3），反思/主动搭话八卦等仍属 M4。
 
 - **HUD**：HP/MP 条、等级经验条、银两、游戏时辰（"未时"）、当前 POI 名；
 - **面板**：角色(I)（属性分配）、背包(B)（装备/使用/送礼入口）、技能(K)（装备/升级）；
 - **对话**：立绘位+文本框+输入框+5 快捷键；NPC 头顶好感小图标（心形分档，仅示意档位不显数值）；
 - **战斗**：全屏半透明遮罩面板，双方状态条/Buff 图标/四指令钮/滚动战斗日志/浮字伤害；
 - **商店**：列表+价格（显示折扣）；
-- **操作**：WASD/方向键移动，E 交互，I 角色、B 行囊、K 武学、M 舆图，滚轮缩放，Esc 关闭面板。战斗进行中只能通过结算或逃走退出；对话输入操作待 M3。
+- **操作**：WASD/方向键移动，E 交互，I 角色、B 行囊、K 武学、M 舆图，滚轮缩放，Esc 关闭面板。战斗进行中只能通过结算或逃走退出；靠近 NPC 按 E 进入对话（输入或快捷键[打招呼][打听消息][门派拜师][切磋][送礼]）。
 - **连接**：默认 `http://127.0.0.1:8000`，设置面板可保存地址，`XIA_API_URL` 环境变量优先；请求有超时、等待状态和错误反馈。游戏状态每 10 秒同步，时钟连续本地推算。状态版本号阻止较早发出的轮询覆盖后续操作结果；断线重连后以服务器战局恢复。
 - **落点**：加载或战败时，若后端坐标落在障碍物内，客户端将其投影到最近可行走位置（包括旧客栈复活坐标）；下次交互上报该位置。
 
