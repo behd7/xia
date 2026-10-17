@@ -5,10 +5,20 @@ import time
 
 from ..db import Database
 from . import data, inventory, mobs, player as player_mod, skills as skills_mod
+from ..agent import npc as npc_mod
 
 
 class BattleError(Exception):
     pass
+
+# Injected from main lifespan so battle can write spar memories to the NPC
+# without importing the agent layer by value.
+mem_store = None
+
+SPAR_EXP_BASE = 50        # 切磋经验基数，结算后 ×0.3（DESIGN §5.6）
+SPAR_END_PCT = 0.30       # 任一方气血降至 30% 即结束
+SPAR_AFFINITY_WIN = 5     # 切磋表现 → 好感（DESIGN §6.5）
+SPAR_AFFINITY_LOSE = 3
 
 
 async def active_row(db: Database) -> dict | None:
@@ -81,6 +91,39 @@ async def start(db: Database, p: dict, mob_id: str, pos: dict | None) -> dict:
     )
     await player_mod.save(db, p)
     return _snapshot(bid, state, mob_id, p, None, d)
+
+
+async def start_spar(db: Database, p: dict, npc_id: int, pos: dict | None) -> dict:
+    """切磋战斗（DESIGN §5.6）：任一方 HP<30% 即止，无死亡/无掉落，经验 ×0.3。"""
+    if await active_row(db) is not None:
+        raise BattleError("已有战斗进行中")
+    n = await npc_mod.by_id(db, npc_id)
+    if n is None:
+        raise BattleError("查无此人")
+    c = n.get("combat")
+    if not c:
+        raise BattleError("此人不肯比试")
+    d = await player_mod.stats(db, p)
+    state = {
+        "npc_id": npc_id, "spar": True,
+        "enemy": {
+            "type": "npc", "name": n["name"], "level": c["level"],
+            "hp": c["hp"], "hp_max": c["hp"], "atk": c["atk"], "def": c["def"],
+            "spd": c["spd"], "potions": c.get("potions", 0),
+        },
+        "player_first": d["spd"] >= c["spd"],
+        "round": 1, "enemy_acted": False, "potions_used": 0,
+        "buffs": {"player": {}, "enemy": {}}, "skill_cd": {},
+    }
+    if pos:
+        p["pos_x"], p["pos_y"] = pos["x"], pos["y"]
+    bid = await db.execute(
+        "INSERT INTO battle(player_id, target_kind, target_id, state_json, active, created_at)"
+        " VALUES(?,?,?,?,1,?)",
+        (p["id"], "npc", str(npc_id), json.dumps(state, ensure_ascii=False), time.time()),
+    )
+    await player_mod.save(db, p)
+    return _snapshot(bid, state, str(npc_id), p, None, d)
 
 
 def _tick_round_end(state: dict) -> None:
@@ -248,14 +291,23 @@ async def apply_action(db: Database, action: str, item_id: int | None) -> dict:
         else:
             raise BattleError("unknown action")
 
-    if result is None and enemy["hp"] <= 0:
-        result = "win"
-
-    if result is None and not state["enemy_acted"]:
-        enemy_turn()
-
-    if result is None and p["hp"] <= 0:
-        result = "lose"
+    if result is None and state.get("spar"):
+        # 切磋：任一方 HP <= 30% 即结束（无死亡）。
+        e_pct = enemy["hp"] <= enemy["hp_max"] * SPAR_END_PCT
+        p_pct = p["hp"] <= d["hp_max"] * SPAR_END_PCT
+        if e_pct:
+            result = "win"          # 技压对方，即止；不再吃对方一回合
+        elif not state["enemy_acted"]:
+            enemy_turn()
+            if p["hp"] <= d["hp_max"] * SPAR_END_PCT:
+                result = "lose"
+    else:
+        if result is None and enemy["hp"] <= 0:
+            result = "win"
+        if result is None and not state["enemy_acted"]:
+            enemy_turn()
+        if result is None and p["hp"] <= 0:
+            result = "lose"
 
     if result is None:
         state["round"] += 1
@@ -281,6 +333,24 @@ async def apply_action(db: Database, action: str, item_id: int | None) -> dict:
 
 
 async def _finalize(db: Database, p: dict, state: dict, add, result: str) -> dict | None:
+    if state.get("spar") and result in ("win", "lose"):
+        npc_id = int(state["npc_id"])
+        exp = round(SPAR_EXP_BASE * 0.3)
+        ups = player_mod.gain_exp(p, exp)
+        gain = SPAR_AFFINITY_WIN if result == "win" else SPAR_AFFINITY_LOSE
+        await db.execute(
+            "UPDATE npc_state SET affinity = MAX(0, MIN(100, affinity + ?)) WHERE npc_id = ?",
+            (gain, npc_id),
+        )
+        verdict = {"win": "你技高一筹", "lose": "你略逊半招"}[result]
+        add(result, f"切磋结束——{verdict}，获经验 {exp}。")
+        if mem_store is not None:  # 本场切磋写入该 NPC 记忆（importance 6）
+            await mem_store.add_memory(
+                db, npc_id, content=f"在练武场与你切磋，{verdict}。",
+                kind="event", participants=[p["name"]], poi="练武场", importance=6,
+            )
+        return {"exp": exp, "gold": 0, "cultivation": 0, "drops": [], "level_ups": ups}
+
     if result == "win":
         t = data.MOB_TYPES[state["enemy"]["type"]]
         drops = []

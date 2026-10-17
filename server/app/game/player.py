@@ -157,10 +157,12 @@ async def api_dict(db: Database, p: dict) -> dict:
         equipped[r["equipped_slot"]] = item_view(r)
 
     sect = None
+    rank = 0
     skills_view: list[dict] = []
     if p["sect_id"]:
         s = skills.SECTS[p["sect_id"]]
-        sect = {"id": p["sect_id"], "name": s["name"], "rank": skills.RANKS[skills.MAX_RANK]}
+        rank = await skills.current_rank(db, p)
+        sect = {"id": p["sect_id"], "name": s["name"], "rank": skills.RANKS.get(rank, "入门弟子")}
         ps_rows = await db.fetch_all(
             "SELECT sk.*, ps.level, ps.equipped FROM player_skill ps"
             " JOIN skill sk ON sk.id = ps.skill_id WHERE ps.player_id = ? ORDER BY sk.tier_req, sk.id",
@@ -169,7 +171,7 @@ async def api_dict(db: Database, p: dict) -> dict:
         for r in ps_rows:
             eff = json.loads(r["effect_json"])
             active = r["kind"] == "active"
-            locked = r["tier_req"] > skills.MAX_RANK
+            locked = r["tier_req"] > rank
             skills_view.append({
                 "skill_id": r["id"], "name": r["name"], "kind": r["kind"],
                 "tier": r["tier_req"], "level": r["level"],

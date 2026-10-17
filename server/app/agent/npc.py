@@ -9,6 +9,10 @@ an NPC by its numeric id.
 import json
 
 from ..db import Database
+from ..game import inventory as inventory_mod
+from ..game import player as player_mod
+from ..game import skills as skills_mod
+from . import affinity as affinity_mod
 
 # slug -> roster entry. `work` is the daytime POI, `home` the night POI.
 NPC_ROSTER: dict[str, dict] = {
@@ -160,6 +164,73 @@ def gift_delta(price: int, same_day_count: int) -> int:
     if same_day_count >= 2:
         base //= 2
     return base
+
+
+CEREMONY = {
+    "gu_changfeng": "今日起汝便是我剑阳门下。烈阳剑诀，且仔细看顾！",
+    "tie_wushuang": "哈哈好小子！我玄铁堡认了你这份骨气，入门了！",
+    "su_wanqing": "烟雨楼虽小，倒也容得下你这般机灵人。",
+}
+
+
+async def apprentice(db: Database, mem_store, npc_id: int) -> dict:
+    """对话式拜师（DESIGN §5.2）：好感≥60 且 等级≥3，一生只入一派。"""
+    n = await by_id(db, npc_id)
+    if n is None:
+        raise ValueError("查无此人")
+    if n.get("role") != "master" or not n.get("sect"):
+        raise ValueError("此人不收徒，另寻他路吧。")
+    p = await player_mod.get(db)
+    if p["sect_id"]:
+        raise ValueError("你已拜入门派，武德不容贰师。")
+    try:
+        await skills_mod.join_sect(db, p, n["sect"])
+    except skills_mod.SkillError as e:
+        raise ValueError(str(e))
+    await player_mod.save(db, p)
+    new_aff = await set_affinity(db, npc_id, (await affinity(db, npc_id)) + 3)
+    sect_name = skills_mod.SECTS[n["sect"]]["name"]
+    if mem_store is not None:
+        await mem_store.add_memory(
+            db, npc_id, content=f"你将{p['name']}收归{sect_name}门下，授以入门剑诀。",
+            kind="event", participants=[p["name"]], poi=n["work"], importance=6,
+        )
+    return {
+        "reply": CEREMONY.get(n["slug"], f"{n['name']}缓缓点头，收你入门。"),
+        "joined": True, "sect": {"id": n["sect"], "name": sect_name},
+        "affinity": new_aff, "player": await player_mod.api_dict(db, p),
+    }
+
+
+async def gift(db: Database, mem_store, npc_id: int, item_id: int) -> dict:
+    """送礼（DESIGN §6.5）：按价值档 +5/+8/+12，同日第二次起减半；写记忆。"""
+    n = await by_id(db, npc_id)
+    if n is None:
+        raise ValueError("查无此人")
+    p = await player_mod.get(db)
+    inv = await db.fetch_one(
+        "SELECT it.name, it.price, inv.qty FROM inventory inv JOIN item it ON it.id = inv.item_id"
+        " WHERE inv.player_id = ? AND inv.item_id = ?",
+        (p["id"], item_id),
+    )
+    if inv is None or inv["qty"] < 1:
+        raise ValueError("行囊里没有此物，无从相赠。")
+    aff = await affinity(db, npc_id)
+    count = await gifts_today(db, npc_id, mem_store.clock)
+    delta = gift_delta(inv["price"], count + 1)
+    new_aff = await set_affinity(db, npc_id, aff + delta)
+    await inventory_mod.consume(db, p["id"], item_id)
+    if mem_store is not None:
+        await mem_store.add_memory(
+            db, npc_id, content=f"送礼·{p['name']}送来{inv['name']}。",
+            kind="event", participants=[p["name"]], poi=n["work"], importance=3,
+        )
+    await player_mod.save(db, p)
+    return {
+        "reply": f"{n['name']}收下{inv['name']}，神色缓和，欣喜以为所识非虚。",
+        "affinity": new_aff, "item": inv["name"],
+        "player": await player_mod.api_dict(db, p),
+    }
 
 
 async def gifts_today(db: Database, npc_id: int, clock) -> int:

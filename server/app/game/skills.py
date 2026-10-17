@@ -39,11 +39,11 @@ SECTS = {
 STAT_COLS = {"str": "str", "con": "con", "agi": "agi", "int": "int_"}
 STAT_NAMES = {"str": "臂力", "con": "根骨", "agi": "身法", "int": "悟性"}
 
-# M2 only rank 1 (入门弟子) is reachable: tiers 2/3 wait for the M3
-# affinity system. Affinity gate is replaced by plain level gating.
 RANKS = {1: "入门弟子", 2: "亲传弟子", 3: "关门弟子"}
-MAX_RANK = 1
+# 位阶门槛（DESIGN §5.2；与 agent/affinity.RANK_THRESHOLDS 同源，各自内联免循环 import）
+RANK_THRESHOLDS = [(60, 1), (75, 2), (85, 3)]
 JOIN_LEVEL_REQ = 3
+APPRENTICE_AFFINITY = 60  # 掌门收徒好感门槛（DESIGN §5.2）
 MAX_SKILL_LEVEL = 5
 UPGRADE_BASE = 20  # cost to go L -> L+1 is 20 * L (20/40/60/80)
 MAX_EQUIPPED_ACTIVES = 3
@@ -108,9 +108,39 @@ def effect_desc(eff: dict) -> str:
     return "—"
 
 
+MASTER_SQL = (
+    "SELECT ns.affinity FROM npc n JOIN npc_state ns ON ns.npc_id = n.id"
+    " WHERE n.sect_id = ? AND n.role = 'master'"
+)
+
+
+async def _master_affinity(db: Database, sect_id: str | None) -> int:
+    """拜入门派掌门对该玩家的好感。Querying the npc table directly keeps
+    this game module free of agent imports."""
+    if not sect_id:
+        return 0
+    row = await db.fetch_one(MASTER_SQL, (sect_id,))
+    return row["affinity"] if row else 0
+
+
+async def master_affinity(db: Database, p: dict) -> int:
+    return await _master_affinity(db, p["sect_id"])
+
+
+def _rank_of(affinity: int) -> int:
+    for thr in sorted(RANK_THRESHOLDS, reverse=True):
+        if affinity >= thr[0]:
+            return thr[1]
+    return 0
+
+
+async def current_rank(db: Database, p: dict) -> int:
+    """位阶按拜师掌门好感度推出（M3 取代 M2 的 MAX_RANK 常量）。"""
+    return _rank_of(await master_affinity(db, p))
+
+
 async def tier_unlocked(db: Database, p: dict, tier: int) -> bool:
-    # M2: only 入门弟子 (tier 1) is unlocked; 亲传/关门 wait for M3 affinity.
-    return tier <= MAX_RANK
+    return tier <= await current_rank(db, p)
 
 
 async def upgrade(db: Database, p: dict, skill_id: int) -> None:
@@ -170,7 +200,10 @@ async def join_sect(db: Database, p: dict, sect_id: str) -> None:
     if p["sect_id"]:
         raise SkillError("一生只入一派，你已有师承")
     if p["level"] < JOIN_LEVEL_REQ:
-        raise SkillError(f"入门需等级 ≥{JOIN_LEVEL_REQ}（掌门收徒另需好感，M3 开放）")
+        raise SkillError(f"入门需等级 ≥{JOIN_LEVEL_REQ}")
+    aff = await _master_affinity(db, sect_id)
+    if aff < APPRENTICE_AFFINITY:
+        raise SkillError(f"掌门日渐看重方肯收你入门（好感 ≥{APPRENTICE_AFFINITY}）")
     p["sect_id"] = sect_id
     for stat, add in sect["bonus"].items():
         p[STAT_COLS[stat]] += add

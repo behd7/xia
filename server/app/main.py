@@ -15,6 +15,7 @@ from .game import shop as shop_mod
 from .game import skills as skills_mod
 from .game.clock import GameClock
 from .llm import OllamaClient
+from .agent import affinity as affinity_mod
 from .agent import dialogue as dialogue_mod
 from .agent import memory as memory_mod
 from .agent import npc as npc_mod
@@ -34,6 +35,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await npc_mod.seed_and_load(db)
     await clock.load()
     mem_store = memory_mod.MemoryStore(settings.chroma_dir_abs, ollama, clock)
+    battle_mod.mem_store = mem_store  # 切磋写入 NPC 记忆的注入点
+    shop_mod.mem_store = mem_store  # 大额消费写入店主记忆的注入点
     yield
     if mem_store is not None:
         mem_store.close()
@@ -112,6 +115,10 @@ class TalkReq(BaseModel):
     message: str
 
 
+class GiftReq(BaseModel):
+    item_id: int
+
+
 @app.post("/api/npc/{npc_id}/talk")
 async def npc_talk(npc_id: int, req: TalkReq) -> dict[str, Any]:
     await _player_or_409()
@@ -121,6 +128,65 @@ async def npc_talk(npc_id: int, req: TalkReq) -> dict[str, Any]:
         raise HTTPException(404, "查无此人")
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@app.post("/api/npc/{npc_id}/gift")
+async def npc_gift(npc_id: int, req: GiftReq) -> dict[str, Any]:
+    await _player_or_409()
+    try:
+        return await npc_mod.gift(db, mem_store, npc_id, req.item_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/npc/{npc_id}/apprentice")
+async def npc_apprentice(npc_id: int) -> dict[str, Any]:
+    await _player_or_409()
+    try:
+        return await npc_mod.apprentice(db, mem_store, npc_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/npc/{npc_id}/challenge")
+async def npc_challenge(npc_id: int, pos: PosBody | None = None) -> dict[str, Any]:
+    p = await _player_or_409()
+    n = await npc_mod.by_id(db, npc_id)
+    if n is None:
+        raise HTTPException(404, "查无此人")
+    if n.get("role") == "master" and await npc_mod.affinity(db, npc_id) < affinity_mod.CHALLENGE_AFFINITY:
+        raise HTTPException(409, "掌门对你尚存戒心，暂不应战。")
+    pos_d = {"x": pos.x, "y": pos.y} if pos else None
+    try:
+        snap = await battle_mod.start_spar(db, p, npc_id, pos_d)
+    except battle_mod.BattleError as e:
+        raise HTTPException(409, str(e))
+    return {"battle": snap, "player": await player_mod.api_dict(db, p)}
+
+
+@app.get("/api/debug/npc/{npc_id}")
+async def npc_debug(npc_id: int) -> dict[str, Any]:
+    n = await npc_mod.by_id(db, npc_id)
+    if n is None:
+        raise HTTPException(404, "查无此人")
+    aff = await npc_mod.affinity(db, npc_id)
+    ns = await db.fetch_one(
+        "SELECT last_reflection_at, mem_since_reflection FROM npc_state WHERE npc_id = ?",
+        (npc_id,),
+    )
+    memories = await db.fetch_all(
+        "SELECT id, ts_game, kind, importance, poi, content FROM memory"
+        " WHERE npc_id = ? ORDER BY ts_game DESC LIMIT 50",
+        (npc_id,),
+    )
+    rel = await db.fetch_all("SELECT * FROM relationship WHERE npc_id = ?", (npc_id,))
+    return {
+        "npc": {"id": npc_id, "name": n["name"], "role": n.get("role"), "sect": n.get("sect")},
+        "affinity": aff,
+        "reflection": ns,
+        "memories": memories,
+        "relationship": rel,
+    }
 
 
 @app.get("/api/health")
@@ -212,7 +278,7 @@ async def battle_state() -> dict[str, Any]:
 
 @app.get("/api/shop/{shop_id}")
 async def shop_info(shop_id: str) -> dict[str, Any]:
-    info = shop_mod.info(shop_id)
+    info = await shop_mod.info(db, shop_id)
     if info is None:
         raise HTTPException(404, "查无此店")
     return info
