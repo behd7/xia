@@ -68,7 +68,8 @@ export class Hud {
 
   update(player: PlayerState | null): void {
     if (!player) return;
-    this.lvText.setText(`${player.name} · ${player.level} 级`);
+    const sect = player.sect ? ` · ${player.sect.name}` : "";
+    this.lvText.setText(`${player.name} · ${player.level} 级${sect}`);
     this.expBar.set(player.exp, player.exp_next);
     this.hpBar.set(player.hp, player.hp_max);
     this.mpBar.set(player.mp, player.mp_max);

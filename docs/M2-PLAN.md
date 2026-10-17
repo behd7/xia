@@ -174,7 +174,7 @@ crit    = min(0.05 + (int+mods.int+eq.int)×0.003 + eq.crit, 0.30)
 
 **curl 冒烟**（server 起在 8000，注意 `--noproxy '*'`；fresh db）：
 1. `POST /api/game/new {"name":"武测侠"}`；
-2. 快速到 3 级：直接 `sqlite3 server/data/xia.db "UPDATE player SET exp=99"` → 打一只狼触发 gain_exp 到 lv3（或干脆 UPDATE level=3,free_points=9）；
+2. 快速到 3 级：直接 `sqlite3 server/data/xia.db "UPDATE player SET exp=99"` → 打一只狼触发 gain_exp 到 lv3（或干脆 UPDATE level=3,exp=0,free_points=6——lv3 的自由点是 6，两次升级各+3）；
 3. `POST /api/game/allocate {"stats":{"str":3,"con":3,"agi":3,"int":0}}` → 校验 free_points 9→0、atk+6；
 4. `POST /api/sect/join {"sect_id":"jianyang"}` → sect 写入、str+3 int+2、player_skill 4 行（内功 L1 + 赤阳斩 L1 equipped）；
 5. `POST /api/game/equip {"item_id":<铁剑>}`（先 buy 或 UPDATE inventory）→ api_dict atk +8；

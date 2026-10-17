@@ -4,7 +4,7 @@ import random
 import time
 
 from ..db import Database
-from . import data, inventory, mobs, player as player_mod
+from . import data, inventory, mobs, player as player_mod, skills as skills_mod
 
 
 class BattleError(Exception):
@@ -15,8 +15,7 @@ async def active_row(db: Database) -> dict | None:
     return await db.fetch_one("SELECT * FROM battle WHERE active = 1 ORDER BY id DESC LIMIT 1")
 
 
-def _snapshot(bid: int, state: dict, target_id: str, p: dict, result: str | None) -> dict:
-    d = player_mod.derived(p)
+def _snapshot(bid: int, state: dict, target_id: str, p: dict, result: str | None, d: dict) -> dict:
     e = state["enemy"]
     return {
         "id": bid,
@@ -31,6 +30,8 @@ def _snapshot(bid: int, state: dict, target_id: str, p: dict, result: str | None
         "player_first": state["player_first"],
         "round": state["round"],
         "potions_used": state["potions_used"],
+        "buffs": state.get("buffs", {"player": {}, "enemy": {}}),
+        "skill_cd": state.get("skill_cd", {}),
         "active": result is None,
         "result": result,
     }
@@ -43,7 +44,8 @@ async def active_snapshot(db: Database) -> dict | None:
     p = await player_mod.get(db)
     if p is None:
         return None
-    return _snapshot(brow["id"], json.loads(brow["state_json"]), brow["target_id"], p, None)
+    d = await player_mod.stats(db, p)
+    return _snapshot(brow["id"], json.loads(brow["state_json"]), brow["target_id"], p, None, d)
 
 
 async def start(db: Database, p: dict, mob_id: str, pos: dict | None) -> dict:
@@ -58,7 +60,7 @@ async def start(db: Database, p: dict, mob_id: str, pos: dict | None) -> dict:
         raise BattleError("mob not available")
 
     t = data.MOB_TYPES[spawn["type"]]
-    d = player_mod.derived(p)
+    d = await player_mod.stats(db, p)
     state = {
         "mob_id": mob_id,
         "enemy": {
@@ -68,6 +70,7 @@ async def start(db: Database, p: dict, mob_id: str, pos: dict | None) -> dict:
         },
         "player_first": d["spd"] >= t["spd"],
         "round": 1, "enemy_acted": False, "potions_used": 0,
+        "buffs": {"player": {}, "enemy": {}}, "skill_cd": {},
     }
     if pos:
         p["pos_x"], p["pos_y"] = pos["x"], pos["y"]
@@ -77,7 +80,25 @@ async def start(db: Database, p: dict, mob_id: str, pos: dict | None) -> dict:
         (p["id"], "mob", mob_id, json.dumps(state, ensure_ascii=False), time.time()),
     )
     await player_mod.save(db, p)
-    return _snapshot(bid, state, mob_id, p, None)
+    return _snapshot(bid, state, mob_id, p, None, d)
+
+
+def _tick_round_end(state: dict) -> None:
+    for side in ("player", "enemy"):
+        b = state.get("buffs", {}).get(side)
+        if not b:
+            continue
+        for key in ("def", "dodge"):
+            rk = f"{key}_rounds"
+            if b.get(rk):
+                b[rk] -= 1
+                if b[rk] <= 0:
+                    b.pop(f"{key}_pct", None)
+                    b.pop(f"{key}_add", None)
+                    b.pop(rk, None)
+    cd = state.get("skill_cd", {})
+    for k in list(cd):
+        cd[k] = max(0, cd[k] - 1)
 
 
 async def apply_action(db: Database, action: str, item_id: int | None) -> dict:
@@ -90,7 +111,7 @@ async def apply_action(db: Database, action: str, item_id: int | None) -> dict:
 
     state = json.loads(brow["state_json"])
     enemy = state["enemy"]
-    d = player_mod.derived(p)
+    d = await player_mod.stats(db, p)
     log: list[dict] = []
     result: str | None = None
     rewards: dict | None = None
@@ -98,22 +119,35 @@ async def apply_action(db: Database, action: str, item_id: int | None) -> dict:
     def add(kind: str, text: str, **kw) -> None:
         log.append({"kind": kind, "text": text, **kw})
 
-    def try_player_attack() -> None:
-        crit = random.random() < d["crit"]
-        dmg = max(1, round(d["atk"] - enemy["def"]))
+    def player_buff() -> dict:
+        return state.setdefault("buffs", {}).setdefault("player", {})
+
+    def enemy_buff() -> dict:
+        return state.setdefault("buffs", {}).setdefault("enemy", {})
+
+    def player_hit(name: str, mult: float, eff: dict) -> None:
+        defv = enemy["def"] * enemy_buff().get("def_pct", 1.0)
+        defv *= 1 - eff.get("pierce_def", 0)
+        crit = random.random() < (d["crit"] + eff.get("crit_add", 0))
+        dmg = max(1, round(d["atk"] * mult - defv))
         if crit:
             dmg = round(dmg * 1.5)
         enemy["hp"] = max(0, enemy["hp"] - dmg)
-        text = f"你攻向{enemy['name']}，造成 {dmg} 点伤害"
-        if crit:
-            text += "（会心一击）"
-        add("player_attack", text + "。", value=dmg, crit=crit, enemy_hp=enemy["hp"])
+        base = f"你使出{name}，" if name else f"你攻向{enemy['name']}，"
+        suffix = "（会心一击）" if crit else ""
+        add("player_attack", f"{base}造成 {dmg} 点伤害{suffix}。", value=dmg, crit=crit, enemy_hp=enemy["hp"])
+
+    def try_player_attack() -> None:
+        player_hit("", 1.0, {})
 
     def try_enemy_attack() -> None:
-        if random.random() < d["dodge"]:
+        pbv = player_buff()
+        dodge = d["dodge"] + pbv.get("dodge_add", 0.0)
+        if random.random() < dodge:
             add("enemy_attack", f"你身形一晃，避开了{enemy['name']}的攻击。", dodged=True, player_hp=p["hp"])
             return
-        dmg = max(1, round(enemy["atk"] - d["def"]))
+        defv = d["def"] * pbv.get("def_pct", 1.0)
+        dmg = max(1, round(enemy["atk"] - defv))
         p["hp"] = max(0, p["hp"] - dmg)
         add("enemy_attack", f"{enemy['name']}扑将过来，你受到 {dmg} 点伤害。", value=dmg, player_hp=p["hp"])
 
@@ -137,6 +171,47 @@ async def apply_action(db: Database, action: str, item_id: int | None) -> dict:
     if result is None:
         if action == "attack":
             try_player_attack()
+        elif action == "skill":
+            if item_id is None:
+                raise BattleError("missing skill id")
+            srow = await skills_mod.by_id(db, item_id)
+            ps = await db.fetch_one(
+                "SELECT level, equipped FROM player_skill WHERE player_id = ? AND skill_id = ?",
+                (p["id"], item_id),
+            )
+            if srow is None or ps is None:
+                raise BattleError("尚未习得此技")
+            if srow["kind"] != "active":
+                raise BattleError("内功为被动心法，无需施展")
+            if not ps["equipped"]:
+                raise BattleError("此技未装备")
+            if p["mp"] < srow["mp_cost"]:
+                raise BattleError("内力不足")
+            cd_map = state.setdefault("skill_cd", {})
+            if cd_map.get(str(item_id), 0) > 0:
+                raise BattleError("此技尚在冷却")
+            eff = json.loads(srow["effect_json"])
+            p["mp"] -= srow["mp_cost"]
+            if srow["cooldown"]:
+                cd_map[str(item_id)] = srow["cooldown"]
+            mult = skills_mod.effective_multiplier(srow["multiplier"], ps["level"])
+
+            player_hit(srow["name"], mult, eff)
+            faster = eff.get("double_if_faster")
+            if faster and d["spd"] > enemy["spd"] * faster:
+                add("double", "身法占尽先机，再补一击！")
+                player_hit(srow["name"], mult, eff)
+            b = eff.get("buff_self")
+            if b:
+                pbv = player_buff()
+                if "def_pct" in b:
+                    pbv["def_pct"] = b["def_pct"]
+                    pbv["def_rounds"] = max(pbv.get("def_rounds", 0), b["rounds"])
+                    add("buff", "真气护体，防御提升。")
+                if "dodge_add" in b:
+                    pbv["dodge_add"] = b["dodge_add"]
+                    pbv["dodge_rounds"] = max(pbv.get("dodge_rounds", 0), b["rounds"])
+                    add("buff", "身形飘忽，闪避提升。")
         elif action == "item":
             if item_id is None:
                 raise BattleError("missing item_id")
@@ -170,8 +245,6 @@ async def apply_action(db: Database, action: str, item_id: int | None) -> dict:
                 result = "fled"
             else:
                 add("flee_fail", f"逃脱未成，反被{enemy['name']}占了先机！")
-        elif action == "skill":
-            raise BattleError("技能系统将于 M2 解锁")
         else:
             raise BattleError("unknown action")
 
@@ -187,8 +260,11 @@ async def apply_action(db: Database, action: str, item_id: int | None) -> dict:
     if result is None:
         state["round"] += 1
         state["enemy_acted"] = False
+        _tick_round_end(state)
     else:
         rewards = await _finalize(db, p, state, add, result)
+        state["buffs"] = {"player": {}, "enemy": {}}
+        state["skill_cd"] = {}
 
     await db.execute(
         "UPDATE battle SET state_json = ?, active = ? WHERE id = ?",
@@ -196,7 +272,7 @@ async def apply_action(db: Database, action: str, item_id: int | None) -> dict:
     )
     await player_mod.save(db, p)
     return {
-        "battle": _snapshot(brow["id"], state, brow["target_id"], p, result),
+        "battle": _snapshot(brow["id"], state, brow["target_id"], p, result, d),
         "log": log,
         "result": result,
         "rewards": rewards,
@@ -223,10 +299,16 @@ async def _finalize(db: Database, p: dict, state: dict, add, result: str) -> dic
         for lv in ups:
             add("levelup", f"境界提升！你升至 {lv} 级。")
         await mobs.mark_killed(db, state["mob_id"])
+        # Nudge the player off the mob spawn so a reload after the 60s
+        # respawn doesn't instantly re-trigger the battle while idle.
+        spawn = mobs.find_spawn(state["mob_id"])
+        if spawn and p["pos_x"] == spawn["x"] * data.TILE + 8 and p["pos_y"] == spawn["y"] * data.TILE + 8:
+            p["pos_x"] += 48
+            p["pos_y"] -= 32
         return {"exp": exp, "gold": gold, "cultivation": cult, "drops": drops, "level_ups": ups}
 
     if result == "lose":
-        d = player_mod.derived(p)
+        d = await player_mod.stats(db, p)
         p["hp"] = math.ceil(d["hp_max"] / 2)
         p["mp"] = math.ceil(d["mp_max"] / 2)
         p["gold"] = max(0, p["gold"] - math.floor(p["gold"] * 0.1))

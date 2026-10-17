@@ -23,6 +23,8 @@ export class BattleScene extends Phaser.Scene {
   private logTexts: Phaser.GameObjects.Text[] = [];
   private commandLayer!: Phaser.GameObjects.Container;
   private potionLayer!: Phaser.GameObjects.Container;
+  private skillLayer!: Phaser.GameObjects.Container;
+  private buffText!: Phaser.GameObjects.Text;
   private floatPool: Phaser.GameObjects.Text[] = [];
   private logLines: string[] = [];
 
@@ -91,6 +93,12 @@ export class BattleScene extends Phaser.Scene {
       );
     }
 
+    this.buffText = this.add.text(160, 262, "", {
+      fontFamily: UI_FONT,
+      fontSize: "12px",
+      color: "#a8c79a",
+    });
+
     this.buildCommands();
     this.syncBars();
 
@@ -122,14 +130,73 @@ export class BattleScene extends Phaser.Scene {
       this.commandLayer.add(text);
     };
     mk(200, "攻 击", () => void this.doAction("attack"));
-    mk(360, "技 能", () => undefined, true);
+    mk(360, "技 能", () => this.openSkills(), this.hasNoSkills());
     mk(520, "药 剂", () => this.openPotions());
     mk(680, "逃 走", () => void this.doAction("flee"));
 
     this.potionLayer = this.add.container(0, 0).setVisible(false);
+    this.skillLayer = this.add.container(0, 0).setVisible(false);
+  }
+
+  private hasNoSkills(): boolean {
+    return !(this.playerState.skills ?? []).some((s) => s.equipped && s.kind === "active" && !s.locked);
+  }
+
+  private openSkills(): void {
+    this.skillLayer.removeAll(true);
+    const skills = (this.playerState.skills ?? []).filter((s) => s.equipped && s.kind === "active" && !s.locked);
+    skills.slice(0, 4).forEach((s, i) => {
+      const x = 140 + i * 180;
+      const cd = this.battle.skill_cd?.[String(s.skill_id)] ?? 0;
+      const mpOk = this.battle.player.mp >= s.mp_cost;
+      const disabled = cd > 0 || !mpOk;
+      const label = cd > 0 ? `${s.name} 冷却${cd}` : `${s.name} ·${s.mp_cost}`;
+      const t = this.add
+        .text(x, 480, label, {
+          fontFamily: UI_FONT,
+          fontSize: "14px",
+          color: disabled ? "#555a63" : "#e8e6e0",
+          backgroundColor: disabled ? "#1c1f26" : "#2c3038",
+          padding: { x: 12, y: 8 },
+        })
+        .setOrigin(0.5);
+      if (!disabled) {
+        t.setInteractive({ useHandCursor: true });
+        t.on("pointerover", () => t.setBackgroundColor("#3a3f4a"));
+        t.on("pointerout", () => t.setBackgroundColor("#2c3038"));
+        t.on("pointerup", () => {
+          if (!this.busy) {
+            this.closeSkills();
+            void this.doAction("skill", s.skill_id);
+          }
+        });
+      }
+      this.skillLayer.add(t);
+    });
+    const back = this.add
+      .text(800, 480, "返 回", {
+        fontFamily: UI_FONT,
+        fontSize: "14px",
+        color: "#9aa0ab",
+        backgroundColor: "#2c3038",
+        padding: { x: 14, y: 8 },
+      })
+      .setOrigin(0.5);
+    back.setInteractive({ useHandCursor: true });
+    back.on("pointerup", () => this.closeSkills());
+    this.skillLayer.add(back);
+
+    this.commandLayer.setVisible(false);
+    this.skillLayer.setVisible(true);
+  }
+
+  private closeSkills(): void {
+    this.skillLayer.setVisible(false);
+    this.commandLayer.setVisible(true);
   }
 
   private openPotions(): void {
+    this.skillLayer.setVisible(false);
     const potions = this.playerState.inventory.filter((i) => i.type === "potion");
     this.potionLayer.removeAll(true);
     const used = this.battle.potions_used >= 3;
@@ -294,6 +361,12 @@ export class BattleScene extends Phaser.Scene {
     this.playerHpBar.set(this.battle.player.hp, this.battle.player.hp_max);
     this.playerMpBar.set(this.battle.player.mp, this.battle.player.mp_max);
     this.roundText.setText(`第 ${this.battle.round} 回合`);
+
+    const b = this.battle.buffs?.player ?? {};
+    const parts: string[] = [];
+    if (b.def_pct) parts.push(`御体 防御+${Math.round((b.def_pct - 1) * 100)}%（${b.def_rounds}回合）`);
+    if (b.dodge_add) parts.push(`轻身 闪避+${Math.round(b.dodge_add * 100)}%（${b.dodge_rounds}回合）`);
+    this.buffText.setText(parts.join("　"));
   }
 
   private showResult(result: string, rewards: Rewards | null): void {

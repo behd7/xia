@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS player_skill (
     player_id INTEGER NOT NULL REFERENCES player(id),
     skill_id INTEGER NOT NULL REFERENCES skill(id),
     level INTEGER NOT NULL DEFAULT 1,
+    equipped INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (player_id, skill_id)
 );
 

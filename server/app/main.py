@@ -9,8 +9,10 @@ from .config import settings
 from .db import Database
 from .game import battle as battle_mod
 from .game import data, mobs as mobs_mod
+from .game import inventory as inventory_mod
 from .game import player as player_mod
 from .game import shop as shop_mod
+from .game import skills as skills_mod
 from .game.clock import GameClock
 from .llm import OllamaClient
 
@@ -23,6 +25,7 @@ clock = GameClock(db, settings.time_scale, settings.game_start_sec)
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await db.connect()
     await data.seed_and_load(db)
+    await skills_mod.seed_and_load(db)
     await clock.load()
     yield
     await ollama.close()
@@ -64,6 +67,36 @@ class BuyReq(BaseModel):
     item_id: int
     qty: int = 1
     pos: PosBody | None = None
+
+
+class AllocateReq(BaseModel):
+    stats: dict[str, int]
+
+
+class EquipReq(BaseModel):
+    item_id: int
+
+
+class UnequipReq(BaseModel):
+    slot: str
+
+
+class SkillEquipReq(BaseModel):
+    skill_id: int
+    equip: bool
+
+
+class SkillUpgradeReq(BaseModel):
+    skill_id: int
+
+
+class SectJoinReq(BaseModel):
+    sect_id: str
+
+
+class SellReq(BaseModel):
+    item_id: int
+    qty: int = 1
 
 
 @app.get("/api/health")
@@ -167,3 +200,98 @@ async def shop_buy(shop_id: str, req: BuyReq) -> dict[str, Any]:
     except shop_mod.ShopError as e:
         raise HTTPException(400, str(e))
     return {"player": updated}
+
+
+async def _player_or_409() -> dict:
+    p = await player_mod.get(db)
+    if p is None:
+        raise HTTPException(409, "无存档，请先开新档")
+    return p
+
+
+async def _clamp_after_derived_change(p: dict) -> None:
+    d = await player_mod.stats(db, p)
+    p["hp"] = min(p["hp"], d["hp_max"])
+    p["mp"] = min(p["mp"], d["mp_max"])
+
+
+@app.post("/api/game/allocate")
+async def game_allocate(req: AllocateReq) -> dict[str, Any]:
+    p = await _player_or_409()
+    try:
+        await player_mod.allocate(db, p, req.stats)
+    except player_mod.PlayerError as e:
+        raise HTTPException(400, str(e))
+    await player_mod.save(db, p)
+    return {"player": await player_mod.api_dict(db, p)}
+
+
+@app.post("/api/game/equip")
+async def game_equip(req: EquipReq) -> dict[str, Any]:
+    p = await _player_or_409()
+    try:
+        await inventory_mod.equip(db, p["id"], req.item_id)
+    except inventory_mod.InvError as e:
+        raise HTTPException(400, str(e))
+    await _clamp_after_derived_change(p)
+    await player_mod.save(db, p)
+    return {"player": await player_mod.api_dict(db, p)}
+
+
+@app.post("/api/game/unequip")
+async def game_unequip(req: UnequipReq) -> dict[str, Any]:
+    p = await _player_or_409()
+    try:
+        await inventory_mod.unequip(db, p["id"], req.slot)
+    except inventory_mod.InvError as e:
+        raise HTTPException(400, str(e))
+    await _clamp_after_derived_change(p)
+    await player_mod.save(db, p)
+    return {"player": await player_mod.api_dict(db, p)}
+
+
+@app.post("/api/game/skill/equip")
+async def skill_equip(req: SkillEquipReq) -> dict[str, Any]:
+    p = await _player_or_409()
+    try:
+        await skills_mod.set_equip(db, p, req.skill_id, req.equip)
+    except skills_mod.SkillError as e:
+        raise HTTPException(400, str(e))
+    await player_mod.save(db, p)
+    return {"player": await player_mod.api_dict(db, p)}
+
+
+@app.post("/api/game/skill/upgrade")
+async def skill_upgrade(req: SkillUpgradeReq) -> dict[str, Any]:
+    p = await _player_or_409()
+    try:
+        await skills_mod.upgrade(db, p, req.skill_id)
+    except skills_mod.SkillError as e:
+        raise HTTPException(400, str(e))
+    await player_mod.save(db, p)
+    return {"player": await player_mod.api_dict(db, p)}
+
+
+@app.post("/api/sect/join")
+async def sect_join(req: SectJoinReq) -> dict[str, Any]:
+    p = await _player_or_409()
+    try:
+        await skills_mod.join_sect(db, p, req.sect_id)
+    except skills_mod.SkillError as e:
+        raise HTTPException(400, str(e))
+    await player_mod.save(db, p)
+    return {"player": await player_mod.api_dict(db, p)}
+
+
+@app.post("/api/shop/{shop_id}/sell")
+async def shop_sell(shop_id: str, req: SellReq) -> dict[str, Any]:
+    p = await _player_or_409()
+    if shop_mod.info(shop_id) is None:
+        raise HTTPException(404, "查无此店")
+    try:
+        gain = await inventory_mod.sell(db, p["id"], req.item_id, req.qty)
+    except inventory_mod.InvError as e:
+        raise HTTPException(400, str(e))
+    p["gold"] += gain
+    await player_mod.save(db, p)
+    return {"player": await player_mod.api_dict(db, p), "gain": gain}

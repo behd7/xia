@@ -12,13 +12,36 @@ export interface InventoryItem {
   name: string;
   type: string;
   qty: number;
+  slot: string | null;
+  price: number;
   desc: string;
+}
+
+export interface SectView {
+  id: string;
+  name: string;
+  rank: string;
+}
+
+export interface SkillView {
+  skill_id: number;
+  name: string;
+  kind: string;
+  tier: number;
+  level: number;
+  mp_cost: number;
+  multiplier: number;
+  effect_desc: string;
+  equipped: boolean;
+  locked: boolean;
+  upgradable: boolean;
+  upgrade_cost: number;
 }
 
 export interface PlayerState {
   id: number;
   name: string;
-  sect: string | null;
+  sect: SectView | null;
   level: number;
   exp: number;
   exp_next: number;
@@ -36,6 +59,8 @@ export interface PlayerState {
   dodge: number;
   crit: number;
   pos: { x: number; y: number };
+  equipped: Record<"weapon" | "armor" | "accessory", InventoryItem | null>;
+  skills: SkillView[];
   inventory: InventoryItem[];
 }
 
@@ -71,6 +96,13 @@ export interface BattlePlayerView {
   mp_max: number;
 }
 
+export interface BattleBuffs {
+  def_pct?: number;
+  def_rounds?: number;
+  dodge_add?: number;
+  dodge_rounds?: number;
+}
+
 export interface BattleSnapshot {
   id: number;
   enemy: BattleEnemy;
@@ -78,6 +110,8 @@ export interface BattleSnapshot {
   player_first: boolean;
   round: number;
   potions_used: number;
+  buffs: { player: BattleBuffs; enemy: BattleBuffs };
+  skill_cd: Record<string, number>;
   active: boolean;
   result: string | null;
 }
@@ -186,4 +220,21 @@ export const api = {
       qty,
       pos: pos ?? null,
     }),
+  sell: (shopId: string, itemId: number, qty = 1) =>
+    request<{ player: PlayerState; gain: number }>("POST", `/api/shop/${shopId}/sell`, {
+      item_id: itemId,
+      qty,
+    }),
+  allocate: (stats: Record<string, number>) =>
+    request<{ player: PlayerState }>("POST", "/api/game/allocate", { stats }),
+  equipItem: (itemId: number) =>
+    request<{ player: PlayerState }>("POST", "/api/game/equip", { item_id: itemId }),
+  unequipItem: (slot: string) =>
+    request<{ player: PlayerState }>("POST", "/api/game/unequip", { slot }),
+  skillEquip: (skillId: number, equip: boolean) =>
+    request<{ player: PlayerState }>("POST", "/api/game/skill/equip", { skill_id: skillId, equip }),
+  skillUpgrade: (skillId: number) =>
+    request<{ player: PlayerState }>("POST", "/api/game/skill/upgrade", { skill_id: skillId }),
+  joinSect: (sectId: string) =>
+    request<{ player: PlayerState }>("POST", "/api/sect/join", { sect_id: sectId }),
 };

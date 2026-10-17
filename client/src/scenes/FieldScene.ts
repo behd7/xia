@@ -4,6 +4,10 @@ import { store } from "../systems/store";
 import { LocalGameClock } from "../systems/clock";
 import { promptNewGame } from "../ui/NewGame";
 import { ShopPanel } from "../ui/Shop";
+import { CharacterPanel } from "../ui/CharacterPanel";
+import { InventoryPanel } from "../ui/InventoryPanel";
+import { SkillsPanel } from "../ui/SkillsPanel";
+import { JoinSectPanel } from "../ui/JoinSectPanel";
 import { Hud, UI_FONT } from "../ui/Hud";
 import { BATTLE_KEY } from "./BattleScene";
 
@@ -37,12 +41,13 @@ interface Building {
   h: number;
   label: string;
   shop?: string;
+  sect?: string;
 }
 
 const BUILDINGS: Building[] = [
-  { x: 4, y: 4, w: 10, h: 6, label: "剑阳道馆" },
-  { x: 18, y: 4, w: 10, h: 6, label: "玄铁堂" },
-  { x: 32, y: 4, w: 10, h: 6, label: "烟雨小筑" },
+  { x: 4, y: 4, w: 10, h: 6, label: "剑阳道馆", sect: "jianyang" },
+  { x: 18, y: 4, w: 10, h: 6, label: "玄铁堂", sect: "xuantie" },
+  { x: 32, y: 4, w: 10, h: 6, label: "烟雨小筑", sect: "yanyu" },
   { x: 4, y: 16, w: 8, h: 6, label: "药铺", shop: "clinic" },
   { x: 15, y: 16, w: 8, h: 6, label: "铁匠铺", shop: "smith" },
   { x: 26, y: 16, w: 12, h: 8, label: "客栈" },
@@ -63,6 +68,16 @@ const POI_RECTS: { name: string; x: number; y: number; w: number; h: number }[] 
 const SHOP_AREAS: { shop: string; label: string; x: number; y: number; w: number; h: number }[] =
   BUILDINGS.filter((b) => b.shop).map((b) => ({
     shop: b.shop!,
+    label: b.label,
+    x: b.x - 2,
+    y: b.y - 2,
+    w: b.w + 4,
+    h: b.h + 4,
+  }));
+
+const SECT_AREAS: { sect: string; label: string; x: number; y: number; w: number; h: number }[] =
+  BUILDINGS.filter((b) => b.sect).map((b) => ({
+    sect: b.sect!,
     label: b.label,
     x: b.x - 2,
     y: b.y - 2,
@@ -138,6 +153,9 @@ export class FieldScene extends Phaser.Scene {
   private wasd!: Record<"W" | "A" | "S" | "D", Phaser.Input.Keyboard.Key>;
   private keyE!: Phaser.Input.Keyboard.Key;
   private keyEsc!: Phaser.Input.Keyboard.Key;
+  private keyI!: Phaser.Input.Keyboard.Key;
+  private keyB!: Phaser.Input.Keyboard.Key;
+  private keyK!: Phaser.Input.Keyboard.Key;
   private hud!: Hud;
   private clock = new LocalGameClock();
   private poi = "";
@@ -147,7 +165,7 @@ export class FieldScene extends Phaser.Scene {
   private battleLock = false;
   private booted = false;
   private immunityUntil = 0;
-  private shopPanel: ShopPanel | null = null;
+  private panel: { close(): void } | null = null;
 
   constructor() {
     super(FIELD_KEY);
@@ -157,7 +175,7 @@ export class FieldScene extends Phaser.Scene {
     this.battleLock = false;
     this.mobSprites = new Map();
     this.mobCollider = null;
-    this.shopPanel = null;
+    this.panel = null;
     this.poi = "";
     if (data?.fledFrom) {
       this.events.once("postcreate", () => this.pushAwayFrom(data.fledFrom!));
@@ -205,6 +223,9 @@ export class FieldScene extends Phaser.Scene {
     >;
     this.keyE = kb.addKey("E");
     this.keyEsc = kb.addKey("ESC");
+    this.keyI = kb.addKey("I");
+    this.keyB = kb.addKey("B");
+    this.keyK = kb.addKey("K");
 
     this.syncMobs();
     this.time.addEvent({ delay: 10000, loop: true, callback: () => void this.pollRefresh() });
@@ -381,28 +402,41 @@ export class FieldScene extends Phaser.Scene {
   }
 
   update(_time: number, delta: number): void {
-    if (Phaser.Input.Keyboard.JustDown(this.keyEsc) && this.shopPanel) {
-      this.shopPanel.close(() => {
-        this.shopPanel = null;
-        store.uiBlocked = false;
-      });
+    if (Phaser.Input.Keyboard.JustDown(this.keyEsc) && this.panel) {
+      this.panel.close();
+      this.panel = null;
       return;
     }
 
-    const shopHere = this.shopNearby();
-    if (shopHere && !this.shopPanel && !store.uiBlocked) {
-      this.hud.setHint(`${shopHere.label} · E 逛店　·　WASD 移动`);
-      if (Phaser.Input.Keyboard.JustDown(this.keyE)) {
-        void this.openShop(shopHere.shop);
-        return;
+    if (!store.uiBlocked) {
+      if (Phaser.Input.Keyboard.JustDown(this.keyI)) this.openPanel((onClose) => new CharacterPanel(this, onClose));
+      if (Phaser.Input.Keyboard.JustDown(this.keyB)) this.openPanel((onClose) => new InventoryPanel(this, onClose));
+      if (Phaser.Input.Keyboard.JustDown(this.keyK)) this.openPanel((onClose) => new SkillsPanel(this, onClose));
+    }
+
+    if (!this.panel && !store.uiBlocked) {
+      const shopHere = this.shopNearby();
+      const sectHere = shopHere ? null : this.sectNearby();
+      if (shopHere) {
+        this.hud.setHint(`${shopHere.label} · E 逛店　·　WASD 移动`);
+        if (Phaser.Input.Keyboard.JustDown(this.keyE)) {
+          void this.openShop(shopHere.shop);
+          return;
+        }
+      } else if (sectHere) {
+        this.hud.setHint(`${sectHere.label} · E 拜师　·　WASD 移动`);
+        if (Phaser.Input.Keyboard.JustDown(this.keyE)) {
+          this.openPanel((onClose) => new JoinSectPanel(this, sectHere.sect, onClose));
+          return;
+        }
+      } else {
+        this.hud.setHint("WASD / 方向键 移动　·　I 角色　B 背包　K 武学");
       }
-    } else {
-      this.hud.setHint("WASD / 方向键 移动");
     }
 
     let vx = 0;
     let vy = 0;
-    if (!store.uiBlocked && !this.shopPanel && !this.battleLock) {
+    if (!store.uiBlocked && !this.panel && !this.battleLock) {
       if (this.cursors.left.isDown || this.wasd.A.isDown) vx -= 1;
       if (this.cursors.right.isDown || this.wasd.D.isDown) vx += 1;
       if (this.cursors.up.isDown || this.wasd.W.isDown) vy -= 1;
@@ -428,11 +462,21 @@ export class FieldScene extends Phaser.Scene {
     }
   }
 
+  private openPanel(make: (onClose: () => void) => { close(): void }): void {
+    if (this.panel) return;
+    store.uiBlocked = true;
+    this.panel = make(() => {
+      this.panel = null;
+      store.uiBlocked = false;
+    });
+  }
+
   private async openShop(shopId: string): Promise<void> {
+    if (this.panel) return;
     store.uiBlocked = true;
     try {
       const info = await api.shop(shopId);
-      this.shopPanel = new ShopPanel(
+      this.panel = new ShopPanel(
         this,
         info,
         () => store.player?.gold ?? 0,
@@ -449,8 +493,18 @@ export class FieldScene extends Phaser.Scene {
             return e instanceof Error ? e.message : "购买失败";
           }
         },
+        async (itemId) => {
+          try {
+            const resp = await api.sell(shopId, itemId, 1);
+            store.player = resp.player;
+            this.hud.update(resp.player);
+            return null;
+          } catch (e) {
+            return e instanceof Error ? e.message : "出售失败";
+          }
+        },
         () => {
-          this.shopPanel = null;
+          this.panel = null;
           store.uiBlocked = false;
         },
       );
@@ -458,6 +512,17 @@ export class FieldScene extends Phaser.Scene {
       store.uiBlocked = false;
       this.hud.setNet(`商店加载失败：${e instanceof Error ? e.message : "未知错误"}`);
     }
+  }
+
+  private sectNearby(): { sect: string; label: string } | null {
+    const tx = Math.floor(this.player.x / TILE);
+    const ty = Math.floor(this.player.y / TILE);
+    for (const a of SECT_AREAS) {
+      if (tx >= a.x && tx < a.x + a.w && ty >= a.y && ty < a.y + a.h) {
+        return { sect: a.sect, label: a.label };
+      }
+    }
+    return null;
   }
 
   private shopNearby(): { shop: string; label: string } | null {

@@ -423,7 +423,7 @@ inventory(id, player_id, item_id, qty, equipped_slot NULL)  -- weapon|armor|acce
 
 skill(id, name, sect_id NULL, kind,  -- passive|active
       tier_req, mp_cost, multiplier, cooldown, effect_json)
-player_skill(player_id, skill_id, level)
+player_skill(player_id, skill_id, level, equipped)  -- equipped: 主动技是否装入 3 战斗栏
 
 npc(id, name, sect_id NULL, role, persona_json, speech_style,
     init_affinity, home_poi, work_poi, waypoints_json)
@@ -468,6 +468,13 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记等
 | POST | `/api/npc/{id}/apprentice` | 请求拜师（条件校验+仪式台词） |
 | GET | `/api/shop/{shop_id}` | 货架（含好感折扣） |
 | POST | `/api/shop/{shop_id}/buy` | `{item_id, qty}` |
+| POST | `/api/shop/{shop_id}/sell` | `{item_id, qty}` 半价卖出（装备中须先卸下） |
+| POST | `/api/game/allocate` | `{stats:{str,con,agi,int}}` 自由点分配 |
+| POST | `/api/game/equip` | `{item_id}` 穿装备（同槽自动卸回背包） |
+| POST | `/api/game/unequip` | `{slot}` 卸下槽位装备 |
+| POST | `/api/game/skill/equip` | `{skill_id, equip}` 主动技装入/卸出战斗栏（≤3） |
+| POST | `/api/game/skill/upgrade` | `{skill_id}` 修炼点升级（20×当前级） |
+| POST | `/api/sect/join` | `{sect_id}` 拜师（M2 纯条件：无门派且等级≥3；M3 换对话式+好感） |
 | POST | `/api/battle/start` | `{target_type: mob|npc, target_id}` |
 | POST | `/api/battle/action` | `{action: attack|skill|item|flee, id?}` → 结算后全量战况 |
 | GET | `/api/battle/state` | 断线重入 |
