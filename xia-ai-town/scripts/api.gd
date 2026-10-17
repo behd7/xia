@@ -16,9 +16,9 @@ func configure(url: String) -> void:
 	config.set_value("server", "url", base_url)
 	config.save("user://connection.cfg")
 
-func request(path: String, body: Variant = null) -> Dictionary:
+func request(path: String, body: Variant = null, timeout: float = 12.0) -> Dictionary:
 	var http := HTTPRequest.new()
-	http.timeout = 12.0
+	http.timeout = timeout
 	add_child(http)
 	var method := HTTPClient.METHOD_GET if body == null else HTTPClient.METHOD_POST
 	var headers := PackedStringArray(["Content-Type: application/json"])

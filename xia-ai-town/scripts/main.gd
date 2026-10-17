@@ -42,6 +42,11 @@ var minimap: Control
 var modal_status: Label
 var world_view: Control
 var shortcuts: Array[Button] = []
+var people_npcs: Array = []
+var dialogue_id: int = 0
+var dialogue_name: String = ""
+var dialogue_affinity: int = -1
+var dialogue_footer: Control
 
 func _ready() -> void:
 	theme = UI.make_theme()
@@ -309,6 +314,7 @@ func refresh() -> void:
 	clock_received = Time.get_ticks_msec() / 1000.0
 	world.mobs = data.get("mobs", [])
 	minimap.mobs = world.mobs
+	people_npcs = data.get("npcs", [])
 	if data.get("player") != null:
 		var first := player.is_empty()
 		_apply_player(data.player, first)
@@ -576,6 +582,7 @@ func interact() -> void:
 	match near.get("kind", ""):
 		"shop": open_shop(str(near.id))
 		"sect": open_sect(str(near.id), str(near.name))
+		"npc": open_dialogue(str(near.id))
 		_: open_people()
 
 func open_shop(id: String) -> void:
@@ -634,11 +641,196 @@ func open_sect(id: String, place: String) -> void:
 	body.add_child(UI.paragraph("NPC 好感度与对话式拜师将在后端开放后接入。", 13))
 
 func open_people() -> void:
+	if people_npcs.is_empty():
+		var response: Dictionary = await api.request("/api/game/state")
+		if response.ok:
+			people_npcs = response.data.get("npcs", [])
 	var body := _new_modal("清溪人物录", "照面即是缘，江湖总有再会时。", "people")
-	for person in [["顾长风", "剑阳派掌门", "剑阳道馆"], ["铁无双", "玄铁堡堡主", "玄铁堂"], ["苏婉清", "烟雨楼楼主", "烟雨小筑"], ["王大柱", "铁匠铺主", "铁匠铺"], ["陈半松", "药铺大夫", "药铺"], ["柳小蝶", "掌柜之女", "客栈"], ["张馒头", "疯乞丐", "镇口水井"]]:
-		UI.row(body, person[0] + "  ·  " + person[1], person[2])
+	for npc in people_npcs:
+		UI.row(body, "%s  ·  %s" % [str(npc.name), _role_text(str(npc.role))],
+			"%s  ·  好感%s" % [str(npc.get("poi", "")), _affinity_hearts(int(npc.get("affinity", 0)))])
 		body.add_child(UI.rule())
-	body.add_child(UI.paragraph("当前后端尚未提供 NPC 对话、好感与记忆接口；人物录仅展示身份与地点。", 15))
+	if people_npcs.is_empty():
+		body.add_child(UI.paragraph("故人尚未聚齐，稍后再来。", 15))
+
+func _role_text(role: String) -> String:
+	return {"master": "掌门", "clinic": "药铺大夫", "smith": "铁匠铺主", "inn": "掌柜之女", "temple": "疯乞丐"}.get(role, role)
+
+func _affinity_hearts(affinity: int) -> String:
+	var filled: int = 4 if affinity >= 80 else 3 if affinity >= 60 else 2 if affinity >= 40 else 1 if affinity >= 20 else 0
+	return "❤".repeat(filled) + ("" if filled > 0 else "淡")
+
+func _find_npc(slug: String) -> Dictionary:
+	for npc in people_npcs:
+		if str(npc.get("slug", "")) == slug:
+			return npc
+	return {}
+
+func open_dialogue(slug: String) -> void:
+	if busy or player.is_empty():
+		return
+	var npc := _find_npc(slug)
+	if npc.is_empty():
+		notify("此人尚未来到镇中。")
+		return
+	dialogue_id = int(npc.id)
+	dialogue_name = str(npc.name)
+	dialogue_affinity = int(npc.get("affinity", 0))
+	var body := _new_modal(dialogue_name, "%s  ·  %s  ·  好感%s" % [_role_text(str(npc.role)), str(npc.get("poi", "")), _affinity_hearts(dialogue_affinity)], "dialogue", 820)
+	_append_talk(dialogue_name, "……你走上前，拱手见礼。")
+	_render_dialogue_footer("main")
+
+func _dialogue_dock() -> VBoxContainer:
+	return modal_body.get_parent().get_parent()
+
+func _render_dialogue_footer(mode: String) -> void:
+	if dialogue_footer != null:
+		dialogue_footer.queue_free()
+	dialogue_footer = VBoxContainer.new()
+	dialogue_footer.add_theme_constant_override("separation", 10)
+	_dialogue_dock().add_child(dialogue_footer)
+	# 首条空格，给对话气泡区留足高度
+	var spacer := Control.new()
+	spacer.custom_minimum_size = Vector2(0, 12)
+	dialogue_footer.add_child(spacer)
+	if mode == "gift":
+		dialogue_footer.add_child(UI.label("赠君一物 · 行囊", 15, UI.JADE))
+		var owned: Array = []
+		for item in player.get("inventory", []):
+			if item.get("slot") == null:
+				owned.append(item)
+		if owned.is_empty():
+			dialogue_footer.add_child(UI.paragraph("行囊里没有可相赠的物件，先去备些来。", 15))
+		else:
+			var wrap := HBoxContainer.new()
+			wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			dialogue_footer.add_child(wrap)
+			var items_box := _vbox(wrap, 6)
+			for item in owned:
+				items_box.add_child(_action("%s  ×%d" % [item.name, int(item.qty)],
+					func(): dialog_gift(int(item.item_id), str(item.name)), false, true))
+		dialogue_footer.add_child(_action("先打住 · 返回", func(): _render_dialogue_footer("main")))
+		return
+	var shortcuts_row := HBoxContainer.new()
+	dialogue_footer.add_child(shortcuts_row)
+	shortcuts_row.add_child(_action("打招呼", func(): send_talk("（打招呼）")))
+	shortcuts_row.add_child(_action("打听消息", func(): send_talk("（打听）")))
+	shortcuts_row.add_child(_action("门派拜师", dialog_apprentice))
+	shortcuts_row.add_child(_action("切磋", dialog_challenge))
+	shortcuts_row.add_child(_action("送礼", func(): _render_dialogue_footer("gift")))
+	var inbox := HBoxContainer.new()
+	inbox.add_theme_constant_override("separation", 10)
+	dialogue_footer.add_child(inbox)
+	var input := LineEdit.new()
+	input.name = "DialogueInput"
+	input.placeholder_text = "开口说话……"
+	input.custom_minimum_size.y = 46
+	input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	input.text_submitted.connect(func(_text: String): send_talk(input.text, true))
+	inbox.add_child(input)
+	var send := _action("作 揖", func(): send_talk(input.text, true), false, true)
+	send.custom_minimum_size.x = 96
+	inbox.add_child(send)
+	input.grab_focus()
+
+func _append_talk(who: String, text: String) -> void:
+	if text.is_empty():
+		return
+	if not who.is_empty():
+		modal_body.add_child(UI.label(who, 16, UI.JADE if who == "你" else UI.RED))
+	modal_body.add_child(UI.paragraph(text, 17))
+	var scroll := modal_body.get_parent() as ScrollContainer
+	if scroll != null:
+		var target := scroll.get_v_scroll_bar().max_value
+		scroll.scroll_vertical = int(target)
+
+func send_talk(message: String, clear_input: bool = false) -> void:
+	if busy or dialogue_id == 0:
+		return
+	var text := message.strip_edges()
+	if text.is_empty():
+		modal_status.text = "说点什么吧。"
+		return
+	if dialogue_footer != null:
+		var input := dialogue_footer.find_child("DialogueInput", true, false)
+		if input != null and clear_input:
+			input.text = ""
+			input.grab_focus()
+	_append_talk("你", text)
+	busy = true
+	_set_request_buttons(true)
+	modal_status.text = "%s沉吟许久……" % dialogue_name
+	var response: Dictionary = await api.request("/api/npc/%d/talk" % dialogue_id, {"message": text}, 20.0)
+	busy = false
+	_set_request_buttons(false)
+	_connection(response.ok)
+	if not response.ok:
+		modal_status.text = str(response.error)
+		return
+	var data: Dictionary = response.data
+	_append_talk(dialogue_name, str(data.get("reply", "")))
+	if data.has("player"):
+		_apply_player(data.player)
+	if dialogue_affinity >= 0 and data.has("affinity"):
+		dialogue_affinity = int(data.get("affinity"))
+		modal_status.text = "" if data.get("end", false) else ("好感" + _affinity_hearts(dialogue_affinity))
+
+func dialog_apprentice() -> void:
+	if busy or dialogue_id == 0:
+		return
+	busy = true
+	_set_request_buttons(true)
+	modal_status.text = "恭谨而立，静候应允……"
+	var response: Dictionary = await api.request("/api/npc/%d/apprentice" % dialogue_id, {})
+	busy = false
+	_set_request_buttons(false)
+	if not response.ok:
+		modal_status.text = str(response.error)
+		return
+	var data: Dictionary = response.data
+	_append_talk(dialogue_name, str(data.get("reply", "")))
+	if data.has("player"):
+		_apply_player(data.player)
+		dialogue_affinity = int(data.get("affinity", dialogue_affinity))
+	if data.get("joined", false):
+		notify("礼成，今日起便是%s门下。" % str(data.get("sect", {}).get("name", "")))
+	modal_status.text = ""
+
+func dialog_challenge() -> void:
+	if busy or dialogue_id == 0:
+		return
+	busy = true
+	_set_request_buttons(true)
+	modal_status.text = "剑拔弩张，切磋以待……"
+	var response: Dictionary = await api.request("/api/npc/%d/challenge" % dialogue_id, {"x": int(world.actor_pos.x), "y": int(world.actor_pos.y)}, 20.0)
+	busy = false
+	_set_request_buttons(false)
+	if not response.ok:
+		modal_status.text = str(response.error)
+		return
+	_apply_player(response.data.get("player", {}))
+	battle = response.data.get("battle", {})
+	battle_log.assign(["与%s切磋比试。" % battle.get("enemy", {}).get("name", dialogue_name)])
+	open_battle()
+
+func dialog_gift(item_id: int, item_name: String) -> void:
+	if busy or dialogue_id == 0:
+		return
+	busy = true
+	_set_request_buttons(true)
+	modal_status.text = "%s接过%s细看。" % [dialogue_name, item_name]
+	var response: Dictionary = await api.request("/api/npc/%d/gift" % dialogue_id, {"item_id": item_id})
+	busy = false
+	_set_request_buttons(false)
+	if not response.ok:
+		modal_status.text = str(response.error)
+		return
+	var data: Dictionary = response.data
+	_apply_player(data.get("player", {}))
+	dialogue_affinity = int(data.get("affinity", dialogue_affinity))
+	_append_talk(dialogue_name, str(data.get("reply", "")))
+	modal_status.text = "好感" + _affinity_hearts(dialogue_affinity)
+	_render_dialogue_footer("main")
 
 func open_map() -> void:
 	if busy:
