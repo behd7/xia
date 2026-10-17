@@ -15,6 +15,7 @@ from .game import shop as shop_mod
 from .game import skills as skills_mod
 from .game.clock import GameClock
 from .llm import OllamaClient
+from .agent import dialogue as dialogue_mod
 from .agent import memory as memory_mod
 from .agent import npc as npc_mod
 
@@ -105,6 +106,21 @@ class SectJoinReq(BaseModel):
 class SellReq(BaseModel):
     item_id: int
     qty: int = 1
+
+
+class TalkReq(BaseModel):
+    message: str
+
+
+@app.post("/api/npc/{npc_id}/talk")
+async def npc_talk(npc_id: int, req: TalkReq) -> dict[str, Any]:
+    await _player_or_409()
+    try:
+        return await dialogue_mod.talk(db, mem_store, npc_id, req.message)
+    except LookupError:
+        raise HTTPException(404, "查无此人")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/health")

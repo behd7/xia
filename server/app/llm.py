@@ -40,13 +40,13 @@ class OllamaClient:
         res.raise_for_status()
         return [m.get("name", "") for m in res.json().get("models", [])]
 
-    async def _log(self, purpose: str, ok: bool, in_tok: int | None, out_tok: int | None, ms: int) -> None:
+    async def _log(self, purpose: str, ok: bool, in_tok: int | None, out_tok: int | None, ms: int, model: str | None = None) -> None:
         """Record one call in llm_log for experiment analysis (DESIGN §7.3)."""
         try:
             await self._db.execute(
                 "INSERT INTO llm_log(purpose, model, in_tokens, out_tokens, ms, ok, created_at)"
                 " VALUES(?,?,?,?,?,?,?)",
-                (purpose, settings.chat_model, in_tok, out_tok, ms, 1 if ok else 0, time.time()),
+                (purpose, model or settings.chat_model, in_tok, out_tok, ms, 1 if ok else 0, time.time()),
             )
         except Exception:
             pass  # the log is best-effort; never let bookkeeping break a call
@@ -91,7 +91,7 @@ class OllamaClient:
             return ChatResult(text=text, in_tokens=in_tok, out_tokens=out_tok)
         finally:
             ms = int((time.time() - start) * 1000)
-            await self._log(purpose, ok, in_tok, out_tok, ms)
+            await self._log(purpose, ok, in_tok, out_tok, ms, model=settings.chat_model)
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts and L2-normalise each vector (DESIGN §8).
@@ -117,8 +117,7 @@ class OllamaClient:
             return out
         finally:
             ms = int((time.time() - start) * 1000)
-            purpose = "embed"
-            await self._log(purpose, ok, None, None, ms)
+            await self._log("embed", ok, None, None, ms, model=settings.embed_model)
 
     async def close(self) -> None:
         await self._client.aclose()
