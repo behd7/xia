@@ -1,6 +1,6 @@
 # AGENTS.md
 
-本文件是每个新会话的行动指南。M0 脚手架、M1 战斗循环已完成（浏览器实测验收），实现工作请从里程碑 M2 成长系统开始。
+本文件是每个新会话的行动指南。M0 脚手架、M1 战斗循环、M2 成长系统已完成（浏览器实测验收），实现工作请从里程碑 M3 NPC 记忆+RAG+对话开始。
 
 ## 项目是什么
 
@@ -71,22 +71,24 @@ client 走 Vite 代理把 `/api` 转发到 8000（server 也开了 CORS，但正
 - **记忆双库分工**：记忆正文/元数据在 SQLite（反思按时间序、八卦按参与人过滤、调试查询都要用，Chroma 元数据不支持排序与列表值），Chroma 只做 ANN 向量检索；换 embedding 模型时删 Chroma 集合、从 SQLite 全量重嵌入重建。
 - **记忆控制噪声**：同场目击入忆仅限战斗与大额消费（≥100 两）两类显著事件，不要扩大范围。
 - **占位资产双端同步**：`client/public/assets/` 由 `client/tools/gen_placeholder_assets.mjs` 生成（`npm run assets`，dev/build 预脚本自动跑），产物 gitignore、不入库。新增/调整 tile 时必须同步改脚本里的 `TILES` 数组和 `FieldScene` 里的 `T` 常量——tile id 从 1 开始按数组顺序对应，两端不一致地图就错位。
-- **无头浏览器验证（WSL）**：WSL 内没有中文字体（`fc-list :lang=zh` 为空），headless Chromium 里汉字全是方框；用 playwright-core + `~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome`（免下载浏览器），并用 `FONTCONFIG_FILE` 指向含 `<dir>/mnt/c/Windows/Fonts</dir>` 的临时 fontconfig 才能渲染汉字。Windows 宿主浏览器无此问题。首次无头冷加载可能超 15s（TS 按需编译 + 软渲染），等待超时放宽到 45s。两条补充：① 指向整个 Windows 字体目录时 fontcache 写入不可靠，把 `NotoSerifSC-VF.ttf` 复制到测试目录、fontconfig 只指该目录更稳；② CDP 瞬时 keydown+keyup 不触发 Phaser 的 JustDown，测试脚本按键要按住 ≥150ms 再松开（真实按键远超一帧，应用本身无此问题）。
+- **无头浏览器验证（WSL）**：WSL 内没有中文字体（`fc-list :lang=zh` 为空），headless Chromium 里汉字全是方框；用 playwright-core + `~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome`（免下载浏览器），并用 `FONTCONFIG_FILE` 指向含 `<dir>/mnt/c/Windows/Fonts</dir>` 的临时 fontconfig 才能渲染汉字。Windows 宿主浏览器无此问题。首次无头冷加载可能超 15s（TS 按需编译 + 软渲染），等待超时放宽到 45s。两条补充：① 指向整个 Windows 字体目录时 fontcache 写入不可靠，把 `NotoSerifSC-VF.ttf` 复制到测试目录、fontconfig 只指该目录更稳；② CDP 瞬时 keydown+keyup 不触发 Phaser 的 JustDown，测试脚本按键要按住 ≥150ms 再松开（真实按键远超一帧，应用本身无此问题）；③ M2 起发现 **0ms down-up 的快速 mouse.click 同样竞态丢失**（命中测试正常、handler 不执行）——面板按钮点击改用 `move → down → wait(120) → up` 离散序列，或直接 `page.evaluate` 调 `openShop/openPanel`/`emit("pointerup")`，键盘同理可换合成 KeyboardEvent。
 - **Phaser 场景实例复用（M1 踩坑）**：`scene.start` 重启场景会销毁全部游戏对象，但**场景类的实例字段跨重启存活**——`busy` 标志、Text 数组（logTexts）、对象池若不在 `create()`/`init()` 里重置，下一场战斗会对已销毁对象调 `setText`，直接崩掉渲染循环（报错为 `Cannot read properties of null (reading 'drawImage')`，实际是 Frame.data 为 null，别被字面意思带偏）。战斗内浮字等高频 UI 用对象池复用，不在动画 onComplete 里 destroy 热路径对象（软渲染 mid-frame destroy 也会崩）。
 - **地图交互与出生点约定**：建筑是实心瓦片、玩家站不进去，商店等 E 交互判定用建筑外扩 2 格的门口区（FieldScene 的 SHOP_AREAS）；怪物出生点放野外土路行（ROAD），避免与确定性随机树/崖重叠导致不可达。
-- **战斗数据分工**：战斗进行态存 `battle.state_json` + `active` 列（敌方快照/回合/药剂用量），玩家 HP/MP 以 player 行为单一事实源——断线重入靠这个约定，M2 加技能 Buff 时先想清楚进 state_json 还是 player 行。怪物存活存 kv `mob_kills`（击杀时间戳，60s 重生）。
+- **派生属性单一入口（M2 起）**：装备与内功被动通过 `modifiers(db,p)` 聚合进 `derived(p, mods)`，任何要拿攻/防/速/闪避/暴击/上下限的代码一律走 `player.stats(db,p)`，**不要直接调 `derived(p)`**（会漏装备与被动）。入门门派加成是直改 player 行四维的一次性写入，不进 mods。
+- **战斗数据分工**：战斗进行态存 `battle.state_json` + `active` 列（敌方快照、回合、药剂用量、`buffs`、`skill_cd`），玩家 HP/MP 以 player 行为单一事实源——断线重入靠这个约定，M3 加新战斗状态时继续挂 state_json。怪物存活存 kv `mob_kills`（击杀时间戳，60s 重生）。胜利结算会把玩家坐标推离怪物出生点 48px，防止重生后刷新页面被站桩开战；`_finalize` 的复活/推离规则改动时想想这条。
 - **杀 dev server 用端口，别用 pkill -f**：`pkill -f "uvicorn ..."` 会匹配到自己这条 bash 命令行里同样含该文本的部分而自杀。用 `fuser -k 8000/tcp` / TaskStop，或 `pkill -f "app[.]main"`（字符类技巧）。
 
-## 目录结构（M1 后现状）
+## 目录结构（M2 后现状）
 
 ```
 Xia/
 ├─ docs/DESIGN.md          # 设计 SSOT
+├─ docs/M2-PLAN.md         # M2 执行拆解（已实施，留作范式）
 ├─ client/                 # Vite + Phaser 3 + TS
 │  ├─ src/
 │  │  ├─ main.ts           # 入口；挂 window.__xia / __xiaStore 调试句柄（浏览器控制台/冒烟脚本用）
-│  │  ├─ scenes/           # BootScene（载入资产）/ FieldScene（地图+走动+怪物+商店入口+POI）/ BattleScene（回合战斗 UI）
-│  │  ├─ ui/               # Hud（时辰/POI/HP/MP/经验/银两）、Bars（状态条）、Shop（商店面板）、NewGame（取名 DOM overlay）；Dialogue 待 M3+
+│  │  ├─ scenes/           # BootScene / FieldScene（地图+走动+怪物+I/B/K/E 交互+POI）/ BattleScene（回合战斗：技能/药剂子菜单、Buff 行、浮字池）
+│  │  ├─ ui/               # Hud、Bars、Shop（买+卖）、PanelChrome（面板骨架，统一 setScrollFactor(0)）、CharacterPanel/InventoryPanel/SkillsPanel/JoinSectPanel、NewGame；Dialogue 待 M3+
 │  │  ├─ systems/          # clock.ts（本地时钟推算）/ store.ts（玩家+怪物状态单例，10s 轮询）；日程推算等待 M3+
 │  │  └─ api/              # server HTTP 封装
 │  ├─ tools/gen_placeholder_assets.mjs   # 占位 PNG 生成脚本（见「已知坑」）
@@ -94,7 +96,7 @@ Xia/
 ├─ server/
 │  ├─ app/
 │  │  ├─ main.py config.py db.py llm.py  # llm.py 目前只有 Ollama tags 健康检查，对话/信号量/llm_log 待 M3
-│  │  ├─ game/             # M1 已建：data（静态数据+物品/怪物/商店表+种子）player inventory mobs battle shop clock；属性分配/装备/技能待 M2
+│  │  ├─ game/             # M1/M2 已建：data（物品/怪物/商店表+种子）skills（技能/门派目录+拜师）player（mods 聚合+allocate）inventory（含装备/卖店）mobs battle（含技能结算）shop clock
 │  │  └─ agent/            # 待 M3+：memory(RAG·Chroma), npc, dialogue, reflection, gossip, scheduler
 │  ├─ data/               # xia.db + chroma/（向量库），均 gitignore
 │  └─ requirements.txt
@@ -103,7 +105,7 @@ Xia/
 
 ## 实施顺序
 
-按 DESIGN.md §13 里程碑推进：M0 脚手架、M1 战斗循环已完成（野怪/回合制/药剂/商店/存档/死亡复活，无头浏览器全流程实测零错误）→ M2 成长系统 → M3 NPC 记忆+RAG+对话 → M4 反思/八卦/主动搭话。每个里程碑交付可玩 build；调试观察主要靠 `GET /api/debug/npc/{id}`（好感、记忆流、反思、关系摘要）。
+按 DESIGN.md §13 里程碑推进：M0 脚手架、M1 战斗循环、M2 成长系统已完成（属性分配/装备/技能/拜师，无头浏览器全流程实测零错误）→ M3 NPC 记忆+RAG+对话 → M4 反思/八卦/主动搭话。每个里程碑交付可玩 build；调试观察主要靠 `GET /api/debug/npc/{id}`（好感、记忆流、反思、关系摘要）。
 
 **里程碑的执行前必读**：M2 有专属拆解文档 [`docs/M2-PLAN.md`](docs/M2-PLAN.md)——数值、API 形状、文件落点、schema 迁移、验证步骤全部内联，关键决策（effect_json 约定、skill_cd/buffs 存 state_json、拜师 M2 用等级替位好感）已在文档里拍板，**实施 M2 时以它为准、不要重新翻 DESIGN 与 M1 代码做考古**；仅当实现中发现设计需要变更时才回改 DESIGN.md 并同步该计划文档。后续里程碑建议沿用 `docs/M?-PLAN.md` 模式。
 
