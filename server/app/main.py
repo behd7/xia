@@ -15,19 +15,27 @@ from .game import shop as shop_mod
 from .game import skills as skills_mod
 from .game.clock import GameClock
 from .llm import OllamaClient
+from .agent import memory as memory_mod
+from .agent import npc as npc_mod
 
 db = Database(settings.db_path_abs)
 ollama = OllamaClient(settings.ollama_host, settings.llm_timeout, db)
 clock = GameClock(db, settings.time_scale, settings.game_start_sec)
+mem_store: memory_mod.MemoryStore | None = None
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    global mem_store
     await db.connect()
     await data.seed_and_load(db)
     await skills_mod.seed_and_load(db)
+    await npc_mod.seed_and_load(db)
     await clock.load()
+    mem_store = memory_mod.MemoryStore(settings.chroma_dir_abs, ollama, clock)
     yield
+    if mem_store is not None:
+        mem_store.close()
     await ollama.close()
     await db.close()
 
@@ -125,7 +133,13 @@ async def health() -> dict[str, Any]:
             "embed_model_ok": False,
         }
 
-    return {"status": "ok", "db": db_ok, "ollama": ollama_info}
+    npc_ok = False
+    try:
+        row = await db.fetch_one("SELECT COUNT(*) AS n FROM npc")
+        npc_ok = bool(row and row["n"] == len(npc_mod.NPC_ROSTER))
+    except Exception:
+        npc_ok = False
+    return {"status": "ok", "db": db_ok, "ollama": ollama_info, "npcs_seeded": npc_ok}
 
 
 @app.get("/api/game/state")
@@ -136,6 +150,7 @@ async def game_state() -> dict[str, Any]:
         "clock": clock.snapshot(),
         "mobs": await mobs_mod.states(db),
         "battle": await battle_mod.active_snapshot(db),
+        "npcs": await npc_mod.list_for_client(db),
     }
 
 
