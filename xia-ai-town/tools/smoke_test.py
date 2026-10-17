@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Run the real Godot UI against a disposable FastAPI/SQLite instance.
+
+Usage (from the repo root):
+    server/.venv/bin/python xia-ai-town/tools/smoke_test.py
+Optional: GODOT_BIN=/path/to/godot. No requests go to port 8000.
+Only the two smoke_test files are added to the source tree. All runtime writes,
+logs, fixtures, copied project resources and user:// data live under TemporaryDirectory.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import socket
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+
+import httpx
+
+ROOT = Path(__file__).resolve().parents[2]
+PROJECT = ROOT / "xia-ai-town"
+SERVER = ROOT / "server"
+ERROR_LOG = re.compile(r"SCRIPT ERROR|\bERROR\s*:|Traceback \(most recent call last\)|SMOKE FAIL", re.I)
+
+
+def stop_process(process: subprocess.Popen) -> None:
+    """Terminate only the subprocess owned by this invocation, never by name/port."""
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+
+def fixture(db: Path, mode: str) -> None:
+    # Called only after our uvicorn has exited; never races its single write queue.
+    with sqlite3.connect(db) as conn:
+        if mode == "advanced":
+            conn.execute(
+                "UPDATE player SET level=3, exp=0, cultivation=200, free_points=3, "
+                "str=20, con=100, agi=5, int_=20, hp=1000, mp=200, gold=1000"
+            )
+        elif mode == "defeat":
+            # Enemy acts first and agi=0 makes dodge exactly zero. One hit must kill.
+            conn.execute("UPDATE player SET hp=1, con=5, agi=0, pos_x=792, pos_y=440")
+        else:
+            raise ValueError(mode)
+
+
+def stage_project(destination: Path) -> None:
+    destination.mkdir()
+    # Copy application code verbatim. Strip editor/MCP instrumentation only from
+    # the disposable project config so no editor service or helper can be contacted.
+    config = (PROJECT / "project.godot").read_text()
+    config = re.sub(r"(?ms)^\[(?:autoload|editor_plugins)\]\n.*?(?=^\[|\Z)", "", config)
+    (destination / "project.godot").write_text(config)
+    for folder in ("scripts", "scenes"):
+        shutil.copytree(PROJECT / folder, destination / folder)
+    shutil.copy2(PROJECT / "icon.svg", destination / "icon.svg")
+    (destination / "tools").mkdir()
+    shutil.copy2(Path(__file__).with_suffix(".gd"), destination / "tools/smoke_test.gd")
+
+
+def run() -> int:
+    godot = shutil.which(os.environ.get("GODOT_BIN", "/usr/bin/godot"))
+    if not godot:
+        raise RuntimeError("Godot executable missing; set GODOT_BIN")
+    with tempfile.TemporaryDirectory(prefix="xia-godot-smoke-") as name:
+        scratch = Path(name).resolve()
+        staged = scratch / "project"
+        stage_project(staged)
+        db = scratch / "xia.db"
+        env = os.environ.copy()
+        env.update({
+            "DB_PATH": str(db), "CHROMA_DIR": str(scratch / "chroma"),
+            "NO_PROXY": "localhost,127.0.0.1", "no_proxy": "localhost,127.0.0.1",
+            "PYTHONDONTWRITEBYTECODE": "1", "GODOT_SILENCE_ROOT_WARNING": "1",
+            "XDG_DATA_HOME": str(scratch / "data"),
+            "XDG_CONFIG_HOME": str(scratch / "config"), "XDG_CACHE_HOME": str(scratch / "cache"),
+            "XDG_STATE_HOME": str(scratch / "state"), "XIA_SMOKE_ROOT": str(scratch),
+        })
+        for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
+            Path(env[key]).mkdir()
+        # Reserve the chosen ephemeral port until uvicorn inherits the socket.
+        # --fd avoids the bind-close-bind race and never targets an existing server.
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(128)
+            port = listener.getsockname()[1]
+            if port == 8000:
+                raise RuntimeError("Refusing reserved user port 8000")
+            url = f"http://127.0.0.1:{port}"
+            env["XIA_API_URL"] = url
+            print(f"Isolated backend: {url}; temporary DB/userdata: {scratch}", flush=True)
+            backend = None
+            log_offsets = 0
+            backend_log_path = scratch / "backend.log"
+            try:
+                with backend_log_path.open("w+") as backend_log, httpx.Client(base_url=url, trust_env=False, timeout=2) as client:
+                    for mode in ("base", "advanced", "resume", "defeat"):
+                        if mode in ("advanced", "defeat"):
+                            fixture(db, mode)
+                        backend = subprocess.Popen(
+                            [sys.executable, "-m", "uvicorn", "app.main:app", "--app-dir", str(SERVER),
+                             "--fd", str(listener.fileno()), "--log-level", "warning", "--no-access-log"],
+                            cwd=scratch, env=env, pass_fds=(listener.fileno(),),
+                            stdout=backend_log, stderr=subprocess.STDOUT,
+                        )
+                        deadline = time.monotonic() + 20
+                        while True:
+                            if backend.poll() is not None:
+                                raise RuntimeError(f"Backend exited early ({backend.returncode})")
+                            try:
+                                response = client.get("/api/game/state")
+                                response.raise_for_status()
+                                break
+                            except httpx.HTTPError:
+                                if time.monotonic() >= deadline:
+                                    raise RuntimeError("Backend readiness timed out")
+                                time.sleep(0.1)
+                        if mode == "base" and response.json()["player"] is not None:
+                            raise RuntimeError("Disposable database was not empty")
+                        phase_env = dict(env, XIA_SMOKE_MODE=mode)
+                        result = subprocess.run(
+                            [godot, "--headless", "--path", str(staged), "--script", "res://tools/smoke_test.gd",
+                             "--log-file", str(scratch / f"godot-{mode}.engine.log"), "--max-fps", "60"],
+                            cwd=scratch, env=phase_env, capture_output=True, text=True, timeout=75,
+                        )
+                        output = result.stdout + result.stderr
+                        (scratch / f"godot-{mode}.log").write_text(output)
+                        print(output, end="", flush=True)
+                        stop_process(backend)
+                        backend = None
+                        backend_log.flush()
+                        logs = backend_log_path.read_text()
+                        fresh_logs = logs[log_offsets:]
+                        log_offsets = len(logs)
+                        if fresh_logs:
+                            print(fresh_logs, end="", flush=True)
+                        engine_log = (scratch / f"godot-{mode}.engine.log").read_text() if (scratch / f"godot-{mode}.engine.log").exists() else ""
+                        if result.returncode or f"SMOKE_DONE {mode} " not in output or ERROR_LOG.search(output + engine_log + fresh_logs):
+                            raise RuntimeError(f"{mode}: smoke failed (Godot exit {result.returncode}); see log above")
+                    with sqlite3.connect(db) as conn:
+                        if conn.execute("SELECT COUNT(*) FROM battle WHERE active=1").fetchone()[0]:
+                            raise RuntimeError("Unexpected active battle after final phase")
+                print("PASS: all four phases; no engine/backend errors; isolated resources cleaned.")
+                return 0
+            except BaseException:
+                if backend_log_path.exists():
+                    logs = backend_log_path.read_text()
+                    if logs[log_offsets:]:
+                        print(logs[log_offsets:], file=sys.stderr)
+                raise
+            finally:
+                if backend is not None:
+                    stop_process(backend)
+
+
+if __name__ == "__main__":
+    # Turn interrupts into exceptions so the owned backend is always reaped.
+    def interrupted(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(run())
+    except (Exception, KeyboardInterrupt) as exc:
+        print(f"SMOKE FAIL: {exc}", file=sys.stderr)
+        raise SystemExit(1)

@@ -1,58 +1,90 @@
-# 侠 — 二维像素武侠 + 生成式 NPC 实验游戏
+# 侠 · 清溪志
 
-设计文档（SSOT）：[`docs/DESIGN.md`](docs/DESIGN.md)。当前进度：**M1 战斗循环**（野怪/回合制战斗/药剂/商店/存档/死亡复活，浏览器实测通过完整打狼+买药+战败复活流程）。
+二维像素武侠 RPG 与生成式 NPC 实验。当前客户端使用 **Godot 4**，工程位于 [`xia-ai-town/`](xia-ai-town/)，通过 HTTP 连接 [`server/`](server/) 的 FastAPI 后端。`client/` 是已停用的 Phaser 前端，仅保留历史实现。
 
-## 环境要求
+设计文档：[`docs/DESIGN.md`](docs/DESIGN.md)。目前已接入 M0–M2 的开档、地图探索、成长、装备、商店、拜师与回合制战斗。NPC 在地图上显示静态人物标记，人物录注明身份与地点；NPC 对话、记忆、好感度、日程与主动搭话等待 M3/M4 后端实现。
 
-- Python 3.12+（推荐用 [uv](https://docs.astral.sh/uv/) 管理虚拟环境）
-- Node 20+
-- 本地 [Ollama](https://ollama.com/)，提前拉取两个模型：
+## 本地运行
 
-```bash
-ollama pull qwen3:4b-instruct-2507-q4_K_M
-ollama pull qwen3-embedding:0.6b-q8_0
-```
+需要 Godot 4.4+（已在 4.7.2 验证）、Python 3.12+ 和 [uv](https://docs.astral.sh/uv/)。
 
-模型 tag 走 `server/.env`（模板见 `server/.env.example`），代码不写死。
-
-## 运行
-
-启动 server（默认 8000 端口）：
+启动后端：
 
 ```bash
 cd server
-uv venv .venv && uv pip install -r requirements.txt
-cp .env.example .env   # 首次：按本机 ollama list 修改模型 tag
-.venv/bin/uvicorn app.main:app --reload --port 8000
+uv venv .venv
+uv pip install -r requirements.txt
+cp .env.example .env  # 首次运行；已有配置时跳过
+NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 \
+  .venv/bin/uvicorn app.main:app --reload --port 8000
 ```
 
-启动 client（默认 5173 端口，`/api` 自动代理到 8000）：
+在 Godot 项目管理器中导入 `xia-ai-town/project.godot`，按 **F6** 运行 `scenes/main.tscn`，或按 **F5** 运行主场景。也可以在仓库根目录执行：
 
 ```bash
-cd client
-npm install
-npm run dev
+godot --path xia-ai-town --editor
+# 或直接启动游戏
+godot --path xia-ai-town
 ```
 
-浏览器打开 <http://localhost:5173>：占位地图（清溪镇 / 镇墙镇门 / 东山林地 / 后山崖），WASD 或方向键移动，相机跟随；HUD 显示游戏时辰、当前地点、服务器与 Ollama 状态。
+默认后端地址为 `http://127.0.0.1:8000`。界面右上角的「设置」可以更改并保存地址；环境变量 `XIA_API_URL` 可覆盖已保存的配置：
 
-## M0 验收自查
-
-- `GET http://localhost:8000/api/health` → 服务器、SQLite、Ollama 连通性与两个模型是否就绪；
-- `GET http://localhost:8000/api/game/state` → 游戏时钟（1 现实秒 = 1 游戏分，重启续走）；
-- 浏览器里小人满地图跑。
-
-## M1 玩法速览
-
-- 首次进入弹出取名开档（`POST /api/game/new`，单存档）；
-- WASD 走到东山林地/后山崖，撞上野怪（野狼×3 / 山贼×3 / 头目黑旋风）进入回合制战斗：攻击 / 药剂（每场上限 3 瓶）/ 逃走，技能 M2 解锁；
-- 胜利得经验/银两/掉落，死亡回客栈复活（气血内力减半、损失一成银两）；
-- 药铺（陈半松）门口按 E 买药剂，铁匠铺（王大柱）售装备（装备佩戴 M2）。
-
-## 目录速览
-
+```bash
+XIA_API_URL=http://127.0.0.1:8000 godot --path xia-ai-town
 ```
-client/   Vite + Phaser 3 + TS（scenes / systems / ui / api，占位资产由 tools 脚本生成）
-server/   FastAPI 单进程（app: config / db / llm / game.clock；data/ 为 SQLite + ChromaDB，gitignore）
-docs/     DESIGN.md 设计 SSOT
+
+基础探索与战斗无需 Ollama。NPC 功能开放后需要本地 Ollama 模型；模型 tag 通过 `server/.env` 配置（模板见 `server/.env.example`），不得写死在代码中。`GET /api/health` 可检查数据库、Ollama 及模型状态。
+
+## 操作与玩法
+
+| 操作 | 按键 / 入口 |
+|---|---|
+| 移动 | WASD / 方向键 |
+| 附近交互 | E；铺面、门派或人物附近会显示提示 |
+| 角色与属性分配 | I / 底部「角色」 |
+| 行囊与装备 | B / 底部「行囊」 |
+| 武学、招式装备与修习 | K / 底部「武学」 |
+| 大地图 | M / 右侧「展开舆图」 |
+| 缩放地图 | 鼠标滚轮 |
+| 关闭面板 | Esc；战斗中须结算或选择逃走 |
+
+首次进入输入名号开档，已有存档自动恢复。药铺出售药剂；铁匠铺出售兵器与衣甲，两店均支持半价卖出未装备的物品。走近野怪自动进入 1v1 回合战斗，可普攻、使用已装备的招式、服药或逃走。胜利获得经验、银两与修炼点；战败后在客栈门口恢复探索。等级达到三重后，在三派驻地按 E 可拜师，一生只入一派。
+
+游戏时钟在本地连续推算，每十秒同步服务器状态；交互时上报玩家位置。属性、物品与战斗完全由后端结算，未完成的战斗可在重新启动后继续。若战斗响应丢失，恢复连接后会同步服务器战局。
+
+## 美术与工程
+
+纸墨色面板、玉绿地图、朱砂点缀。建筑、草木、人物和怪物均由 Godot 原生绘制，无需下载或手动生成图片；中文使用系统宋体 / Noto CJK 字体并启用系统回退。
+
+```text
+xia-ai-town/
+  project.godot       Godot 配置与主场景入口
+  scenes/main.tscn    游戏主场景
+  scripts/main.gd    HUD、面板、移动与玩法流程
+  scripts/api.gd     HTTP 请求、超时与地址配置
+  scripts/ui_kit.gd  统一主题与 UI 组件
+  scripts/town_world.gd  确定性地图、碰撞、人物与怪物绘制
+  scripts/town_map.gd    小地图与舆图
+  tools/             隔离存档的真实接口冒烟验证
+  addons/godot_ai/    工程已有的 Godot MCP 插件
+server/              FastAPI、SQLite、游戏规则与后续 NPC 智能体
+docs/                设计文档
+client/              旧前端，已停用
+```
+
+Godot 的 `.godot/` 缓存、Python 虚拟环境、`.env` 和服务器存档均不入库。
+
+## 验证
+
+导入与脚本检查：
+
+```bash
+godot --headless --path xia-ai-town --editor --import --quit
+godot --headless --path xia-ai-town --check-only --script scripts/main.gd
+```
+
+完整接口冒烟验证会启动临时端口的真实后端，并使用临时数据库和独立的 Godot 用户目录，不影响现有存档：
+
+```bash
+server/.venv/bin/python xia-ai-town/tools/smoke_test.py
 ```

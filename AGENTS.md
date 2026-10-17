@@ -1,6 +1,6 @@
 # AGENTS.md
 
-本文件是每个新会话的行动指南。M0 脚手架、M1 战斗循环、M2 成长系统已完成（浏览器实测验收），实现工作请从里程碑 M3 NPC 记忆+RAG+对话开始。
+本文件是每个新会话的行动指南。用户已决定将当前前端改为 **Godot 4 + GDScript**：代码放在 `xia-ai-town/`，以 `server/` 实际接口为准；`client/` 是已停用的历史前端，勿继续在其中开发。如需新的图片资源，须提供生图提示词与存放路径，等待用户手动生成。本版采用 Godot 原生绘制，无外部图片依赖。M0 脚手架、M1 战斗循环、M2 成长系统已完成（浏览器实测验收），实现工作请从里程碑 M3 NPC 记忆+RAG+对话开始。
 
 ## 项目是什么
 
@@ -12,12 +12,12 @@
 
 | 决策点 | 选择 |
 |---|---|
-| 客户端 | Phaser 3 + TypeScript + Vite（浏览器运行） |
+| 客户端 | Godot 4 + GDScript（`xia-ai-town/`）；旧 `client/` 已停用 |
 | 后端 | Python FastAPI 单进程，同时承载游戏逻辑与 NPC 智能体 |
 | 存储 | SQLite 单文件（WAL 模式）存游戏状态+记忆记录（**记忆的 SSOT**）；向量检索用 **ChromaDB**（PersistentClient 本地目录，cosine 空间单集合 memories），Chroma 是可从 SQLite 全量重嵌入重建的派生索引 |
 | 对话模型 | 本地 Ollama `qwen3:4b-instruct`（4bit 量化） |
 | 向量模型 | 本地 Ollama `qwen3-embedding:0.6b`（8bit 量化，1024 维，入库前 L2 归一化） |
-| 美术 | 第一版全部占位图（色块+汉字标签脚本生成），后期替换 |
+| 美术 | Godot 原生程序绘制像素地图与纸墨 UI；如需新图片，按用户要求先提供提示词和路径并等待 |
 | 玩家入门 | 无初始门派，靠与掌门 NPC 好感度达标后对话拜师；一生只入一派 |
 | 战斗 | 1v1 回合制，敌方 AI 为规则型（**不调 LLM**） |
 
@@ -49,7 +49,9 @@ LLM_CONCURRENCY=2
 
 ### 本地运行
 
-Python 侧用 **uv**（`~/.local/bin/uv`）管理虚拟环境——本机 python3 无 pip 且缺 python3-venv，`python3 -m venv` 不可用，不要尝试。依赖装在 `server/.venv`（gitignore）：
+当前客户端：Godot 导入 `xia-ai-town/project.godot`，F5 运行主场景 `scenes/main.tscn`；或根目录 `godot --path xia-ai-town`。默认连接 `http://127.0.0.1:8000`，可在设置面板保存地址或用 `XIA_API_URL` 覆盖。隔离真实接口验证：`server/.venv/bin/python xia-ai-town/tools/smoke_test.py`。后端保持现有 Python 实现，以下 Phaser 启动/浏览器验证说明仅供历史参考。
+
+Python 侧用 **uv**（优先 `command -v uv`；原环境为 `~/.local/bin/uv`）管理虚拟环境——本机 python3 无 pip 且缺 python3-venv，`python3 -m venv` 不可用，不要尝试。依赖装在 `server/.venv`（gitignore）：
 
 ```bash
 cd server && uv venv .venv && uv pip install -r requirements.txt
@@ -78,7 +80,11 @@ client 走 Vite 代理把 `/api` 转发到 8000（server 也开了 CORS，但正
 - **战斗数据分工**：战斗进行态存 `battle.state_json` + `active` 列（敌方快照、回合、药剂用量、`buffs`、`skill_cd`），玩家 HP/MP 以 player 行为单一事实源——断线重入靠这个约定，M3 加新战斗状态时继续挂 state_json。怪物存活存 kv `mob_kills`（击杀时间戳，60s 重生）。胜利结算会把玩家坐标推离怪物出生点 48px，防止重生后刷新页面被站桩开战；`_finalize` 的复活/推离规则改动时想想这条。
 - **杀 dev server 用端口，别用 pkill -f**：`pkill -f "uvicorn ..."` 会匹配到自己这条 bash 命令行里同样含该文本的部分而自杀。用 `fuser -k 8000/tcp` / TaskStop，或 `pkill -f "app[.]main"`（字符类技巧）。
 
-## 目录结构（M2 后现状）
+## 当前 Godot 客户端
+
+`xia-ai-town/scripts/main.gd` 负责 HUD、面板、输入、交互、战斗及状态同步；`api.gd` 是 HTTP 客户端；`ui_kit.gd` 是主题组件；`town_world.gd` 原生绘制与碰撞、坐标保持原地图约定；`town_map.gd` 提供小地图与舆图。NPC 暂为静态标记，尚无可调用的 NPC 后端接口。地图与人物无需外部图片。Godot `.godot/` 缓存不入库。
+
+## 目录结构（历史 Phaser M2，实现位置参考）
 
 ```
 Xia/
