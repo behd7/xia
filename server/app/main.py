@@ -17,7 +17,7 @@ from .game.clock import GameClock
 from .llm import OllamaClient
 
 db = Database(settings.db_path_abs)
-ollama = OllamaClient(settings.ollama_host, settings.llm_timeout)
+ollama = OllamaClient(settings.ollama_host, settings.llm_timeout, db)
 clock = GameClock(db, settings.time_scale, settings.game_start_sec)
 
 
