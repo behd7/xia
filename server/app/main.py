@@ -19,6 +19,7 @@ from .agent import affinity as affinity_mod
 from .agent import dialogue as dialogue_mod
 from .agent import memory as memory_mod
 from .agent import npc as npc_mod
+from .agent import trace as trace_mod
 
 db = Database(settings.db_path_abs)
 ollama = OllamaClient(settings.ollama_host, settings.llm_timeout, db)
@@ -34,10 +35,12 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await skills_mod.seed_and_load(db)
     await npc_mod.seed_and_load(db)
     await clock.load()
+    await trace_mod.setup()
     mem_store = memory_mod.MemoryStore(settings.chroma_dir_abs, ollama, clock)
     battle_mod.mem_store = mem_store  # 切磋写入 NPC 记忆的注入点
     shop_mod.mem_store = mem_store  # 大额消费写入店主记忆的注入点
     yield
+    await trace_mod.close()
     if mem_store is not None:
         mem_store.close()
     await ollama.close()

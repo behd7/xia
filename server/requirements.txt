@@ -4,3 +4,4 @@ httpx
 pydantic-settings
 numpy
 chromadb
+langfuse==2.14.0
