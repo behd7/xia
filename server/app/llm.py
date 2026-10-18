@@ -8,6 +8,7 @@ import httpx
 
 from .config import settings
 from .db import Database
+from .agent import trace as trace_mod
 
 
 @dataclass
@@ -58,6 +59,7 @@ class OllamaClient:
         *,
         json_format: bool = False,
         temperature: float = 0.7,
+        metadata: dict | None = None,
     ) -> ChatResult:
         """One chat completion.
 
@@ -88,6 +90,8 @@ class OllamaClient:
             in_tok = data.get("prompt_eval_count")
             out_tok = data.get("eval_count")
             ok = True
+            self._trace_generation(purpose, messages, text, temperature, json_format, metadata,
+                                   in_tok, out_tok)
             return ChatResult(text=text, in_tokens=in_tok, out_tokens=out_tok)
         finally:
             ms = int((time.time() - start) * 1000)
@@ -114,6 +118,7 @@ class OllamaClient:
                 norm = math.sqrt(sum(x * x for x in v))
                 out.append([x / norm for x in v] if norm else v)
             ok = True
+            self._trace_embed(texts, out)
             return out
         finally:
             ms = int((time.time() - start) * 1000)
@@ -121,3 +126,34 @@ class OllamaClient:
 
     async def close(self) -> None:
         await self._client.aclose()
+
+    # -- langfuse 打点（best-effort，绝不影响返回值；见 LANGFUSE-PLAN §2.3） --
+
+    def _trace_generation(self, purpose, messages, text, temperature, json_format, metadata,
+                          in_tok, out_tok) -> None:
+        tr = trace_mod.get_current_trace()
+        if tr is None:
+            return
+        try:
+            tr.generation(
+                name=purpose,
+                model=settings.chat_model,
+                model_parameters={"temperature": temperature, "think": False},
+                input=messages,
+                output=text,
+                metadata={**(metadata or {}), "json_format": json_format},
+                usage={"input": in_tok, "output": out_tok},
+            )
+        except Exception:
+            pass
+
+    def _trace_embed(self, texts: list[str], vectors: list[list[float]]) -> None:
+        tr = trace_mod.get_current_trace()
+        if tr is None:
+            return
+        try:
+            dim = len(vectors[0]) if vectors else 0
+            tr.span(name="embed", input=texts,
+                    output=f"top 记忆向量 {len(texts)}x{dim} L2-norm")
+        except Exception:
+            pass
