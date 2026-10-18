@@ -404,7 +404,15 @@ embedding：`POST /api/embed {"model": ..., "input": [...]}`，向量 L2 归一�
 - qwen3 禁思考：请求体 `"think": false`（旧版 Ollama 退化为 system 附加 `/no_think`）；
 - 校验→重试 1 次→模板兜底（§6.6）；所有调用写 `llm_log` 表（用途/耗时/token/成败）便于实验分析。
 
-### 7.4 并发控制
+### 7.4 观测（Langfuse，与 llm_log 并存）
+
+可选旁路，`LANGFUSE_ENABLED`（默认 false，fail-closed：不可达/未配零副作用）。自托管 v2 栈：`server/deploy/langfuse/` docker-compose（Postgres+Redis，对外 3000，v1 Basic 用 public/secret key 鉴权）。集中装配在 `app/agent/trace.py`，钉定 SDK `langfuse==2.14.0`（v5 为 OTel 全重写、API 与下文形态不符）。
+
+- **父 trace**：对话 `dialogue.talk()` 开 `dialogue` 根 trace（tags=npc/player、metadata=affinity_before/place/rag_top_k），包 `retrieve`/`recent_turns`/`add_memory`/`outcome` span；拜师/送礼各开 `apprentice`/`gift` 轻量 trace（好感前后）。
+- **全局咽喉点**：`OllamaClient.chat/embed` 命中当前 trace 上下文时，chat 发 generation（model/温度/prompt/输出/usage/attempt）、embed 发 span；M4 反思/八卦/搭话无需各自埋点即被覆盖。
+- 打点全部 best-effort、后台缓冲发送，`flush/shutdown` 只在 lifespan shutdown；绝不放热路径（AGENTS #4/#6），也不动 `llm_log` 本地 SSOT。
+
+### 7.5 并发控制
 
 asyncio.Semaphore(2) 全局限流；优先级：对话 > 搭话 > 关系摘要 > 反思 > 八卦。反思/八卦任务可被取消重排。
 
