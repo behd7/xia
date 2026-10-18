@@ -13,6 +13,7 @@ from ..game import inventory as inventory_mod
 from ..game import player as player_mod
 from ..game import skills as skills_mod
 from . import affinity as affinity_mod
+from . import trace as trace_mod
 
 # slug -> roster entry. `work` is the daytime POI, `home` the night POI.
 NPC_ROSTER: dict[str, dict] = {
@@ -181,6 +182,7 @@ async def apprentice(db: Database, mem_store, npc_id: int) -> dict:
     if n.get("role") != "master" or not n.get("sect"):
         raise ValueError("此人不收徒，另寻他路吧。")
     p = await player_mod.get(db)
+    aff_before = await affinity(db, npc_id)
     if p["sect_id"]:
         raise ValueError("你已拜入门派，武德不容贰师。")
     try:
@@ -188,15 +190,23 @@ async def apprentice(db: Database, mem_store, npc_id: int) -> dict:
     except skills_mod.SkillError as e:
         raise ValueError(str(e))
     await player_mod.save(db, p)
-    new_aff = await set_affinity(db, npc_id, (await affinity(db, npc_id)) + 3)
+    new_aff = await set_affinity(db, npc_id, aff_before + 3)
     sect_name = skills_mod.SECTS[n["sect"]]["name"]
     if mem_store is not None:
         await mem_store.add_memory(
             db, npc_id, content=f"你将{p['name']}收归{sect_name}门下，授以入门剑诀。",
             kind="event", participants=[p["name"]], poi=n["work"], importance=6,
         )
+    reply = CEREMONY.get(n["slug"], f"{n['name']}缓缓点头，收你入门。")
+    tr = await trace_mod.trace_turn(
+        "apprentice", input_={"npc": n["name"], "player": p["name"]},
+        tags=[f"npc:{n['name']}", f"npc_id:{npc_id}", f"player:{p['name']}"],
+        metadata={"affinity_before": aff_before},
+    )
+    if tr is not None:
+        await _close_trace(tr, reply, {"affinity_after": new_aff})
     return {
-        "reply": CEREMONY.get(n["slug"], f"{n['name']}缓缓点头，收你入门。"),
+        "reply": reply,
         "joined": True, "sect": {"id": n["sect"], "name": sect_name},
         "affinity": new_aff, "player": await player_mod.api_dict(db, p),
     }
@@ -226,11 +236,29 @@ async def gift(db: Database, mem_store, npc_id: int, item_id: int) -> dict:
             kind="event", participants=[p["name"]], poi=n["work"], importance=3,
         )
     await player_mod.save(db, p)
+    reply = f"{n['name']}收下{inv['name']}，神色缓和，欣喜以为所识非虚。"
+    tr = await trace_mod.trace_turn(
+        "gift", input_={"npc": n["name"], "player": p["name"], "item": inv["name"]},
+        tags=[f"npc:{n['name']}", f"npc_id:{npc_id}", f"player:{p['name']}"],
+        metadata={"affinity_before": aff},
+    )
+    if tr is not None:
+        await _close_trace(tr, reply, {"affinity_after": new_aff})
     return {
-        "reply": f"{n['name']}收下{inv['name']}，神色缓和，欣喜以为所识非虚。",
+        "reply": reply,
         "affinity": new_aff, "item": inv["name"],
         "player": await player_mod.api_dict(db, p),
     }
+
+
+async def _close_trace(tr, output, metadata) -> None:
+    """把轻量 trace 的 output 与收尾元数据补到根 trace 上（best-effort）。"""
+    if tr is None:
+        return
+    try:
+        tr.update(output=output, metadata=metadata)
+    except Exception:
+        pass
 
 
 async def gifts_today(db: Database, npc_id: int, clock) -> int:
