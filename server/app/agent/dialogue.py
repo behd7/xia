@@ -13,6 +13,7 @@ from ..game import player as player_mod
 from . import affinity as affinity_mod
 from . import npc as npc_mod
 from . import rag as rag_mod
+from . import trace as trace_mod
 
 SHICHEN_PHASES = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"]
 
@@ -79,29 +80,47 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
 
     p = await player_mod.get(db)
     current_affinity = await npc_mod.affinity(db, npc_id)
+    place = n["work"] or ""
+
+    trace = await trace_mod.trace_turn(
+        "dialogue", input_=message,
+        tags=[f"npc:{n['name']}", f"npc_id:{npc_id}", f"player:{p['name']}"],
+        metadata={"affinity_before": current_affinity, "place": place,
+                  "rag_top_k": settings.rag_top_k},
+    )
 
     # 记忆检索 与 最近对话 并行做（DESIGN §7.2 前台等待 2~5s）
     memories = await rag_mod.retrieve(db, mem_store, npc_id, message, settings=settings)
     turns = await rag_mod.recent_turns(db, npc_id, n=3)
+    if trace is not None:
+        await trace_mod.span(trace, "retrieve", input_=message,
+                             output=[{k: m.get(k) for k in
+                                      ("memory_id", "content", "score", "importance", "poi", "kind")}
+                                     for m in memories],
+                             metadata={"top_k": settings.rag_top_k, "rerank": "w_rel/w_rec/w_imp"})
+        await trace_mod.span(trace, "recent_turns", output=turns)
 
-    place = n["work"] or ""
     result: dict | None = None
+    attempts = 0
     for temperature in (0.7, 0.3):  # 校验 -> 重试一次(temperature 0.3)
+        attempts += 1
         try:
             msgs = _build_messages(p, n, current_affinity, memories, turns,
                                    shichen(mem_store.clock), place, message)
-            cr = await mem_store.llm.chat("dialogue", msgs, json_format=True, temperature=temperature)
+            cr = await mem_store.llm.chat("dialogue", msgs, json_format=True, temperature=temperature,
+                                          metadata={"attempt": attempts, "temperature": temperature})
             result = _parse(cr.text, message)
             break
         except Exception:
             continue
+    fallback_used = result is None
     if result is None:
         result = _fallback(n, message)
 
     delta = max(-settings.max_dialogue_delta, min(settings.max_dialogue_delta, result["affinity_delta"]))
     new_affinity = await affinity_mod.apply_delta(db, npc_id, delta)
 
-    await mem_store.add_memory(
+    mid = await mem_store.add_memory(
         db, npc_id, content=result["event"], kind="event",
         participants=[p["name"]], poi=place, importance=result["importance"],
     )
@@ -111,6 +130,12 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
         (npc_id, mem_store.clock.now(),
          json.dumps({"user": message, "npc": result["reply"]}, ensure_ascii=False), delta),
     )
+    if trace is not None:
+        await trace_mod.span(trace, "add_memory", input_=result["event"], output=mid,
+                             metadata={"importance": result["importance"], "kind": "event"})
+        await trace_mod.span(trace, "outcome",
+                             metadata={"affinity_after": new_affinity, "fallback_used": fallback_used,
+                                       "attempts": attempts, "end": result["end"]})
 
     return {
         "reply": result["reply"], "affinity": new_affinity,
