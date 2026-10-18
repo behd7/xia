@@ -17,3 +17,6 @@ client/public/assets/
 # Misc
 .DS_Store
 .qoder/
+
+# Langfuse local secrets (docker compose env)
+server/deploy/langfuse/.env
