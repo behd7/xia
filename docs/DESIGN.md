@@ -42,7 +42,7 @@
 
 | 决策点 | 选择 |
 |---|---|
-| 客户端 | Godot 4 + GDScript（`xia-ai-town/`）；原 `client/` Phaser 前端已停用 |
+| 客户端 | Godot 4 + GDScript（`xia-ai-town/`）；原 `client/` Phaser 前端已删除 |
 | Agent 后端 | Python FastAPI（单进程，承载游戏逻辑 + NPC 智能体） |
 | 存储 | SQLite（游戏状态 + 记忆记录，WAL 模式，记忆的 SSOT）+ ChromaDB（向量索引，PersistentClient 本地目录） |
 | 向量检索 | **ChromaDB**：单集合 `memories`（cosine 空间）存 embedding 做 ANN 检索；记忆正文与元数据仍在 SQLite，Chroma 为可全量重建的派生索引 |
@@ -527,7 +527,7 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记等
 
 ## 10. 客户端 UI
 
-当前实现在 `xia-ai-town/`，`client/` 已停用。采用纸墨浅色面板、低饱和玉绿像素城镇与朱砂点缀；1440×900 逻辑画布保持比例缩放，地图镜头跟随玩家。左侧角色状态与玩法提示，右侧小地图及人物录，底部快捷操作栏。实际玩法对接 `server/app/main.py` 的 M0–M3 路由；NPC 对话、好感、拜师/切磋/送礼已在 Godot 客户端开放（M3），反思/主动搭话八卦等仍属 M4。
+当前实现在 `xia-ai-town/`，旧 `client/`（Phaser）已删除。采用纸墨浅色面板、低饱和玉绿像素城镇与朱砂点缀；1440×900 逻辑画布保持比例缩放，地图镜头跟随玩家。左侧角色状态与玩法提示，右侧小地图及人物录，底部快捷操作栏。实际玩法对接 `server/app/main.py` 的 M0–M3 路由；NPC 对话、好感、拜师/切磋/送礼已在 Godot 客户端开放（M3），反思/主动搭话八卦等仍属 M4。
 
 - **HUD**：HP/MP 条、等级经验条、银两、游戏时辰（"未时"）、当前 POI 名；
 - **面板**：角色(I)（属性分配）、背包(B)（装备/使用/送礼入口）、技能(K)（装备/升级）；
@@ -567,7 +567,6 @@ Xia/
 │  ├─ scripts/                 # main / api / ui_kit / town_world / town_map
 │  ├─ tools/                   # 隔离存档的真实后端冒烟验证
 │  └─ addons/godot_ai/         # 已有 Godot MCP 插件
-├─ client/                     # 旧 Phaser 前端，已停用
 ├─ server/
 │  ├─ app/
 │  │  ├─ main.py  config.py  db.py

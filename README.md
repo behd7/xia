@@ -1,6 +1,6 @@
 # 侠 · 清溪志
 
-二维像素武侠 RPG 与生成式 NPC 实验。当前客户端使用 **Godot 4**，工程位于 [`xia-ai-town/`](xia-ai-town/)，通过 HTTP 连接 [`server/`](server/) 的 FastAPI 后端。`client/` 是已停用的 Phaser 前端，仅保留历史实现。
+二维像素武侠 RPG 与生成式 NPC 实验。当前客户端使用 **Godot 4**，工程位于 [`xia-ai-town/`](xia-ai-town/)，通过 HTTP 连接 [`server/`](server/) 的 FastAPI 后端。旧 `client/`（Phaser 前端）已删除，历史见 git。
 
 设计文档：[`docs/DESIGN.md`](docs/DESIGN.md)。目前已接入 M0–M3：开档、地图探索、成长、装备、商店、拜师、回合制战斗，以及 NPC 对话（记忆检索 RAG）、送礼、切磋与拜师。NPC 在地图上显示静态人物标记，人物录注明身份与地点；NPC 日程与反思/八卦/主动搭话等待 M4 后端实现。
 
@@ -87,7 +87,6 @@ xia-ai-town/
   addons/godot_ai/    工程已有的 Godot MCP 插件
 server/              FastAPI、SQLite、游戏规则与后续 NPC 智能体
 docs/                设计文档
-client/              旧前端，已停用
 ```
 
 Godot 的 `.godot/` 缓存、Python 虚拟环境、`.env` 和服务器存档均不入库。

@@ -1,6 +1,6 @@
 extends Node2D
 class_name TownWorld
-## Procedural Qingxi town. Coordinates and seeded terrain mirror FieldScene.ts.
+## Procedural Qingxi town. Coordinates and seeded terrain follow DESIGN.md §4.
 ## All public positions use server world pixels; no textures or networking needed.
 
 const TILE: int = 16
