@@ -44,24 +44,33 @@ def _fallback(n: dict) -> dict:
     return {"reply": f"{n['name']}沉吟片刻，不置可否。", "affinity_delta": 0, "end": False}
 
 
+def _warmth(affinity: int, name: str) -> str:
+    """把好感档位转成第一人称的交情描述，避免在 prompt 里出现"好感度/玩家"这类词的机械设定。"""
+    if affinity < 30:
+        return f"你与{name}素无深交，不过点头之交。"
+    if affinity < 60:
+        return f"你与{name}算得上相熟，往来客气。"
+    if affinity < 70:
+        return f"你与{name}颇为投缘，来往热络。"
+    if affinity < 85:
+        return f"你与{name}已是亲近，颇有交情。"
+    return f"你与{name}情谊甚笃，信得过。"
+
+
 def _build_messages(p, n, affinity, memories, turns, now_str, place, message) -> list[dict]:
-    sect_desc = f"（{p.get('sect', {}).get('name', '江湖散人')}）" if p.get("sect") else "（江湖散人）"
-    mem_lines = "\n".join(
-        f"[重要度{m['importance']}·{m.get('poi') or '—'}] {m['content']}"
-        for m in memories[: settings.rag_top_k]
-    ) or "（暂无）"
-    turn_lines = "\n".join(f"玩家：{t['user']}\n你：{t['npc']}" for t in turns) or "（尚无可聊）"
+    mem_lines = "\n".join(m["content"] for m in memories[: settings.rag_top_k]) or "（暂无）"
+    turn_lines = "\n".join(f"{p['name']}：{t['user']}\n你：{t['npc']}" for t in turns) or "（尚无可聊）"
     system = (
-        f"你扮演武侠游戏NPC。{n['persona']} 说话风格：{n['speech_style']}，口头禅常用「{n['catchphrase']}」。\n"
-        f"你与玩家（{p['name']}{sect_desc}）好感度 {affinity}/100。\n"
-        f"你对他的一些记忆（按重要度倒序）：\n{mem_lines}\n"
-        f"你们最近的对话：\n{turn_lines}\n"
-        "请以你的口吻回复玩家（≤80字，古风白话）。同时输出：好感变化（-2~+3整数）；"
-        "是否想结束对话（BOOL）。\n"
-        '仅输出JSON，不要输出其他文字，格式：'
-        '{"reply":"...","affinity_delta":0,"end":false}'
+        f"你是{n['name']}。{n['persona']}你说话{n['speech_style']}。\n"
+        f"{_warmth(affinity, p['name'])}\n"
+        f"你记得的一些事：\n{mem_lines}\n"
+        f"你们最近的往来：\n{turn_lines}\n"
+        f"此刻{now_str}，你正在{place}。\n"
+        f"以你的口吻应答{p['name']}（≤80字）。并给出这次你与{p['name']}的关系变化"
+        "（-2~+3整数）、是否想就此收住话头（BOOL）。\n"
+        '仅输出JSON，不要输出其他文字：{"reply":"...","affinity_delta":0,"end":false}'
     )
-    user = f"当前{now_str}，你在{place}。玩家说：{message}"
+    user = f"{p['name']}说：{message}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
