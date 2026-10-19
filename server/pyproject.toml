@@ -1,0 +1,25 @@
+[project]
+name = "server"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "behd", email = "2033546988@qq.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "chromadb==0.5.0",
+    "fastapi>=0.146.0",
+    "httpx>=0.25.2",
+    "langfuse==2.14.0",
+    "numpy<2.0",
+    "pydantic-settings>=2.16.0",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[project.scripts]
+server = "server:main"
+
+[build-system]
+requires = ["uv_build>=0.12.17,<0.13.0"]
+build-backend = "uv_build"
