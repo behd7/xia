@@ -2,7 +2,7 @@
 
 二维像素武侠 RPG 与生成式 NPC 实验。当前客户端使用 **Godot 4**，工程位于 [`xia-ai-town/`](xia-ai-town/)，通过 HTTP 连接 [`server/`](server/) 的 FastAPI 后端。`client/` 是已停用的 Phaser 前端，仅保留历史实现。
 
-设计文档：[`docs/DESIGN.md`](docs/DESIGN.md)。目前已接入 M0–M2 的开档、地图探索、成长、装备、商店、拜师与回合制战斗。NPC 在地图上显示静态人物标记，人物录注明身份与地点；NPC 对话、记忆、好感度、日程与主动搭话等待 M3/M4 后端实现。
+设计文档：[`docs/DESIGN.md`](docs/DESIGN.md)。目前已接入 M0–M3：开档、地图探索、成长、装备、商店、拜师、回合制战斗，以及 NPC 对话（记忆检索 RAG）、送礼、切磋与拜师。NPC 在地图上显示静态人物标记，人物录注明身份与地点；NPC 日程与反思/八卦/主动搭话等待 M4 后端实现。
 
 ## 本地运行
 
@@ -34,6 +34,8 @@ XIA_API_URL=http://127.0.0.1:8000 godot --path xia-ai-town
 ```
 
 基础探索与战斗无需 Ollama。NPC 功能开放后需要本地 Ollama 模型；模型 tag 通过 `server/.env` 配置（模板见 `server/.env.example`），不得写死在代码中。`GET /api/health` 可检查数据库、Ollama 及模型状态。
+
+LLM 调用默认落 `llm_log` 表便于本地排查；如需跨链路可视化（检索的记忆 + 组装的 prompt + 生成输出 + 重试/兜底轨迹），可开启自托管 Langfuse 观测——默认关、fail-closed，在 `server/.env` 设 `LANGFUSE_ENABLED=true` 即可，部署栈见 `server/deploy/langfuse/`，详见 `docs/DESIGN.md §7.4`。
 
 ## 操作与玩法
 
