@@ -399,6 +399,19 @@ LLM_TIMEOUT=20
 LLM_CONCURRENCY=2
 ```
 
+**可选 OpenAI 兼容对话后端**：本地 Ollama 是默认对话后端；若同时配置了
+`LLM_API_KEY` 与 `LLM_API_BASE_URL`，则对话改走该 API（`/chat/completions`，
+base_url 需以 `/v1` 结尾，如 `LLM_API_BASE_URL=https://api.example.com/v1`），
+`LLM_API_MODEL` 指定其模型名（缺省回退 `CHAT_MODEL`）。**嵌入始终留在本地
+Ollama**（RAG 需要，API 不一定提供兼容 embedding）。健康检查
+`/api/health` 会标注当前生效的对话后端（`openai-api` / `ollama`）与有效模型名。
+
+```env
+LLM_API_KEY=
+LLM_API_MODEL=
+LLM_API_BASE_URL=
+```
+
 ### 7.2 调用面与 token 预算
 
 | 场景 | 频率 | 输入/输出 tok | 说明 |
@@ -595,6 +608,8 @@ Xia/
 | CHROMA_DIR | server/data/chroma | Chroma 向量库目录（可删重建） |
 | LLM_CONCURRENCY | 2 | 全局信号量 |
 | MAX_DIALOGUE_DELTA | ±3 | 对话单回合好感变化上限 |
+| LLM_API_KEY / LLM_API_BASE_URL | 空 | 同时设置则对话走该 OpenAI 兼容 API |
+| LLM_API_MODEL | 空 | API 对话模型名；缺省回退 CHAT_MODEL |
 
 ---
 

@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     llm_concurrency: int = 2
     max_dialogue_delta: int = 3
 
+    # Optional OpenAI-compatible chat backend (docs/DESIGN.md §7.1): when llm_api_key
+    # and llm_api_base_url are both set, chat uses this instead of local Ollama.
+    # Embeddings always stay on local Ollama (needed for RAG).
+    llm_api_key: str = ""
+    llm_api_model: str = ""
+    llm_api_base_url: str = ""
+
     # Game clock: 60 means 1 real second = 1 game minute.
     time_scale: int = 60
     game_start_sec: int = 7 * 3600

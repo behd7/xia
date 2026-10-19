@@ -116,4 +116,6 @@ class MemoryStore:
         return True
 
     def close(self) -> None:
-        self._client.close()
+        # chromadb 0.5.0 PersistentClient 无 close()，且持久化在每次 upsert 即落盘，
+        # 无需 flush。关机收敛只做资源清理；此处保持空实现以免 teardown 崩溃进程。
+        pass

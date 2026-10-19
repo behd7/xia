@@ -35,6 +35,16 @@ class OllamaClient:
         self._client = httpx.AsyncClient(base_url=host, timeout=timeout)
         self._db = db
         self._sem = asyncio.Semaphore(settings.llm_concurrency)
+        # Optional OpenAI-compatible chat backend: configured with key+base_url it
+        # takes precedence over local Ollama for chat only (embeds stay local).
+        self._api_client: httpx.AsyncClient | None = None
+        self._api_model = settings.chat_model
+        if settings.llm_api_key and settings.llm_api_base_url:
+            self._api_model = settings.llm_api_model or settings.chat_model
+            self._api_client = httpx.AsyncClient(
+                base_url=settings.llm_api_base_url, timeout=timeout,
+                headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+            )
 
     async def tags(self) -> list[str]:
         res = await self._client.get("/api/tags")
@@ -69,6 +79,25 @@ class OllamaClient:
         route is plain "think": false (AGENTS.md 已知坑). Raises on failure;
         callers own the fallback chain.
         """
+        model = self._api_model if self._api_client is not None else settings.chat_model
+        start = time.time()
+        in_tok = out_tok = None
+        ok = False
+        try:
+            async with self._sem:
+                if self._api_client is not None:
+                    text, in_tok, out_tok = await self._call_api(messages, json_format, temperature)
+                else:
+                    text, in_tok, out_tok = await self._call_ollama(messages, json_format, temperature)
+            ok = True
+            self._trace_generation(purpose, messages, text, temperature, json_format, metadata,
+                                   in_tok, out_tok, model=model)
+            return ChatResult(text=text, in_tokens=in_tok, out_tokens=out_tok)
+        finally:
+            ms = int((time.time() - start) * 1000)
+            await self._log(purpose, ok, in_tok, out_tok, ms, model=model)
+
+    async def _call_ollama(self, messages, json_format, temperature):
         body: dict[str, Any] = {
             "model": settings.chat_model,
             "messages": messages,
@@ -78,24 +107,34 @@ class OllamaClient:
         }
         if json_format:
             body["format"] = "json"
-        start = time.time()
-        in_tok = out_tok = None
-        ok = False
+        res = await self._client.post("/api/chat", json=body)
+        res.raise_for_status()
+        data = res.json()
+        return (
+            data.get("message", {}).get("content", ""),
+            data.get("prompt_eval_count"),
+            data.get("eval_count"),
+        )
+
+    async def _call_api(self, messages, json_format, temperature):
+        """OpenAI-compatible /chat/completions (base_url should end in /v1)."""
+        body: dict[str, Any] = {
+            "model": self._api_model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": False,
+        }
+        if json_format:
+            body["response_format"] = {"type": "json_object"}
+        res = await self._api_client.post("/chat/completions", json=body)
+        res.raise_for_status()
+        data = res.json()
+        usage = data.get("usage", {}) or {}
         try:
-            async with self._sem:
-                res = await self._client.post("/api/chat", json=body)
-                res.raise_for_status()
-                data = res.json()
-            text = data.get("message", {}).get("content", "")
-            in_tok = data.get("prompt_eval_count")
-            out_tok = data.get("eval_count")
-            ok = True
-            self._trace_generation(purpose, messages, text, temperature, json_format, metadata,
-                                   in_tok, out_tok)
-            return ChatResult(text=text, in_tokens=in_tok, out_tokens=out_tok)
-        finally:
-            ms = int((time.time() - start) * 1000)
-            await self._log(purpose, ok, in_tok, out_tok, ms, model=settings.chat_model)
+            text = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            text = ""
+        return text, usage.get("prompt_tokens"), usage.get("completion_tokens")
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts and L2-normalise each vector (DESIGN §8).
@@ -126,19 +165,24 @@ class OllamaClient:
 
     async def close(self) -> None:
         await self._client.aclose()
+        if self._api_client is not None:
+            await self._api_client.aclose()
 
     # -- langfuse 打点（best-effort，绝不影响返回值；见 LANGFUSE-PLAN §2.3） --
 
     def _trace_generation(self, purpose, messages, text, temperature, json_format, metadata,
-                          in_tok, out_tok) -> None:
+                          in_tok, out_tok, *, model=None) -> None:
         tr = trace_mod.get_current_trace()
         if tr is None:
             return
+        params = {"temperature": temperature}
+        if self._api_client is None:  # Ollama disables thinking; API models differ
+            params["think"] = False
         try:
             tr.generation(
                 name=purpose,
-                model=settings.chat_model,
-                model_parameters={"temperature": temperature, "think": False},
+                model=model or settings.chat_model,
+                model_parameters=params,
                 input=messages,
                 output=text,
                 metadata={**(metadata or {}), "json_format": json_format},

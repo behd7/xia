@@ -205,20 +205,28 @@ async def health() -> dict[str, Any]:
     except Exception:
         db_ok = False
 
+    # 双后端：配置了 OpenAI 兼容 API 时对话走 API，嵌入仍走本地 Ollama。
+    use_api = settings.llm_api_key and settings.llm_api_base_url
     try:
         names = await ollama.tags()
         ollama_info: dict[str, Any] = {
             "reachable": True,
+            "chat_backend": "openai-api" if use_api else "ollama",
+            "api_configured": bool(use_api),
+            "api_model": (settings.llm_api_model or settings.chat_model) if use_api else None,
             "chat_model": settings.chat_model,
-            "chat_model_ok": settings.chat_model in names,
+            "chat_model_ok": (True if use_api else settings.chat_model in names),
             "embed_model": settings.embed_model,
             "embed_model_ok": settings.embed_model in names,
         }
     except Exception:
         ollama_info = {
             "reachable": False,
+            "chat_backend": "openai-api" if use_api else "ollama",
+            "api_configured": bool(use_api),
+            "api_model": (settings.llm_api_model or settings.chat_model) if use_api else None,
             "chat_model": settings.chat_model,
-            "chat_model_ok": False,
+            "chat_model_ok": bool(use_api),
             "embed_model": settings.embed_model,
             "embed_model_ok": False,
         }
