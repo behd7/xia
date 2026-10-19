@@ -192,13 +192,13 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
          json.dumps({"user": message, "npc": result["reply"]}, ensure_ascii=False), delta),
     )
     await db.execute(
-        "UPDATE npc_state SET events_pending = events_pending + 1 WHERE npc_id = ?",
+        "UPDATE npc_state SET unsummarized_turns = unsummarized_turns + 1 WHERE npc_id = ?",
         (npc_id,),
     )
     pending_row = await db.fetch_one(
-        "SELECT events_pending FROM npc_state WHERE npc_id = ?", (npc_id,),
+        "SELECT unsummarized_turns FROM npc_state WHERE npc_id = ?", (npc_id,),
     )
-    pending = int((pending_row or {}).get("events_pending", 0))
+    pending = int((pending_row or {}).get("unsummarized_turns", 0))
     summarized = False
     if pending >= settings.event_summary_threshold or result["end"]:
         win_turns = await rag_mod.recent_turns(db, npc_id, n=pending)
@@ -207,7 +207,7 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
             await trace_mod.span(trace, "summarize_events", input_=win_turns, output=mids,
                                  metadata={"pending": pending, "threshold": settings.event_summary_threshold})
         await db.execute(
-            "UPDATE npc_state SET events_pending = 0 WHERE npc_id = ?", (npc_id,),
+            "UPDATE npc_state SET unsummarized_turns = 0 WHERE npc_id = ?", (npc_id,),
         )
         summarized = True
     if trace is not None and not summarized:

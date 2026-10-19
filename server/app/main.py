@@ -175,7 +175,7 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
         raise HTTPException(404, "查无此人")
     aff = await npc_mod.affinity(db, npc_id)
     ns = await db.fetch_one(
-        "SELECT last_reflection_at, mem_since_reflection, events_pending"
+        "SELECT last_reflection_at, mem_since_reflection, unsummarized_turns"
         " FROM npc_state WHERE npc_id = ?",
         (npc_id,),
     )

@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS npc_state (
     mem_since_reflection INTEGER NOT NULL DEFAULT 0,
     paused_until REAL,
     last_greet_real REAL,
-    events_pending INTEGER NOT NULL DEFAULT 0
+    unsummarized_turns INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS memory (
@@ -174,10 +174,16 @@ class Database:
             # Idempotent migrations for pre-existing DBs (CREATE IF NOT EXISTS bakes
             # old table shapes; new columns must be added explicitly).
             cols = {r[1] for r in conn.execute("PRAGMA table_info(npc_state)")}
-            if "events_pending" not in cols:
-                conn.execute(
-                    "ALTER TABLE npc_state ADD COLUMN events_pending INTEGER NOT NULL DEFAULT 0"
-                )
+            if "unsummarized_turns" not in cols:
+                if "events_pending" in cols:  # renamed from the misleading early name
+                    conn.execute(
+                        "ALTER TABLE npc_state RENAME COLUMN events_pending TO unsummarized_turns"
+                    )
+                else:
+                    conn.execute(
+                        "ALTER TABLE npc_state"
+                        " ADD COLUMN unsummarized_turns INTEGER NOT NULL DEFAULT 0"
+                    )
             conn.commit()
             return conn
 

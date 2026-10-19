@@ -334,12 +334,12 @@ recency: 半衰期 = 3 游戏日
 **失败策略**：JSON 解析失败→重试一次(temperature 0.3)→再失败用模板回复（"{NPC}沉吟片刻，不置可否。"，delta=0），永不阻塞游戏。
 
 **事件入忆（窗口批总结，不逐轮）**：每轮对话只进短期窗口（`conversation` 表），
-不写 event 记忆。`npc_state.events_pending` 逐轮 +1；当 `events_pending ≥
-event_summary_threshold`（默认 5）或本轮 `end=true` 时，把该批未总结轮原始对话
-一次 LLM 归纳成 1~3 条第三人称事件摘要（各带 importance），以 `kind=event` 落库，
-然后计数清零。总结走「校验→重试一次→兜底（取最后一条玩家消息作单条
-importance 3）」链路，同样永不阻塞。&event 作为 RAG 检索补充，即每一轮回复的
-首要即时上下文是短期窗口原始对话。
+不写 event 记忆。`npc_state.unsummarized_turns` 逐轮 +1（记录尚未总结成 event 的
+对话轮数）；当它 ≥ `event_summary_threshold`（默认 5）或本轮 `end=true` 时，把该批
+未总结轮原始对话一次 LLM 归纳成 1~3 条第三人称事件摘要（各带 importance），以
+`kind=event` 落库，然后计数清零。总结走「校验→重试一次→兜底（取最后一条玩家消息
+作单条 importance 3）」链路，同样永不阻塞。event 作为 RAG 检索补充，即每一轮回复
+的首要即时上下文是短期窗口原始对话。
 
 **[打听消息]** 是记忆系统的展示窗：NPC 会用自己检索到的记忆（含八卦）回答，答非所问或以讹传讹正是实验观察点。
 
