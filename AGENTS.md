@@ -43,6 +43,7 @@ CHAT_MODEL=qwen3:4b-instruct-2507-q4_K_M   # 本机实际 tag，server/.env 已�
 EMBED_MODEL=qwen3-embedding:0.6b-q8_0
 LLM_TIMEOUT=20
 LLM_CONCURRENCY=2
+RESET_ON_START=false   # true=每次启动后端清空数据库（SQLite+Chroma 重建），完全重新开局
 ```
 
 可调参数集中在 server 端 config（`server/app/config.py`，pydantic-settings 读 `.env`，§14 清单已全量落入：时间流速、好感阈值 70、反思/八卦周期、RAG 权重与 top-k、ChromaDB 目录等）。server 依赖 chromadb（向量库），清单见 DESIGN.md §12。

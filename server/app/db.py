@@ -238,6 +238,31 @@ class Database:
 
             return await asyncio.to_thread(_run)
 
+    async def reset(self) -> None:
+        """清空全部业务表，等价于全新开档。
+
+        枚举 sqlite_sequence 之外的所有表逐张 DELETE，再把 AUTOINCREMENT
+        计数复位，让新档从 id=1 重新开始。仅删 SQLite 行；Chroma 是派生索引，
+        由调用方之后的 MemoryStore.reconcile 对空库自动整集合重建（幂等）。
+        需在单写锁内执行，避免与并发语句交错。
+        """
+
+        async with self.lock:
+            def _run() -> None:
+                tables = [
+                    r[0]
+                    for r in self.conn.execute(
+                        "SELECT name FROM sqlite_master"
+                        " WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                    ).fetchall()
+                ]
+                for t in tables:
+                    self.conn.execute(f"DELETE FROM {t}")
+                self.conn.execute("DELETE FROM sqlite_sequence")
+                self.conn.commit()
+
+            await asyncio.to_thread(_run)
+
     async def kv_get(self, key: str) -> str | None:
         row = await self.fetch_one("SELECT v FROM kv WHERE k = ?", (key,))
         return row["v"] if row else None

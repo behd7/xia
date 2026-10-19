@@ -611,6 +611,7 @@ Xia/
 | RAG_TOP_K | 6 | 检索条数 |
 | W_REL / W_REC / W_IMP | 1.0 / 0.8 / 0.5 | 检索权重 |
 | CHROMA_DIR | server/data/chroma | Chroma 向量库目录（可删重建） |
+| RESET_ON_START | false | true 时每次启动后端清空全部数据，完全重新开一局 |
 | LLM_CONCURRENCY | 2 | 全局信号量 |
 | MAX_DIALOGUE_DELTA | ±3 | 对话单回合好感变化上限 |
 | LLM_API_KEY / LLM_API_BASE_URL | 空 | 同时设置则对话走该 OpenAI 兼容 API |

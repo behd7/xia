@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     db_path: str = "data/xia.db"
     chroma_dir: str = "data/chroma"
 
+    # 每次启动后端是否清空全部数据（球员/记忆/关系/战斗/llm_log/kv 等），
+    # 完全重新开始一局。true = 每次启动重置为全新档；false = 沿用上次数据继续。
+    # 清空只删 SQLite 行（sqlite_sequence 一并复位），Chroma 由 reconcile 自愈重建。
+    reset_on_start: bool = False
+
     # Langfuse observability (additive to llm_log; off by default, fail-closed)
     langfuse_enabled: bool = False
     langfuse_host: str = "http://127.0.0.1:3000"

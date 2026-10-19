@@ -32,6 +32,9 @@ mem_store: memory_mod.MemoryStore | None = None
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     global mem_store
     await db.connect()
+    if settings.reset_on_start:
+        await db.reset()
+        print("[startup] reset_on_start=true：SQLite 已清空，本次全新开局")
     await data.seed_and_load(db)
     await skills_mod.seed_and_load(db)
     await npc_mod.seed_and_load(db)
