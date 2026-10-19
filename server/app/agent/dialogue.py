@@ -10,7 +10,6 @@ import re
 
 from ..config import settings
 from ..game import player as player_mod
-from . import affinity as affinity_mod
 from . import npc as npc_mod
 from . import rag as rag_mod
 from . import reflect as reflect_mod
@@ -122,7 +121,7 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
         result = _fallback(n)
 
     delta = max(-settings.max_dialogue_delta, min(settings.max_dialogue_delta, result["affinity_delta"]))
-    new_affinity = await affinity_mod.apply_delta(db, npc_id, delta)
+    new_affinity = await npc_mod.apply_delta(db, npc_id, delta)
 
     # 本轮流进对话表（短期窗口）；不改逐轮入忆。计数+1，达阈值或 end=true 时
     # 把该批未总结轮批总结成 event 落库（DESIGN §6.6 窗口批总结）。

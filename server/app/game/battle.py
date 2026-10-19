@@ -11,10 +11,10 @@ from ..agent import npc as npc_mod
 class BattleError(Exception):
     pass
 
-# Injected from main lifespan so battle can write spar memories to the NPC
-# without importing the agent layer by value.
-mem_store = None
-reflect_bump = None  # injected: reflect.bump (互动判断值+1, 达阈值蒸馏窗口)
+# 跨层受控注入：main lifespan 装配时赋值。避免 game -> agent 的模块级 import 环，
+# 仅此两处；None 表示 LLM/反思层未装配（正常开发恒装配，测试可不配）。
+mem_store = None     # injected: 切磋写该 NPC 记忆
+reflect_bump = None  # injected: reflect.bump（互动判断值+1, 达阈值蒸馏窗口）
 
 SPAR_EXP_BASE = 50        # 切磋经验基数，结算后 ×0.3（DESIGN §5.6）
 SPAR_END_PCT = 0.30       # 任一方气血降至 30% 即结束

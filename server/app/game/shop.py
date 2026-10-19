@@ -10,8 +10,10 @@ class ShopError(Exception):
 
 # Owner NPC per shop (only smith discounts per DESIGN §6.5 王大柱).
 SHOP_OWNER_ROLE = {"clinic": "clinic", "smith": "smith"}
-mem_store = None    # injected from main lifespan so buy can write 大额消费 memory
-reflect_bump = None  # injected: reflect.bump (互动判断值+1, 达阈值蒸馏窗口)
+# 跨层受控注入：main lifespan 装配时赋值。避免 game -> agent 的模块级 import 环，
+# 仅此两处；None 表示 LLM/反思层未装配（正常开发恒装配，测试可不配）。
+mem_store = None    # injected: 大额消费写店主记忆
+reflect_bump = None  # injected: reflect.bump（互动判断值+1, 达阈值蒸馏窗口）
 
 
 async def _owner(db: Database, shop_id: str) -> dict | None:

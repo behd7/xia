@@ -28,11 +28,6 @@ def trace_enabled() -> bool:
     return bool(getattr(settings, "langfuse_enabled", False))
 
 
-def langfuse() -> Any:
-    """全局客户端 getter（None 安全），供 llm.py / dialogue.py 使用。"""
-    return _lf
-
-
 def get_current_trace() -> Any | None:
     """对话链路在 talk() 入口设入的根 trace；OllamaClient 借此把 generation 挂进上下文。"""
     return _current_trace.get()

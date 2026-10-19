@@ -10,7 +10,6 @@ from ..db import Database
 from ..game import inventory as inventory_mod
 from ..game import player as player_mod
 from ..game import skills as skills_mod
-from . import affinity as affinity_mod
 from . import reflect as reflect_mod
 from . import trace as trace_mod
 
@@ -66,9 +65,6 @@ NPC_ROSTER: dict[str, dict] = {
         "combat": {"level": 4, "hp": 200, "atk": 21, "def": 7, "spd": 9, "potions": 0},
     },
 }
-
-# A player's rank within a joined sect is gated by affinity with its master.
-MASTER_BY_SECT = {"jianyang": "gu_changfeng", "xuantie": "tie_wushuang", "yanyu": "su_wanqing"}
 
 _npc_by_slug: dict[str, dict] = {}
 _npc_meta_by_id: dict[int, dict] = {}
@@ -128,6 +124,15 @@ async def set_affinity(db: Database, npc_id: int, value: int) -> int:
         "UPDATE npc_state SET affinity = ? WHERE npc_id = ?", (value, npc_id)
     )
     return value
+
+
+CHALLENGE_AFFINITY = 40  # 掌门应切磋好感门槛（DESIGN §5.6）
+
+
+async def apply_delta(db: Database, npc_id: int, delta: int) -> int:
+    """好感按 ±delta 变化并 clamp 0~100 写回（原 agent/affinity.py，并入此处）。"""
+    cur = await affinity(db, npc_id)
+    return await set_affinity(db, npc_id, cur + int(delta))
 
 
 async def list_for_client(db: Database) -> list[dict]:

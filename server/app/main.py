@@ -15,7 +15,6 @@ from .game import shop as shop_mod
 from .game import skills as skills_mod
 from .game.clock import GameClock
 from .llm import OllamaClient
-from .agent import affinity as affinity_mod
 from .agent import dialogue as dialogue_mod
 from .agent import memory as memory_mod
 from .agent import npc as npc_mod
@@ -164,7 +163,7 @@ async def npc_challenge(npc_id: int, pos: PosBody | None = None) -> dict[str, An
     n = await npc_mod.by_id(db, npc_id)
     if n is None:
         raise HTTPException(404, "查无此人")
-    if n.get("role") == "master" and await npc_mod.affinity(db, npc_id) < affinity_mod.CHALLENGE_AFFINITY:
+    if n.get("role") == "master" and await npc_mod.affinity(db, npc_id) < npc_mod.CHALLENGE_AFFINITY:
         raise HTTPException(409, "掌门对你尚存戒心，暂不应战。")
     pos_d = {"x": pos.x, "y": pos.y} if pos else None
     try:
