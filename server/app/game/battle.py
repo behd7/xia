@@ -14,6 +14,7 @@ class BattleError(Exception):
 # Injected from main lifespan so battle can write spar memories to the NPC
 # without importing the agent layer by value.
 mem_store = None
+reflect_bump = None  # injected: reflect.bump (互动判断值+1, 达阈值蒸馏窗口)
 
 SPAR_EXP_BASE = 50        # 切磋经验基数，结算后 ×0.3（DESIGN §5.6）
 SPAR_END_PCT = 0.30       # 任一方气血降至 30% 即结束
@@ -344,11 +345,13 @@ async def _finalize(db: Database, p: dict, state: dict, add, result: str) -> dic
         )
         verdict = {"win": "你技高一筹", "lose": "你略逊半招"}[result]
         add(result, f"切磋结束——{verdict}，获经验 {exp}。")
-        if mem_store is not None:  # 本场切磋写入该 NPC 记忆（importance 6）
+        if mem_store is not None:  # 本场切磋写入该 NPC 记忆（importance 6）+ 互动判断值
             await mem_store.add_memory(
                 db, npc_id, content=f"在练武场与你切磋，{verdict}。",
                 kind="event", participants=[p["name"]], poi="练武场", importance=6,
             )
+            if reflect_bump is not None:
+                await reflect_bump(db, mem_store, npc_id, p["name"], "练武场")
         return {"exp": exp, "gold": 0, "cultivation": 0, "drops": [], "level_ups": ups}
 
     if result == "win":

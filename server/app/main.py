@@ -19,6 +19,7 @@ from .agent import affinity as affinity_mod
 from .agent import dialogue as dialogue_mod
 from .agent import memory as memory_mod
 from .agent import npc as npc_mod
+from .agent import reflect as reflect_mod
 from .agent import trace as trace_mod
 
 db = Database(settings.db_path_abs)
@@ -40,6 +41,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await mem_store.reconcile(db)  # Chroma 派生索引与 SQLite SSOT 对齐（损坏/缺失时自愈）
     battle_mod.mem_store = mem_store  # 切磋写入 NPC 记忆的注入点
     shop_mod.mem_store = mem_store  # 大额消费写入店主记忆的注入点
+    battle_mod.reflect_bump = reflect_mod.bump  # 切磋累加互动判断值
+    shop_mod.reflect_bump = reflect_mod.bump  # 购买累加互动判断值
     yield
     await trace_mod.close()
     if mem_store is not None:
@@ -175,8 +178,8 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
         raise HTTPException(404, "查无此人")
     aff = await npc_mod.affinity(db, npc_id)
     ns = await db.fetch_one(
-        "SELECT last_reflection_at, mem_since_reflection, unsummarized_turns"
-        " FROM npc_state WHERE npc_id = ?",
+        "SELECT last_reflection_at, mem_since_reflection, interacts_since_summary,"
+        " last_summary_conv_id FROM npc_state WHERE npc_id = ?",
         (npc_id,),
     )
     memories = await db.fetch_all(

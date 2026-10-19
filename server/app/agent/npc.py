@@ -13,6 +13,7 @@ from ..game import inventory as inventory_mod
 from ..game import player as player_mod
 from ..game import skills as skills_mod
 from . import affinity as affinity_mod
+from . import reflect as reflect_mod
 from . import trace as trace_mod
 
 # slug -> roster entry. `work` is the daytime POI, `home` the night POI.
@@ -235,6 +236,7 @@ async def gift(db: Database, mem_store, npc_id: int, item_id: int) -> dict:
             db, npc_id, content=f"送礼·{p['name']}送来{inv['name']}。",
             kind="event", participants=[p["name"]], poi=n["work"], importance=3,
         )
+        await reflect_mod.bump(db, mem_store, npc_id, p["name"], n["work"])
     await player_mod.save(db, p)
     reply = f"{n['name']}收下{inv['name']}，神色缓和，欣喜以为所识非虚。"
     tr = await trace_mod.trace_turn(

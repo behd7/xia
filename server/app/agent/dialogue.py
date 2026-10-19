@@ -13,6 +13,7 @@ from ..game import player as player_mod
 from . import affinity as affinity_mod
 from . import npc as npc_mod
 from . import rag as rag_mod
+from . import reflect as reflect_mod
 from . import trace as trace_mod
 
 SHICHEN_PHASES = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"]
@@ -62,75 +63,6 @@ def _build_messages(p, n, affinity, memories, turns, now_str, place, message) ->
     )
     user = f"当前{now_str}，你在{place}。玩家说：{message}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
-
-def _parse_events(result_text: str) -> list[dict]:
-    """解析批总结的 JSON（1~3 条 {content, importance}）；失败抛异常由调用方兜底。"""
-    text = result_text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\n?", "", text, flags=re.S)
-        text = re.sub(r"\n?```$", "", text, flags=re.S).strip()
-    data = json.loads(text)
-    events = data.get("events") if isinstance(data, dict) else None
-    if not isinstance(events, list) or not events:
-        raise ValueError("missing events")
-    out = []
-    for e in events[:3]:  # 至多 3 条，防模型膨胀
-        if not isinstance(e, dict) or not str(e.get("content", "")).strip():
-            continue
-        out.append({
-            "content": str(e["content"]).strip(),
-            "importance": max(1, min(10, int(e.get("importance", 3)))),
-        })
-    if not out:
-        raise ValueError("empty events")
-    return out
-
-
-def _summary_messages(player_name: str, place: str, turns: list[dict]) -> list[dict]:
-    turn_lines = "\n".join(f"玩家：{t['user']}\nNPC：{t['npc']}" for t in turns)
-    system = (
-        f"你是武侠NPC。下面是玩家与你最近的一段对话，请以你的视角，把这段交流归纳成"
-        "1~3 条简短的第三人称事件摘要（每条一句话，古风白话），并各标记忆重要度（1~10整数）。"
-        "只概括对你有意义、日后值得记起的事，不要虚构对话中没提到的内容。\n"
-        f"这段对话发生在：{place}。\n"
-        '仅输出JSON，格式：{"events":[{"content":"...","importance":5}]}'
-    )
-    user = f"对话记录：\n{turn_lines}"
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
-
-async def _summarize_pending(db, mem_store, npc_id: int, player_name: str, place: str,
-                             turns: list[dict]) -> list[int]:
-    """把窗口内未总结的对话轮批总结为 1~3 条 event 记忆并落库。
-
-    链路 = 校验 -> 重试一次(temperature 0.3) -> 兜底（取最后一条玩家消息作单条
-    importance 3）。绝不因 LLM 失败中断整段对话（AGENTS.md #4）。
-    """
-    events: list[dict] | None = None
-    attempts = 0
-    for temperature in (0.7, 0.3):
-        attempts += 1
-        try:
-            msgs = _summary_messages(player_name, place, turns)
-            cr = await mem_store.llm.chat(
-                "dialogue_summary", msgs, json_format=True,
-                temperature=temperature, metadata={"attempt": attempts, "temperature": temperature},
-            )
-            events = _parse_events(cr.text)
-            break
-        except Exception:
-            continue
-    if events is None:
-        events = [{"content": (turns[-1]["user"] if turns else "与玩家闲聊了几句。"),
-                   "importance": 3}]
-    mids = []
-    for ev in events:
-        mids.append(await mem_store.add_memory(
-            db, npc_id, content=ev["content"], kind="event",
-            participants=[player_name], poi=place, importance=ev["importance"],
-        ))
-    return mids
 
 
 async def talk(db, mem_store, npc_id: int, message: str) -> dict:
@@ -191,28 +123,10 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
         (npc_id, mem_store.clock.now(),
          json.dumps({"user": message, "npc": result["reply"]}, ensure_ascii=False), delta),
     )
-    await db.execute(
-        "UPDATE npc_state SET unsummarized_turns = unsummarized_turns + 1 WHERE npc_id = ?",
-        (npc_id,),
-    )
-    pending_row = await db.fetch_one(
-        "SELECT unsummarized_turns FROM npc_state WHERE npc_id = ?", (npc_id,),
-    )
-    pending = int((pending_row or {}).get("unsummarized_turns", 0))
-    summarized = False
-    if pending >= settings.event_summary_threshold or result["end"]:
-        win_turns = await rag_mod.recent_turns(db, npc_id, n=pending)
-        mids = await _summarize_pending(db, mem_store, npc_id, p["name"], place, win_turns)
-        if trace is not None:
-            await trace_mod.span(trace, "summarize_events", input_=win_turns, output=mids,
-                                 metadata={"pending": pending, "threshold": settings.event_summary_threshold})
-        await db.execute(
-            "UPDATE npc_state SET unsummarized_turns = 0 WHERE npc_id = ?", (npc_id,),
-        )
-        summarized = True
-    if trace is not None and not summarized:
-        await trace_mod.span(trace, "defer_summary",
-                             metadata={"pending": pending, "threshold": settings.event_summary_threshold})
+    # 互动判断值+1；对话 end 即使未满阈值也提前蒸馏。蒸馏逻辑在 reflect.py
+    # （DESIGN §6.6：闲聊只进短期窗口，达阈值才反思成 event 入忆）。
+    summarized = await reflect_mod.bump(db, mem_store, npc_id, p["name"], place,
+                                        force=result["end"], trace=trace)
     if trace is not None:
         await trace_mod.span(trace, "outcome",
                              metadata={"affinity_after": new_affinity, "fallback_used": fallback_used,

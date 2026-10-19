@@ -10,7 +10,8 @@ class ShopError(Exception):
 
 # Owner NPC per shop (only smith discounts per DESIGN §6.5 王大柱).
 SHOP_OWNER_ROLE = {"clinic": "clinic", "smith": "smith"}
-mem_store = None  # injected from main lifespan so buy can write 大额消费 memory
+mem_store = None    # injected from main lifespan so buy can write 大额消费 memory
+reflect_bump = None  # injected: reflect.bump (互动判断值+1, 达阈值蒸馏窗口)
 
 
 async def _owner(db: Database, shop_id: str) -> dict | None:
@@ -68,14 +69,18 @@ async def buy(db: Database, p: dict, shop_id: str, item_id: int, qty: int, pos: 
     await inventory.add(db, p["id"], item_id, qty)
     if pos:
         p["pos_x"], p["pos_y"] = pos["x"], pos["y"]
-    # 记忆控制噪声：大额消费（≥100 两）才写店主记忆（AGENTS.md #6.9 记忆控制噪声）
-    if cost >= 100 and mem_store is not None:
+    # 记忆控制噪声：大额消费（≥100 两）才写店主记忆（AGENTS.md #6.9 记忆控制噪声）;
+    # 与 NPC 店主的任何购买都累计互动判断值（不逐轮入忆，见 §6.6）。
+    if mem_store is not None:
         owner = await _owner(db, shop_id)
         if owner:
-            await mem_store.add_memory(
-                db, owner["npc_id"],
-                content=f"你在本店花{cost}两买下{row['name']}，出手阔绰。",
-                kind="event", participants=[p["name"]], poi=s["name"], importance=3,
-            )
+            if cost >= 100:
+                await mem_store.add_memory(
+                    db, owner["npc_id"],
+                    content=f"你在本店花{cost}两买下{row['name']}，出手阔绰。",
+                    kind="event", participants=[p["name"]], poi=s["name"], importance=3,
+                )
+            if reflect_bump is not None:
+                await reflect_bump(db, mem_store, owner["npc_id"], p["name"], s["name"])
     await player_mod.save(db, p)
     return await player_mod.api_dict(db, p)

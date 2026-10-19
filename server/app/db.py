@@ -91,7 +91,8 @@ CREATE TABLE IF NOT EXISTS npc_state (
     mem_since_reflection INTEGER NOT NULL DEFAULT 0,
     paused_until REAL,
     last_greet_real REAL,
-    unsummarized_turns INTEGER NOT NULL DEFAULT 0
+    interacts_since_summary INTEGER NOT NULL DEFAULT 0,
+    last_summary_conv_id INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS memory (
@@ -171,18 +172,14 @@ class Database:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.executescript(SCHEMA)
-            # Idempotent migrations for pre-existing DBs (CREATE IF NOT EXISTS bakes
-            # old table shapes; new columns must be added explicitly).
+            # Idempotent migrations (CREATE IF NOT EXISTS bakes old shapes; new columns
+            # must be added explicitly). Early drafts added this same intent under
+            # events_pending / unsummarized_turns; superseded now.
             cols = {r[1] for r in conn.execute("PRAGMA table_info(npc_state)")}
-            if "unsummarized_turns" not in cols:
-                if "events_pending" in cols:  # renamed from the misleading early name
+            for col in ("interacts_since_summary", "last_summary_conv_id"):
+                if col not in cols:
                     conn.execute(
-                        "ALTER TABLE npc_state RENAME COLUMN events_pending TO unsummarized_turns"
-                    )
-                else:
-                    conn.execute(
-                        "ALTER TABLE npc_state"
-                        " ADD COLUMN unsummarized_turns INTEGER NOT NULL DEFAULT 0"
+                        f"ALTER TABLE npc_state ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0"
                     )
             conn.commit()
             return conn
