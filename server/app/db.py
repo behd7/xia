@@ -90,7 +90,8 @@ CREATE TABLE IF NOT EXISTS npc_state (
     last_reflection_at REAL,
     mem_since_reflection INTEGER NOT NULL DEFAULT 0,
     paused_until REAL,
-    last_greet_real REAL
+    last_greet_real REAL,
+    events_pending INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS memory (
@@ -170,6 +171,13 @@ class Database:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.executescript(SCHEMA)
+            # Idempotent migrations for pre-existing DBs (CREATE IF NOT EXISTS bakes
+            # old table shapes; new columns must be added explicitly).
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(npc_state)")}
+            if "events_pending" not in cols:
+                conn.execute(
+                    "ALTER TABLE npc_state ADD COLUMN events_pending INTEGER NOT NULL DEFAULT 0"
+                )
             conn.commit()
             return conn
 

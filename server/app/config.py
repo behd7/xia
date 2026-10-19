@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     reflect_interval_real: int = 360
     gossip_interval_real: int = 120
 
+    # Dialogue memory batching (docs/DESIGN.md §6.6)
+    dialogue_window_size: int = 6      # 每轮回复平铺的最近对话轮数
+    event_summary_threshold: int = 5   # 对话满 N 轮即批总结成 event
+
     # RAG (docs/DESIGN.md §6.4)
     recency_half_life: float = 3.0
     rag_top_k: int = 6
