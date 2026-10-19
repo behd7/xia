@@ -37,6 +37,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await clock.load()
     await trace_mod.setup()
     mem_store = memory_mod.MemoryStore(settings.chroma_dir_abs, ollama, clock)
+    await mem_store.reconcile(db)  # Chroma 派生索引与 SQLite SSOT 对齐（损坏/缺失时自愈）
     battle_mod.mem_store = mem_store  # 切磋写入 NPC 记忆的注入点
     shop_mod.mem_store = mem_store  # 大额消费写入店主记忆的注入点
     yield

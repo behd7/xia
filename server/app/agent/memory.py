@@ -74,5 +74,46 @@ class MemoryStore:
             where={"npc_id": str(npc_id)},
         )
 
+    async def reconcile(self, db: Database) -> bool:
+        """Ensure the Chroma index matches the SQLite memory SSOT; True if rebuilt.
+
+        Chroma is a derived index. If it's out of sync with `memory`, or its
+        on-disk format is unreadable (e.g. an unpinned chromadb got bumped and
+        changed the internal seq_id encoding), drop the collection and re-embed
+        every memory row from SQLite (AGENTS.md: Chroma 恒可从 SQLite 全量重建).
+        Cheap no-op when the counts already agree.
+        """
+        try:
+            in_chroma = self._coll.count()
+        except Exception:
+            in_chroma = -1  # unreadable format -> rebuild from SSOT
+        sql_count = (await db.fetch_one("SELECT COUNT(*) AS n FROM memory"))["n"]
+        if in_chroma == sql_count and in_chroma >= 0:
+            return False
+        try:
+            self._client.delete_collection("memories")
+        except Exception:
+            pass
+        self._coll = self._client.get_or_create_collection(
+            "memories", embedding_function=None, metadata={"hnsw:space": "cosine"}
+        )
+        rows = await db.fetch_all(
+            "SELECT id, npc_id, ts_game, kind, content, participants_json, poi, importance"
+            " FROM memory ORDER BY id"
+        )
+        ids, embeds, docs, metas = [], [], [], []
+        for r in rows:
+            vec = (await self.llm.embed([r["content"]]))[0]
+            ids.append(str(r["id"]))
+            embeds.append(vec)
+            docs.append(r["content"])
+            metas.append({
+                "npc_id": str(r["npc_id"]), "kind": r["kind"], "importance": r["importance"],
+                "ts_game": r["ts_game"], "poi": r["poi"] or "",
+            })
+        if ids:
+            self._coll.add(ids=ids, embeddings=embeds, documents=docs, metadatas=metas)
+        return True
+
     def close(self) -> None:
         self._client.close()

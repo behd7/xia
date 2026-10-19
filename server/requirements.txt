@@ -2,6 +2,6 @@ fastapi
 uvicorn[standard]
 httpx
 pydantic-settings
-numpy
-chromadb
+numpy<2.0
+chromadb==0.5.0   # 钉死内部 seq_id 磁盘格式；升级前必须删 Chroma 从 SQLite 重建（memory.reconcile）
 langfuse==2.14.0
