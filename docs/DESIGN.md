@@ -254,7 +254,7 @@
 
 （张馒头为后续"隐世高人"留口子，V1 只是怪话 NPC。）
 
-人设（persona）字段：姓名、身份、门派、性格标签×3、说话风格、口头禅、对玩家初始好感、拜师/商店等功能角色。
+人设（persona）字段：姓名、身份、门派、性格标签×3、说话风格、对玩家初始好感、拜师/商店等功能角色。（无口头禅字段——对话让 NPC 自由发挥措辞，不设机械口头禅。）
 
 ### 6.3 记忆流（Memory Stream）
 
@@ -465,7 +465,7 @@ npc_state(npc_id, affinity, last_reflection_at, mem_since_reflection,
           paused_until, last_greet_real,
           interacts_since_summary, last_summary_conv_id)
 
-> `npc` 表只存身份/职分/地点锚点与稳定主键；**人格、口头禅、方式等静态性格定义只
+> `npc` 表只存身份/职分/地点锚点与稳定主键；**人格、说话风格等静态性格定义只
 > 在 `agent/npc.py` 的 `NPC_ROSTER`（代码）中**，对话/调取按枚举使用，不再入库
 > （原 `persona_json / speech_style / waypoints_json` 列死数据，已随迁移 DROP）。
 > 动态运行态（好感、互动计数、蒸馏水位、反思计时）一律在 `npc_state` 持久化。
