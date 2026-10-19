@@ -37,6 +37,22 @@ XIA_API_URL=http://127.0.0.1:8000 godot --path xia-ai-town
 
 LLM 调用默认落 `llm_log` 表便于本地排查；如需跨链路可视化（检索的记忆 + 组装的 prompt + 生成输出 + 重试/兜底轨迹），可开启自托管 Langfuse 观测——默认关、fail-closed，在 `server/.env` 设 `LANGFUSE_ENABLED=true` 即可，部署栈见 `server/deploy/langfuse/`，详见 `docs/DESIGN.md §7.4`。
 
+## 本地停止
+
+- **Godot 客户端**：直接关闭游戏窗口即可退出。
+- **后端 uvicorn**：前台跑时按 `Ctrl+C`。若在后台/无头跑，按端口停止——**不要 `pkill -f "uvicorn"`**（会连你自己的命令行一起匹配而自杀），改用：
+
+  ```bash
+  fuser -k 8000/tcp          # 默认端口，推荐
+  # 或 pkill -f "app[.]main"  # 字符类技巧，避免误杀
+  ```
+
+- **Langfuse 观测栈**（若你 `docker compose` 启过 `server/deploy/langfuse/`）：
+
+  ```bash
+  docker compose -f server/deploy/langfuse/docker-compose.yml down
+  ```
+
 ## 操作与玩法
 
 | 操作 | 按键 / 入口 |
