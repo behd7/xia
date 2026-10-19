@@ -6,8 +6,6 @@ the id/slug/affinity mapping from /api/game/state `npcs` and always addresses
 an NPC by its numeric id.
 """
 
-import json
-
 from ..db import Database
 from ..game import inventory as inventory_mod
 from ..game import player as player_mod
@@ -103,10 +101,9 @@ async def seed_and_load(db: Database) -> None:
         row = await db.fetch_one("SELECT id FROM npc WHERE name = ?", (n["name"],))
         if row is None:
             nid = await db.execute(
-                "INSERT INTO npc(name, sect_id, role, persona_json, speech_style, init_affinity,"
-                " home_poi, work_poi, waypoints_json) VALUES(?,?,?,?,?,?,?,?,?)",
-                (n["name"], n["sect"], n["role"], json.dumps(n["persona"], ensure_ascii=False),
-                 n["speech_style"], n["init_affinity"], n["home"], n["work"], "[]"),
+                "INSERT INTO npc(name, sect_id, role, init_affinity, home_poi, work_poi)"
+                " VALUES(?,?,?,?,?,?)",
+                (n["name"], n["sect"], n["role"], n["init_affinity"], n["home"], n["work"]),
             )
         else:
             nid = row["id"]

@@ -76,13 +76,15 @@ CREATE TABLE IF NOT EXISTS npc (
     name TEXT NOT NULL UNIQUE,
     sect_id TEXT,
     role TEXT NOT NULL,
-    persona_json TEXT NOT NULL DEFAULT '{}',
-    speech_style TEXT NOT NULL DEFAULT '',
     init_affinity INTEGER NOT NULL DEFAULT 20,
     home_poi TEXT NOT NULL,
-    work_poi TEXT NOT NULL,
-    waypoints_json TEXT NOT NULL DEFAULT '[]'
+    work_poi TEXT NOT NULL
 );
+
+-- 说明：人格/口吻/路径等"静态人格"字段（原 persona_json/speech_style/waypoints_json）
+-- 运行时始终以 NPC_ROSTER（agent/npc.py）为准且被其覆盖，库中从未被消费，属死数据，
+-- 已随 connect() 迁移 DROP，定义只留在代码花名册里。此表仅负责稳定 id/role/poi 锚点
+-- 与 npc_state 的动态状态配对。
 
 CREATE TABLE IF NOT EXISTS npc_state (
     npc_id INTEGER PRIMARY KEY REFERENCES npc(id),
@@ -181,6 +183,17 @@ class Database:
                     conn.execute(
                         f"ALTER TABLE npc_state ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0"
                     )
+            # Legacy npc table carried static personality columns (persona_json/speech_style/
+            # waypoints_json) that runtime never reads — NPC_ROSTER supplies & overrides them.
+            # Drop as dead data. DROP COLUMN needs SQLite >= 3.35; fail-open so a leftover
+            # column can never block startup.
+            npc_cols = {r[1] for r in conn.execute("PRAGMA table_info(npc)")}
+            for col in ("persona_json", "speech_style", "waypoints_json"):
+                if col in npc_cols:
+                    try:
+                        conn.execute(f"ALTER TABLE npc DROP COLUMN {col}")
+                    except sqlite3.OperationalError as e:
+                        print(f"[db] skip drop npc.{col}: {e}")
             conn.commit()
             return conn
 

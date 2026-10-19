@@ -460,10 +460,15 @@ skill(id, name, sect_id NULL, kind,  -- passive|active
       tier_req, mp_cost, multiplier, cooldown, effect_json)
 player_skill(player_id, skill_id, level, equipped)  -- equipped: 主动技是否装入 3 战斗栏
 
-npc(id, name, sect_id NULL, role, persona_json, speech_style,
-    init_affinity, home_poi, work_poi, waypoints_json)
+npc(id, name, sect_id NULL, role, init_affinity, home_poi, work_poi)
 npc_state(npc_id, affinity, last_reflection_at, mem_since_reflection,
-          paused_until, last_greet_real)
+          paused_until, last_greet_real,
+          interacts_since_summary, last_summary_conv_id)
+
+> `npc` 表只存身份/职分/地点锚点与稳定主键；**人格、口头禅、方式等静态性格定义只
+> 在 `agent/npc.py` 的 `NPC_ROSTER`（代码）中**，对话/调取按枚举使用，不再入库
+> （原 `persona_json / speech_style / waypoints_json` 列死数据，已随迁移 DROP）。
+> 动态运行态（好感、互动计数、蒸馏水位、反思计时）一律在 `npc_state` 持久化。
 
 memory(id, npc_id, ts_game,           -- 游戏时钟
        kind,                           -- event|reflection|gossip
