@@ -43,7 +43,11 @@ var modal_status: Label
 var world_view: Control
 var shortcuts: Array[Button] = []
 var people_npcs: Array = []
+var npc_state: Dictionary = {}
+var greet_inside: Dictionary = {}
+var greet_busy: Dictionary = {}
 var dialogue_id: int = 0
+var dialogue_slug: String = ""
 var dialogue_name: String = ""
 var dialogue_affinity: int = -1
 var dialogue_footer: Control
@@ -184,7 +188,7 @@ func _build_scene() -> void:
 	pv.add_child(UI.label("镇 中 故 人", 14))
 	pv.add_child(UI.paragraph("七位江湖客，各有一段往事。", 14, UI.INK))
 	pv.add_child(UI.button("查看人物名录", open_people))
-	pv.add_child(UI.label("对话与记忆 · 待后端开放", 11, UI.MUTED))
+	pv.add_child(UI.label("日程作息 · 交情渐深", 11, UI.MUTED))
 	var bottom := _panel(self, Vector2.ZERO, Vector2(size.x, 98), Color("f3f0e7"))
 	bottom.name = "ActionDock"
 	bottom.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
@@ -252,6 +256,8 @@ func _process(delta: float) -> void:
 		var hour := int(sec / 3600) % 24
 		var periods := ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"]
 		time_label.text = "%s时  %02d:%02d · 第 %d 日" % [periods[int((hour + 1) / 2) % 12], hour, int(sec / 60) % 60, int(sec / 86400) + 1]
+		world.tick_schedule(sec, dialogue_slug)
+		_check_greet()
 	if toast_label.visible and Time.get_ticks_msec() / 1000.0 > toast_until:
 		toast_label.hide()
 	if direction != Vector2.ZERO and encounter_cooldown <= 0:
@@ -259,6 +265,39 @@ func _process(delta: float) -> void:
 			if mob.get("alive", false) and world.actor_pos.distance_to(Vector2(mob.x, mob.y)) < 17:
 				start_battle(str(mob.id))
 				break
+
+func _check_greet() -> void:
+	if modal != null or busy or not battle.is_empty():
+		return
+	for npc: Dictionary in world.npcs:
+		var npc_id: int = int(npc.get("npc_id", 0))
+		if npc_id == 0:
+			continue
+		var slug: String = str(npc.get("slug", ""))
+		var inside: bool = world.actor_pos.distance_to(Vector2(npc["pos"])) <= world.sense_radius
+		var was_inside: bool = bool(greet_inside.get(slug, false))
+		greet_inside[slug] = inside
+		if inside and not was_inside and bool(npc.get("greet_ready", false)) and not bool(greet_busy.get(npc_id, false)):
+			_request_greet(npc_id, slug)
+
+func _request_greet(npc_id: int, slug: String) -> void:
+	greet_busy[npc_id] = true
+	var response: Dictionary = await api.request("/api/npc/%d/greet" % npc_id, {}, 20.0)
+	greet_busy.erase(npc_id)
+	if not response.ok or not bool(response.data.get("greet", false)):
+		return
+	world.show_bubble(slug, str(response.data.get("reply", "")))
+	_mark_greeted(slug, int(response.data.get("affinity", 0)))
+
+func _mark_greeted(slug: String, affinity: int) -> void:
+	for npc: Dictionary in world.npcs:
+		if str(npc.get("slug", "")) == slug:
+			npc["greet_ready"] = false
+	for npc: Variant in people_npcs:
+		if npc is Dictionary and str(npc.get("slug", "")) == slug:
+			npc["greet_ready"] = false
+			if affinity != 0:
+				npc["affinity"] = affinity
 
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not event is InputEventKey or not event.pressed or event.echo:
@@ -300,11 +339,12 @@ func refresh() -> void:
 	syncing = true
 	var requested_version := state_version
 	var response: Dictionary = await api.request("/api/game/state")
-	syncing = false
 	if requested_version != state_version or busy:
+		syncing = false
 		return
 	_connection(response.ok)
 	if not response.ok:
+		syncing = false
 		if modal == null and player.is_empty():
 			open_settings()
 		notify(response.error)
@@ -334,6 +374,11 @@ func refresh() -> void:
 			notify("战局已在服务器结束，行装与位置已同步。")
 	elif modal == null or modal_kind == "settings":
 		open_new_game()
+	var detail: Dictionary = await api.request("/api/npcs/state")
+	syncing = false
+	if detail.ok and requested_version == state_version and not busy:
+		npc_state = detail.data
+		world.apply_state(detail.data)
 
 func _apply_player(data: Dictionary, move_actor: bool = false) -> void:
 	player = data
@@ -408,6 +453,7 @@ func _remove_modal() -> void:
 	modal = null
 	modal_status = null
 	modal_kind = ""
+	dialogue_slug = ""
 
 func close_modal() -> void:
 	if busy:
@@ -638,7 +684,7 @@ func open_sect(id: String, place: String) -> void:
 		if await mutate("/api/sect/join", {"sect_id": id}, "礼成，今日起便是同门。"):
 			open_skills(), int(player.level) < 3 or player.get("sect") != null, true)
 	body.add_child(join)
-	body.add_child(UI.paragraph("NPC 好感度与对话式拜师将在后端开放后接入。", 13))
+	body.add_child(UI.paragraph("也可走近掌门对话，交情到了再提拜师。", 13))
 
 func open_people() -> void:
 	if people_npcs.is_empty():
@@ -647,8 +693,12 @@ func open_people() -> void:
 			people_npcs = response.data.get("npcs", [])
 	var body := _new_modal("清溪人物录", "照面即是缘，江湖总有再会时。", "people")
 	for npc in people_npcs:
+		var place: String = str(npc.get("poi", ""))
+		var paused: Variant = npc.get("paused_until")
+		if paused != null and float(paused) > Time.get_unix_time_from_system():
+			place += "（正忙）"
 		UI.row(body, "%s  ·  %s" % [str(npc.name), _role_text(str(npc.role))],
-			"%s  ·  好感%s" % [str(npc.get("poi", "")), _affinity_hearts(int(npc.get("affinity", 0)))])
+			"%s  ·  好感%s" % [place, _affinity_hearts(int(npc.get("affinity", 0)))])
 		body.add_child(UI.rule())
 	if people_npcs.is_empty():
 		body.add_child(UI.paragraph("故人尚未聚齐，稍后再来。", 15))
@@ -677,6 +727,7 @@ func open_dialogue(slug: String) -> void:
 	dialogue_name = str(npc.name)
 	dialogue_affinity = int(npc.get("affinity", 0))
 	var body := _new_modal(dialogue_name, "%s  ·  %s  ·  好感%s" % [_role_text(str(npc.role)), str(npc.get("poi", "")), _affinity_hearts(dialogue_affinity)], "dialogue", 820)
+	dialogue_slug = slug
 	_append_talk(dialogue_name, "……你走上前，拱手见礼。")
 	_render_dialogue_footer("main")
 

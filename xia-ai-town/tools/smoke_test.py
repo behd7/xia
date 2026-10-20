@@ -48,6 +48,11 @@ def fixture(db: Path, mode: str) -> None:
                 "UPDATE player SET level=3, exp=0, cultivation=200, free_points=3, "
                 "str=20, con=100, agi=5, int_=20, hp=1000, mp=200, gold=1000"
             )
+            # 拜师需掌门好感 ≥60（M3 起），纯等级条件已废弃。
+            conn.execute(
+                "UPDATE npc_state SET affinity=80 WHERE npc_id IN "
+                "(SELECT id FROM npc WHERE role='master' AND sect_id='jianyang')"
+            )
         elif mode == "defeat":
             # Enemy acts first and agi=0 makes dodge exactly zero. One hit must kill.
             conn.execute("UPDATE player SET hp=1, con=5, agi=0, pos_x=792, pos_y=440")
@@ -81,6 +86,7 @@ def run() -> int:
         env = os.environ.copy()
         env.update({
             "DB_PATH": str(db), "CHROMA_DIR": str(scratch / "chroma"),
+            "SCHEDULER_ENABLED": "false",
             "NO_PROXY": "localhost,127.0.0.1", "no_proxy": "localhost,127.0.0.1",
             "PYTHONDONTWRITEBYTECODE": "1", "GODOT_SILENCE_ROOT_WARNING": "1",
             "XDG_DATA_HOME": str(scratch / "data"),

@@ -24,19 +24,23 @@ const BUILDINGS: Array[Dictionary] = [
 	{"rect": Rect2(416, 256, 192, 128), "name": "客栈", "kind": "inn", "id": "inn"},
 	{"rect": Rect2(1280, 288, 160, 112), "name": "破庙", "kind": "", "id": "temple"},
 ]
-# M3 has no seeded backend NPC ids yet: these slugs are local presentation ids.
-const NPCS: Array[Dictionary] = [
-	{"id": "gu_changfeng", "name": "顾长风", "pos": Vector2(144, 183), "robe": Color("647e83")},
-	{"id": "tie_wushuang", "name": "铁无双", "pos": Vector2(368, 183), "robe": Color("8b7061")},
-	{"id": "su_wanqing", "name": "苏婉清", "pos": Vector2(592, 183), "robe": Color("7b8c83")},
-	{"id": "chen_bansong", "name": "陈半松", "pos": Vector2(128, 375), "robe": Color("91a68b")},
-	{"id": "wang_dazhu", "name": "王大柱", "pos": Vector2(304, 375), "robe": Color("93725a")},
-	{"id": "liu_xiaodie", "name": "柳小蝶", "pos": Vector2(566, 407), "robe": Color("b68b8b")},
-	{"id": "zhang_mantou", "name": "张馒头", "pos": Vector2(752, 427), "robe": Color("858578")},
-]
+# Static presentation defaults; runtime positions come from the server schedule.
+const NPC_DEFAULTS := {
+	"gu_changfeng": {"name": "顾长风", "robe": Color("647e83"), "pos": Vector2(144, 183)},
+	"tie_wushuang": {"name": "铁无双", "robe": Color("8b7061"), "pos": Vector2(368, 183)},
+	"su_wanqing": {"name": "苏婉清", "robe": Color("7b8c83"), "pos": Vector2(592, 183)},
+	"chen_bansong": {"name": "陈半松", "robe": Color("91a68b"), "pos": Vector2(128, 375)},
+	"wang_dazhu": {"name": "王大柱", "robe": Color("93725a"), "pos": Vector2(304, 375)},
+	"liu_xiaodie": {"name": "柳小蝶", "robe": Color("b68b8b"), "pos": Vector2(566, 407)},
+	"zhang_mantou": {"name": "张馒头", "robe": Color("858578"), "pos": Vector2(752, 427)},
+}
 
 var actor_pos: Vector2 = Vector2(792, 440)
 var actor_name: String = "无名客"
+var npcs: Array[Dictionary] = []
+var schedule: Dictionary = {}
+var sense_radius: float = 48.0
+var gather_anchor_pos: Vector2 = Vector2(768, 440)
 var mobs: Array = []
 var walk_time: float = 0.0
 var moving: bool = false
@@ -56,6 +60,12 @@ var _redraw_elapsed: float = 0.0
 
 func _ready() -> void:
 	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	for key: String in NPC_DEFAULTS:
+		var default: Dictionary = NPC_DEFAULTS[key]
+		npcs.append({
+			"slug": key, "id": key, "name": default["name"],
+			"pos": default["pos"], "robe": default["robe"],
+		})
 	_ensure_grid()
 	_ink = Node2D.new()
 	_ink.name = "StaticTownCanvas"
@@ -94,11 +104,159 @@ func nearby() -> Dictionary:
 		var kind: String = building["kind"]
 		if not kind.is_empty() and area.grow(32).has_point(actor_pos):
 			return {"id": building["id"], "name": building["name"], "kind": kind}
-	for npc: Dictionary in NPCS:
+	for npc: Dictionary in npcs:
 		var at: Vector2 = npc["pos"]
 		if actor_pos.distance_to(at) <= 38.0:
-			return {"id": npc["id"], "name": npc["name"], "kind": "npc"}
+			return {"id": npc["slug"], "name": npc["name"], "kind": "npc"}
 	return {}
+
+
+func apply_state(state: Dictionary) -> void:
+	schedule = state
+	sense_radius = float(state.get("sense_radius", 48.0))
+	var anchor: Variant = state.get("gather_anchor", [768, 440])
+	if anchor is Array and anchor.size() >= 2:
+		gather_anchor_pos = Vector2(float(anchor[0]), float(anchor[1]))
+	var by_slug: Dictionary = {}
+	for entry: Dictionary in npcs:
+		by_slug[entry["slug"]] = entry
+	for remote: Variant in state.get("npcs", []):
+		if not remote is Dictionary:
+			continue
+		var slug: String = str(remote.get("slug", ""))
+		if not by_slug.has(slug):
+			continue
+		var entry: Dictionary = by_slug[slug]
+		var home_work: Array = _vector_list(remote.get("home_to_work", []))
+		var work_gather: Array = _vector_list(remote.get("work_to_gather", []))
+		if home_work.is_empty() or work_gather.is_empty():
+			continue
+		entry["npc_id"] = int(remote.get("id", 0))
+		entry["poi"] = str(remote.get("poi", ""))
+		entry["paused_until"] = remote.get("paused_until")
+		entry["greet_ready"] = bool(remote.get("greet_ready", false))
+		entry["home_to_work_pts"] = home_work
+		entry["work_to_gather_pts"] = work_gather
+		var server_pos: Variant = remote.get("pos", [])
+		if server_pos is Array and server_pos.size() >= 2:
+			entry["server_pos"] = Vector2(float(server_pos[0]), float(server_pos[1]))
+
+
+func tick_schedule(now_game: float, freeze_slug: String = "") -> void:
+	for entry: Dictionary in npcs:
+		if str(entry["slug"]) == freeze_slug:
+			continue
+		if not entry.has("home_to_work_pts"):
+			continue  # 无日程参数（离线/默认项）保持静止
+		entry["pos"] = schedule_position(entry, now_game)
+
+
+func schedule_position(entry: Dictionary, now_game: float) -> Vector2:
+	var sod: float = fposmod(now_game, 86400.0)
+	var day: int = int(now_game / 86400.0)
+	var phase: Dictionary = _phase_at(sod)
+	var kind: String = str(phase.get("kind", "home"))
+	var start: float = float(phase.get("start", 0.0))
+	var end: float = float(phase.get("end", 86400.0))
+	var t: float = (sod - start) / (end - start) if end > start else 0.0
+	var home_work: Array = entry.get("home_to_work_pts", [])
+	var work_gather: Array = entry.get("work_to_gather_pts", [])
+	var nid: int = int(entry.get("npc_id", 0))
+	match kind:
+		"home":
+			return home_work[0] + _pacing(nid, day, sod)
+		"work":
+			return home_work[-1] + _pacing(nid, day, sod)
+		"gather":
+			return gather_anchor_pos + _pacing(nid, day, sod)
+		"walk_home_to_work":
+			return _point_along(home_work, t)
+		"walk_work_to_home":
+			return _point_along(_reversed(home_work), t)
+		"walk_work_to_gather":
+			return _point_along(work_gather, t)
+		_:
+			return _point_along(_reversed(work_gather), t)
+
+
+func _phase_at(sod: float) -> Dictionary:
+	for p: Variant in schedule.get("phases", []):
+		if p is Dictionary and float(p["start"]) <= sod and sod < float(p["end"]):
+			return p
+	return {"kind": "home", "start": 70200.0, "end": 86400.0}
+
+
+func _lcg(npc_id: int, day: int, slot: int, axis: int) -> int:
+	var s: int = (npc_id * 1103515245 + day * 12345 + slot * 1013904223 + axis * 2654435761) & 0xFFFFFFFF
+	return (s * 1664525 + 1013904223) & 0xFFFFFFFF
+
+
+func _slot_offset(npc_id: int, day: int, slot: int) -> Vector2:
+	var sx: int = _lcg(npc_id, day, slot, 0)
+	var sy: int = _lcg(npc_id, day, slot, 1)
+	var x: float = float((sx >> 8) & 0xFFFF) / 65535.0 * 16.0 - 8.0
+	var y: float = float((sy >> 8) & 0xFFFF) / 65535.0 * 12.0 - 6.0
+	return Vector2(x, y)
+
+
+func _pacing(npc_id: int, day: int, sec_of_day: float) -> Vector2:
+	var cfg: Dictionary = schedule.get("pacing", {"slot": 600.0, "fade": 120.0})
+	var slot_time: float = float(cfg.get("slot", 600.0))
+	var fade: float = float(cfg.get("fade", 120.0))
+	var slot: int = int(sec_of_day / slot_time) if slot_time > 0.0 else 0
+	var prev: int = slot if slot == 0 else slot - 1
+	var current: Vector2 = _slot_offset(npc_id, day, slot)
+	var previous: Vector2 = _slot_offset(npc_id, day, prev)
+	var t: float = minf(1.0, fposmod(sec_of_day, slot_time) / fade) if fade > 0.0 else 1.0
+	t = t * t * (3.0 - 2.0 * t)
+	return previous.lerp(current, t)
+
+
+func _vector_list(raw: Variant) -> Array:
+	var out: Array[Vector2] = []
+	if not raw is Array:
+		return out
+	for p: Variant in raw:
+		if p is Array and p.size() >= 2:
+			out.append(Vector2(float(p[0]), float(p[1])))
+	return out
+
+
+func _reversed(points: Array) -> Array:
+	var out: Array = points.duplicate()
+	out.reverse()
+	return out
+
+
+func _point_along(points: Array, t: float) -> Vector2:
+	if points.is_empty():
+		return Vector2(768, 440)
+	if points.size() == 1:
+		return points[0]
+	var total: float = 0.0
+	for i: int in range(points.size() - 1):
+		total += points[i].distance_to(points[i + 1])
+	if total <= 0.0:
+		return points[0]
+	var d: float = clampf(t, 0.0, 1.0) * total
+	for i: int in range(points.size() - 1):
+		var seg: float = points[i].distance_to(points[i + 1])
+		if d <= seg or i == points.size() - 2:
+			var r: float = d / seg if seg > 0.0 else 0.0
+			return points[i].lerp(points[i + 1], r)
+		d -= seg
+	return points[-1]
+
+
+func show_bubble(slug: String, text: String, seconds: float = 6.0) -> void:
+	var clean: String = text.strip_edges()
+	if clean.is_empty():
+		return
+	for entry: Dictionary in npcs:
+		if str(entry["slug"]) == slug:
+			entry["bubble"] = clean
+			entry["bubble_until"] = Time.get_ticks_msec() / 1000.0 + seconds
+			return
 
 
 func region_name() -> String:
@@ -459,9 +617,9 @@ func _draw_town_details() -> void:
 
 
 func _draw() -> void:
-	# Stable foot-depth ordering for the hero, static NPCs and server mobs.
+	# Stable foot-depth ordering for the hero, scheduled NPCs and server mobs.
 	var actors: Array[Dictionary] = []
-	for npc: Dictionary in NPCS:
+	for npc: Dictionary in npcs:
 		actors.append({"pos": npc["pos"], "kind": "npc", "data": npc})
 	for value: Variant in mobs:
 		if not value is Dictionary:
@@ -482,8 +640,49 @@ func _draw() -> void:
 			"npc":
 				draw_actor(at, data["robe"])
 				_label(self, data["name"], at + Vector2(0, -31), 11, Color("e8e4c7"), true)
+				if float(data.get("bubble_until", 0.0)) > Time.get_ticks_msec() / 1000.0:
+					_draw_bubble(at, str(data.get("bubble", "")))
 			"mob":
 				_draw_mob(at, data)
+
+
+func _draw_bubble(at: Vector2, text: String) -> void:
+	var clean: String = text.replace("\n", " ").strip_edges()
+	if clean.is_empty():
+		return
+	var limit: int = 14
+	var lines: Array[String] = []
+	var cursor: int = 0
+	while cursor < clean.length() and lines.size() < 2:
+		var remain: int = clean.length() - cursor
+		if remain <= limit or lines.size() == 1:
+			var tail: String = clean.substr(cursor, limit)
+			if remain > limit:
+				tail = tail.substr(0, tail.length() - 1) + "…"
+			lines.append(tail)
+			break
+		lines.append(clean.substr(cursor, limit))
+		cursor += limit
+	var font: Font = _font()
+	var width: float = 0.0
+	for line: String in lines:
+		width = maxf(width, font.get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x)
+	width = ceilf(width) + 16.0
+	var line_height: float = 15.0
+	var height: float = lines.size() * line_height + 8.0
+	var origin: Vector2 = Vector2(at.x - width / 2.0, at.y - 45.0 - height)
+	draw_rect(Rect2(origin, Vector2(width, height)), Color("f3f0e7f2"))
+	draw_rect(Rect2(origin, Vector2(width, height)), Color("8f9b86"), false, 1.0)
+	var tip: Vector2 = Vector2(at.x, origin.y + height + 5.0)
+	draw_colored_polygon(PackedVector2Array([
+		Vector2(at.x - 5, origin.y + height),
+		Vector2(at.x + 5, origin.y + height), tip]), Color("f3f0e7f2"))
+	draw_line(Vector2(at.x - 5, origin.y + height), tip, Color("8f9b86"), 1.0)
+	draw_line(Vector2(at.x + 5, origin.y + height), tip, Color("8f9b86"), 1.0)
+	for i: int in range(lines.size()):
+		var line_width: float = font.get_string_size(lines[i], HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
+		draw_string(font, origin + Vector2((width - line_width) / 2.0, 15.0 + i * line_height),
+			lines[i], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("2b3a34"))
 
 
 func draw_actor(at: Vector2, robe: Color, hero: bool = false) -> void:
