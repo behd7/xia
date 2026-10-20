@@ -11,6 +11,7 @@ from ..game import inventory as inventory_mod
 from ..game import player as player_mod
 from ..game import schedule as schedule_mod
 from ..game import skills as skills_mod
+from . import mood as mood_mod
 from . import summary as summary_mod
 from . import trace as trace_mod
 
@@ -19,6 +20,7 @@ NPC_ROSTER: dict[str, dict] = {
     "gu_changfeng": {
         "name": "顾长风", "slug": "gu_changfeng", "sect": "jianyang", "role": "master",
         "speech_style": "冷硬简短",
+        "speech_examples": ["话不必多。", "你握剑的手，先稳三分。", "庸才。"],
         "persona": "剑阳派掌门，性傲而严苛，重悟性，最厌庸钝之人。一言不合便以剑论道，话少而锋利。",
         "init_affinity": 25, "work": "剑阳道馆", "home": "道馆后屋",
         "combat": {"level": 6, "hp": 320, "atk": 30, "def": 8, "spd": 12, "potions": 0},
@@ -26,6 +28,7 @@ NPC_ROSTER: dict[str, dict] = {
     "tie_wushuang": {
         "name": "铁无双", "slug": "tie_wushuang", "sect": "xuantie", "role": "master",
         "speech_style": "大嗓门，爱称'小子'",
+        "speech_examples": ["小子，先喝一碗！", "这事俺老铁给你兜着。", "哈哈，痛快！"],
         "persona": "玄铁堡堡主，豪爽嗜酒，重品性，貌似粗鲁实则义气过顶。高兴了便拍人后颈。",
         "init_affinity": 25, "work": "玄铁堂", "home": "客栈",
         "combat": {"level": 6, "hp": 340, "atk": 32, "def": 10, "spd": 9, "potions": 0},
@@ -33,6 +36,7 @@ NPC_ROSTER: dict[str, dict] = {
     "su_wanqing": {
         "name": "苏婉清", "slug": "su_wanqing", "sect": "yanyu", "role": "master",
         "speech_style": "半文半白，带调侃",
+        "speech_examples": ["哦？这话是谁教你的。", "你猜。", "急什么，茶还没凉。"],
         "persona": "烟雨楼楼主，高深戏谑，重机敏，看似玩世不恭实则洞察入微。说话总留三分。",
         "init_affinity": 30, "work": "烟雨小筑", "home": "小筑内室",
         "combat": {"level": 6, "hp": 290, "atk": 28, "def": 7, "spd": 16, "potions": 0},
@@ -40,6 +44,7 @@ NPC_ROSTER: dict[str, dict] = {
     "chen_bansong": {
         "name": "陈半松", "slug": "chen_bansong", "sect": None, "role": "clinic",
         "speech_style": "缓慢絮叨",
+        "speech_examples": ["唉，年轻人哪……", "先把脉，再说别的。", "当年我也见过这样的伤。"],
         "persona": "药铺大夫，慈祥啰嗦，爱忆当年。见人先问寒暖，一言三叹，望闻问切样样慢。",
         "init_affinity": 30, "work": "药铺", "home": "铺后家",
         "combat": {"level": 3, "hp": 150, "atk": 14, "def": 5, "spd": 6, "potions": 0},
@@ -47,6 +52,7 @@ NPC_ROSTER: dict[str, dict] = {
     "wang_dazhu": {
         "name": "王大柱", "slug": "wang_dazhu", "sect": None, "role": "smith",
         "speech_style": "热络市侩",
+        "speech_examples": ["客官，这消息可不白给。", "您再加点，我再说一句。", "嗨，都是听来的。"],
         "persona": "铁匠铺主，爱财爱打听，满镇消息贩子。见白花花的银子和奇闻异事最是来劲。",
         "init_affinity": 25, "work": "铁匠铺", "home": "铺后家",
         "combat": {"level": 3, "hp": 170, "atk": 18, "def": 6, "spd": 7, "potions": 0},
@@ -54,6 +60,7 @@ NPC_ROSTER: dict[str, dict] = {
     "liu_xiaodie": {
         "name": "柳小蝶", "slug": "liu_xiaodie", "sect": None, "role": "inn",
         "speech_style": "清脆快语",
+        "speech_examples": ["真的假的？！", "我跟你讲，我亲眼看见的！", "哎哟，那可热闹了。"],
         "persona": "客栈掌柜之女，活泼好奇，最爱看热闹。说话清脆连珠，镇上有甚风吹草动必先问她。",
         "init_affinity": 40, "work": "客栈", "home": "客栈",
         "combat": {"level": 2, "hp": 110, "atk": 12, "def": 4, "spd": 12, "potions": 0},
@@ -61,6 +68,7 @@ NPC_ROSTER: dict[str, dict] = {
     "zhang_mantou": {
         "name": "张馒头", "slug": "zhang_mantou", "sect": None, "role": "temple",
         "speech_style": "疯话押韵",
+        "speech_examples": ["山外山，楼外楼，一把刀儿换馒头。", "疯话不疯，听的人聋。", "刀归你，路归我。"],
         "persona": "破庙疯丐，癫三倒四，偶尔语出惊人。爱念押韵的疯话，世人皆笑他痴。",
         "init_affinity": 50, "work": "镇口水井", "home": "破庙",
         "combat": {"level": 4, "hp": 200, "atk": 21, "def": 7, "spd": 9, "potions": 0},
@@ -249,6 +257,10 @@ async def gift(db: Database, mem_store, npc_id: int, item_id: int) -> dict:
             kind="event", participants=[p["name"]], poi=poi, importance=3,
         )
         await summary_mod.bump(db, mem_store, npc_id, p["name"], poi)
+    try:
+        await mood_mod.set(db, npc_id, "pleased", f"收到{inv['name']}", 30)
+    except Exception as e:
+        print(f"[mood] gift npc {npc_id} failed: {e!r}")
     await player_mod.save(db, p)
     reply = f"{n['name']}收下{inv['name']}，神色缓和，欣喜以为所识非虚。"
     tr = await trace_mod.trace_turn(

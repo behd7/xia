@@ -19,9 +19,11 @@ from .game import world as world_mod
 from .game import world_state as world_state_mod
 from .game.clock import GameClock
 from .llm import OllamaClient
+from .agent import agenda as agenda_mod
 from .agent import dialogue as dialogue_mod
 from .agent import greet as greet_mod
 from .agent import memory as memory_mod
+from .agent import mood as mood_mod
 from .agent import npc as npc_mod
 from .agent import scheduler as scheduler_mod
 from .agent import summary as summary_mod
@@ -279,6 +281,9 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
         },
         "memories": memories,
         "relationship": rel,
+        "agenda": await agenda_mod.current(db, npc_id),
+        "mood": await mood_mod.current(db, npc_id, now_real),
+        "speech_examples": n.get("speech_examples", []),
         "world": {
             "stage": world_stage,
             "stance": stance.get("stance", ""),

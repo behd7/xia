@@ -15,6 +15,8 @@ from ..game import player as player_mod
 from ..game import schedule as schedule_mod
 from ..game import world as world_mod
 from ..game import world_state as world_state_mod
+from . import agenda as agenda_mod
+from . import mood as mood_mod
 from . import npc as npc_mod
 from . import rag as rag_mod
 from . import relationship as relationship_mod
@@ -63,9 +65,22 @@ def _warmth(affinity: int, name: str) -> str:
 
 
 def _build_messages(p, n, affinity, memories, turns, impression, now_str, place, message,
-                    world_brief: str = "") -> list[dict]:
+                    world_brief: str = "", agenda: dict | None = None,
+                    mood_text: str = "", speech_examples: list[str] | None = None,
+                    heart: str = "") -> list[dict]:
     mem_lines = "\n".join(m["content"] for m in memories[: settings.rag_top_k]) or "（暂无）"
     turn_lines = "\n".join(f"{p['name']}：{t['user']}\n你：{t['npc']}" for t in turns) or "（尚无可聊）"
+    heart_line = f"你眼下挂心的事：{heart}\n" if heart else ""
+    agenda_line = ""
+    if agenda:
+        agenda_line = f"你此刻的盘算：{agenda.get('text', '')}\n"
+        if agenda.get("avoid"):
+            agenda_line += f"你不愿提：{agenda['avoid']}\n"
+    examples_line = ""
+    if speech_examples:
+        quoted = "".join(f"“{example}”" for example in speech_examples)
+        examples_line = f"你说话的样子：参考这些语气，不要逐字照抄：{quoted}\n"
+    mood_line = f"你此刻的心气：{mood_text}\n" if mood_text else ""
     system = (
         f"你是{n['name']}。{n['persona']}你说话{n['speech_style']}。\n"
         f"{world_brief}\n"
@@ -73,6 +88,7 @@ def _build_messages(p, n, affinity, memories, turns, impression, now_str, place,
         + (f"你对{p['name']}的印象：{impression}\n" if impression else "")
         + f"你记得的一些事：\n{mem_lines}\n"
         f"你们最近的往来：\n{turn_lines}\n"
+        f"{heart_line}{agenda_line}{examples_line}{mood_line}"
         f"此刻{now_str}，你正在{place}。\n"
         f"以你的口吻应答{p['name']}（≤80字）。并给出这次你与{p['name']}的关系变化"
         "（-2~+3整数）、是否想就此收住话头（BOOL）。\n"
@@ -94,9 +110,15 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
 
     p = await player_mod.get(db)
     current_affinity = await npc_mod.affinity(db, npc_id)
+    now_game = mem_store.clock.now()
+    now_real = time.time()
     stage = await world_state_mod.stage(db)
     world_brief = world_mod.brief_for(n, message, stage, current_affinity, p["name"])
-    place = schedule_mod.poi_label_for(n, mem_store.clock.now())
+    agenda = await agenda_mod.current_or_pick(
+        db, npc_id, str(n.get("slug", "")), now_game, now_real)
+    mood = await mood_mod.current(db, npc_id, now_real)
+    mood_text = str(mood.get("text", "")) if mood else ""
+    place = schedule_mod.poi_label_for(n, now_game)
     # 对话期间标记暂停：八卦扫描跳过、debug 可见；超时 5 现实分自动失效（DESIGN §6.10）。
     await db.execute(
         "UPDATE npc_state SET paused_until = ? WHERE npc_id = ?",
@@ -107,7 +129,8 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
         "dialogue", input_=message,
         tags=[f"npc:{n['name']}", f"npc_id:{npc_id}", f"player:{p['name']}"],
         metadata={"affinity_before": current_affinity, "place": place,
-                  "rag_top_k": settings.rag_top_k},
+                  "rag_top_k": settings.rag_top_k, "agenda": agenda["id"],
+                  "mood": mood["mood"] if mood else None},
     )
 
     # 记忆检索 / 最近对话 / 关系印象 并行做（DESIGN §7.2 前台等待 2~5s）
@@ -130,8 +153,12 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
     for temperature in (0.7, 0.3):  # 校验 -> 重试一次(temperature 0.3)
         attempts += 1
         try:
-            msgs = _build_messages(p, n, current_affinity, memories, turns, impression,
-                                   shichen(mem_store.clock), place, message, world_brief)
+            msgs = _build_messages(
+                p, n, current_affinity, memories, turns, impression,
+                shichen(mem_store.clock), place, message, world_brief,
+                agenda=agenda, mood_text=mood_text,
+                speech_examples=n.get("speech_examples", []),
+            )
             cr = await mem_store.llm.chat("dialogue", msgs, json_format=True, temperature=temperature,
                                           metadata={"attempt": attempts, "temperature": temperature})
             result = _parse(cr.text)
@@ -150,6 +177,12 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
         await db.execute(
             "UPDATE npc_state SET paused_until = NULL WHERE npc_id = ?", (npc_id,)
         )
+        await agenda_mod.clear(db, npc_id)
+        if new_affinity < 30:
+            try:
+                await mood_mod.set(db, npc_id, "impatient", "话不投机", 20)
+            except Exception as e:
+                print(f"[mood] talk npc {npc_id} failed: {e!r}")
 
     # 本轮流进对话表（短期窗口）；不改逐轮入忆。计数+1，达阈值或 end=true 时
     # 把该批未总结轮批总结成 event 落库（DESIGN §6.6 窗口批总结）。

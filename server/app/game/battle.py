@@ -6,6 +6,7 @@ import time
 from ..db import Database
 from . import data, inventory, mobs, player as player_mod, skills as skills_mod
 from . import world as world_mod, world_state as world_state_mod
+from ..agent import mood as mood_mod
 from ..agent import npc as npc_mod
 
 
@@ -346,6 +347,11 @@ async def _finalize(db: Database, p: dict, state: dict, add, result: str) -> dic
         )
         verdict = {"win": "你技高一筹", "lose": "你略逊半招"}[result]
         add(result, f"切磋结束——{verdict}，获经验 {exp}。")
+        try:
+            await mood_mod.set(db, npc_id, "respectful" if result == "win" else "pleased",
+                               "与你切磋", 30)
+        except Exception as e:
+            print(f"[mood] spar npc {npc_id} failed: {e!r}")
         if mem_store is not None:  # 本场切磋写入该 NPC 记忆（importance 6）+ 互动判断值
             await mem_store.add_memory(
                 db, npc_id, content=f"在练武场与你切磋，{verdict}。",

@@ -97,6 +97,13 @@ CREATE TABLE IF NOT EXISTS npc_state (
     last_summary_conv_id INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS npc_mood (
+    npc_id INTEGER PRIMARY KEY REFERENCES npc(id),
+    mood TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    until_real REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS memory (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     npc_id INTEGER NOT NULL REFERENCES npc(id),

@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 FAIL = 0
 CALLED: list[str] = []
+PROMPTS: list[tuple[str, list[dict]]] = []
 
 
 def check(label: str, cond: bool) -> None:
@@ -50,6 +51,7 @@ async def main() -> int:
     async def fake_chat(purpose, messages, *, json_format=False, temperature=0.7,
                         metadata=None, priority=None):
         CALLED.append(purpose)
+        PROMPTS.append((purpose, messages))
         if purpose == "dialogue":
             end = "告辞" in messages[-1]["content"]
             text = json.dumps({"reply": "阁下所问，某自有计较。",
@@ -207,6 +209,47 @@ async def main() -> int:
             print("\n== M4 prompt purposes ==")
             check("reflection/relationship/gossip/greet prompts called",
                   {"reflection", "relationship", "gossip", "greet"} <= set(CALLED))
+
+            print("\n== M5-B agenda, speech examples & mood ==")
+            from app.game import inventory as inventory_mod
+            from app.game import player as player_mod
+
+            p = await player_mod.get(main_mod.db)
+            await inventory_mod.add(main_mod.db, p["id"], potion["id"])
+            r = await c.post("/api/npc/5/gift", json={"item_id": potion["id"]})
+            check("second gift succeeds", r.status_code == 200)
+            d5b = (await c.get("/api/debug/npc/5")).json()
+            check("gift sets pleased mood",
+                  d5b["mood"] is not None and d5b["mood"]["mood"] == "pleased")
+            check("debug exposes speech examples", len(d5b["speech_examples"]) >= 2)
+
+            before_aff = d5b["affinity"]
+            r = await c.post("/api/npc/5/talk", json={"message": "近来生意如何？"})
+            check("mooded talk still applies only LLM delta",
+                  r.status_code == 200 and r.json()["affinity"] == min(100, before_aff + 2))
+            dialogue_prompts = [m for purpose, m in PROMPTS if purpose == "dialogue"]
+            system = dialogue_prompts[-1][0]["content"] if dialogue_prompts else ""
+            check("dialogue prompt carries agenda", "你此刻的盘算" in system)
+            check("dialogue prompt carries speech examples", "参考这些语气" in system)
+            check("dialogue prompt carries mood", "你此刻的心气" in system)
+            d5b = (await c.get("/api/debug/npc/5")).json()
+            check("debug exposes agenda and mood",
+                  bool(d5b["agenda"]) and d5b["mood"]["mood"] == "pleased")
+
+            r = await c.post("/api/npc/1/talk", json={"message": "后山可有消息？"})
+            a1 = (await c.get("/api/debug/npc/1")).json()["agenda"]["id"]
+            r = await c.post("/api/npc/1/talk", json={"message": "后山可有消息？"})
+            a2 = (await c.get("/api/debug/npc/1")).json()["agenda"]["id"]
+            check("agenda is stable within one conversation", a1 == a2)
+            r = await c.post("/api/npc/1/talk", json={"message": "告辞"})
+            check("end clears current agenda",
+                  r.json()["end"] is True
+                  and (await c.get("/api/debug/npc/1")).json()["agenda"] is None)
+            r = await c.post("/api/npc/1/talk", json={"message": "再说说后山"})
+            a3 = (await c.get("/api/debug/npc/1")).json()["agenda"]["id"]
+            check("next conversation picks a different agenda", a3 != a1)
+            check("B adds no LLM purpose",
+                  "agenda" not in CALLED and "mood" not in CALLED)
 
             print("\n== M5-W world premise & artifact ==")
             from app.game import battle as battle_mod

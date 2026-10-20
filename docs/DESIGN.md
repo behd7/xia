@@ -254,7 +254,7 @@
 
 （张馒头为后续"隐世高人"留口子，V1 只是怪话 NPC。）
 
-人设（persona）字段：姓名、身份、门派、性格标签×3、说话风格、对玩家初始好感、拜师/商店等功能角色。七人对后山神器的固定立场、避谈点与知识分层见 §6.11（代码 `game/world.py` 的 `NPC_STANCE`）。
+人设（persona）字段：姓名、身份、门派、性格标签×3、说话风格、对玩家初始好感、拜师/商店等功能角色。每人另有 2~3 句 `speech_examples`，只作 prompt 语气参考、要求不逐字照抄。七人对后山神器的固定立场、避谈点与知识分层见 §6.11（代码 `game/world.py` 的 `NPC_STANCE`）。
 
 ### 6.3 记忆流（Memory Stream）
 
@@ -321,18 +321,29 @@ recency: 半衰期 = 3 游戏日
 **输入 prompt 结构**（第一人称身份句，不用"玩家/游戏/好感度 X"等机械设定词；交情以档位自然带出，不强制口头禅，让 NPC 自由发挥措辞）：
 ```
 你是{NPC名}。{人设}你说话{说话风格}。
+{世界简报：公开事实/你的立场/你知道的细节/分寸，见 §6.11}
 你与{玩家名}的来往：{交情档位，由好感映射成第一人称描述}
+你对{玩家名}的印象：{关系摘要}
 你记得的一些事：
 {检索 top6 记忆的内容}
 你们最近的往来：
 {最近 dialogue_window_size 轮}
+你眼下挂心的事：{当日心事，有则加}
+你此刻的盘算：{当前议程}
+你不愿提：{该 NPC 的避谈点}
+你说话的样子：参考这些语气，不要逐字照抄：{speech_examples}
+你此刻的心气：{轻情绪描述，有则加}
 此刻{干支时辰}，你正在{地点}。
 以你的口吻应答{玩家名}（≤80字）。并给出你与{玩家名}的关系变化(-2~+3)、
 是否想就此收住话头(BOOL)。
 仅输出JSON: {"reply","affinity_delta","end"}
 ```
 
-**输出处理**：reply 显示；好感 clamp 后更新；end=true 则对话结束。
+**议程（`agent/agenda.py`）**：每人有预置议程池与权重（试探神器、套张馒头的话、怂恿/劝阻上山、炫耀消息、避谈、拉人、闲聊），**不调 LLM**。每次新对话用 `random.Random(npc_id*1000003 + day*1009 + seq)` 确定性加权抽取，排除最近 3 个议程（池中无可选时允许重复）；`agenda_seq:{id}:{day}` 每场 +1，`agenda_recent:{id}` 保留最近 3 个，`agenda_current:{id}` 存当前议程。同一场对话 5 现实分钟内复用当前议程，`end=true` 清除。
+
+**轻情绪（`agent/mood.py` + `npc_mood` 表）**：只把一句语气描述注入 prompt，**不改好感、不参与任何结算**。送礼成功 → `pleased` 30 现实分；玩家切磋获胜 → NPC `respectful` 30 分；玩家落败 → NPC `pleased` 30 分；对话 `end=true` 且好感 <30 → `impatient` 20 分。所有写入 best-effort，失败只打印。
+
+**输出处理**：reply 显示；好感 clamp 后更新；end=true 则对话结束并清当前议程。
 **失败策略**：JSON 解析失败→重试一次(temperature 0.3)→再失败用模板回复（"{NPC}沉吟片刻，不置可否。"，delta=0），永不阻塞游戏。
 
 **事件入忆（互动判断值 + 窗口批总结，不逐轮）**：闲聊每轮只进短期窗口
@@ -489,6 +500,7 @@ npc(id, name, sect_id NULL, role, init_affinity, home_poi, work_poi)
 npc_state(npc_id, affinity, last_reflection_at, mem_since_reflection,
           paused_until, last_greet_real,
           interacts_since_summary, last_summary_conv_id)
+npc_mood(npc_id PK, mood, reason, until_real)  -- 轻情绪，只进 prompt；until_real 为现实时间
 
 > `npc` 表只存身份/职分/地点锚点与稳定主键；**人格、说话风格等静态性格定义只
 > 在 `agent/npc.py` 的 `NPC_ROSTER`（代码）中**，对话/调取按枚举使用，不再入库
@@ -544,7 +556,7 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=�
 | POST | `/api/battle/start` | `{target_type: mob, target_id}` 野外怪物战斗；NPC 切磋经 `/api/npc/{id}/challenge` |
 | POST | `/api/battle/action` | `{action: attack|skill|item|flee, id?}` → 结算后全量战况 |
 | GET | `/api/battle/state` | 断线重入 |
-| GET | `/api/debug/npc/{id}` | **实验观察**：好感、反思计数与 `seconds_since_reflection`、关系摘要、最近 50 条记忆（含 `source_memory_id`）、当前日程 `{phase,poi,pos,paused}`、世界立场 `world{stage,stance,knowledge,stage2}` |
+| GET | `/api/debug/npc/{id}` | **实验观察**：好感、反思计数与 `seconds_since_reflection`、关系摘要、最近 50 条记忆（含 `source_memory_id`）、当前日程 `{phase,poi,pos,paused}`、世界立场 `world{stage,stance,knowledge,stage2}`、`agenda`、`mood`、`speech_examples` |
 | GET | `/api/health` | 含 Ollama 连通性检查 |
 
 战斗响应含 log 数组（逐条结算文本），客户端按序播放浮字/震动动画。
