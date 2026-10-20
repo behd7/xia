@@ -260,12 +260,14 @@ async def main() -> int:
 
             print("\n== M5-A daily heart & schedule deviation ==")
             from app.agent import heart as heart_mod
+            from app.game import plan as plan_mod
             from app.game import schedule as schedule_mod
 
             before_aff = (await c.get("/api/debug/npc/1")).json()["affinity"]
             heart_calls = CALLED.count("heart")
             await heart_mod.ensure_today(main_mod.db, main_mod.mem_store, 1)
-            day = int(main_mod.mem_store.clock.now() // 86400)
+            now_game = main_mod.mem_store.clock.now()
+            day = int(now_game // 86400)
             plan_row = await main_mod.db.fetch_one(
                 "SELECT * FROM npc_plan WHERE npc_id = 1 AND game_day = ?", (day,))
             check("heart row generated",
@@ -317,6 +319,10 @@ async def main() -> int:
             d1a = (await c.get("/api/debug/npc/1")).json()
             check("debug exposes heart and deviation",
                   bool(d1a["heart"]) and d1a["deviation"].get("kind") == "gather_early")
+            settings.plan_enabled = False
+            check("plan switch disables deviation immediately",
+                  await plan_mod.deviation_for(main_mod.db, 1, now_game) is None)
+            settings.plan_enabled = True
 
             print("\n== M5-C nearby events ==")
             from app.agent import events as events_mod
@@ -407,6 +413,12 @@ async def main() -> int:
             brief = world_mod.brief_for(
                 npc_mod.NPC_ROSTER["gu_changfeng"], "后山那刀怎么回事", 2, 25, "冒烟侠")
             check("stage2 brief announces the player", "冒烟侠杀了黑旋风" in brief)
+            check("stage2 no-topic brief omits secret knowledge",
+                  "本派打算借神器" not in world_mod.brief_for(
+                      npc_mod.NPC_ROSTER["gu_changfeng"], "你好", 2, 80, "冒烟侠"))
+            check("stage2 topic brief reveals eligible knowledge",
+                  "本派打算借神器" in world_mod.brief_for(
+                      npc_mod.NPC_ROSTER["gu_changfeng"], "后山", 2, 80, "冒烟侠"))
             st = (await c.get("/api/game/state")).json()
             check("state announces world event",
                   st["world"]["stage"] == 2

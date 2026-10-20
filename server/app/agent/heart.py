@@ -68,6 +68,8 @@ def _messages(n: dict, p: dict, rows: list[dict], summary: str, stage: int) -> l
 
 
 async def ensure_today(db: Database, store, npc_id: int) -> dict | None:
+    if not settings.plan_enabled:
+        return None
     n = await npc_mod.by_id(db, npc_id)
     if n is None:
         return None

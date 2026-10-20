@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 
+from ..config import settings
 from ..db import Database
 
 DEVIATION_KINDS = ("gather_early", "gather_late", "stay_work", "home_early")
@@ -23,6 +24,8 @@ def _deviation(raw: str | None) -> dict | None:
 
 
 async def deviation_for(db: Database, npc_id: int, now_game: float) -> dict | None:
+    if not settings.plan_enabled:
+        return None
     day = int(now_game // 86400)
     row = await db.fetch_one(
         "SELECT deviation_json FROM npc_plan WHERE npc_id = ? AND game_day = ?",
@@ -32,6 +35,8 @@ async def deviation_for(db: Database, npc_id: int, now_game: float) -> dict | No
 
 
 async def deviations_for_day(db: Database, now_game: float) -> dict[int, dict]:
+    if not settings.plan_enabled:
+        return {}
     day = int(now_game // 86400)
     rows = await db.fetch_all(
         "SELECT npc_id, deviation_json FROM npc_plan WHERE game_day = ?", (day,))
@@ -44,6 +49,8 @@ async def deviations_for_day(db: Database, now_game: float) -> dict[int, dict]:
 
 
 async def plan_for(db: Database, npc_id: int, now_game: float) -> dict | None:
+    if not settings.plan_enabled:
+        return None
     day = int(now_game // 86400)
     return await db.fetch_one(
         "SELECT heart, reason, deviation_json FROM npc_plan"
@@ -53,6 +60,8 @@ async def plan_for(db: Database, npc_id: int, now_game: float) -> dict | None:
 
 
 async def plans_for_day(db: Database, now_game: float) -> dict[int, dict]:
+    if not settings.plan_enabled:
+        return {}
     day = int(now_game // 86400)
     rows = await db.fetch_all(
         "SELECT npc_id, heart, reason, deviation_json FROM npc_plan WHERE game_day = ?",

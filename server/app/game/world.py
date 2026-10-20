@@ -121,9 +121,11 @@ def topic_tags(text: str) -> list[str]:
 
 def knowledge_for(slug: str, stage: int, affinity: int, tags: list[str]) -> list[str]:
     entry = stance_entry(slug)
+    # L2 机密只在命中公设话题时注入；没问后山就不主动抖落。
     out = [
         item["text"] for item in entry.get("knowledge", [])
-        if stage >= int(item.get("min_stage", 0)) and affinity >= int(item.get("min_affinity", 0))
+        if tags and stage >= int(item.get("min_stage", 0))
+        and affinity >= int(item.get("min_affinity", 0))
     ]
     if entry.get("stage2_truth") and stage >= 2 and (
         "artifact" in tags or "zhang" in tags
