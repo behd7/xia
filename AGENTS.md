@@ -31,7 +31,7 @@
 4. **LLM 调用永不阻塞玩法**：所有 LLM 结构化输出必须走 校验 → 重试一次(temperature 0.3) → 模板兜底 的链路；JSON 解析失败时用模板回复，游戏可继续。
 5. **好感度防漂移**：LLM 单回合好感变化 clamp ±3；送礼/切磋等规则类增益以规则为准。
 6. **SQLite 单写队列**：对话写入与后台反思/八卦任务并发写库，用 asyncio.Lock 串行化 + WAL，不要改成多连接并行写。记忆写入 = SQLite 落库 → 同一锁内 Chroma upsert（先 SQLite 后 Chroma）。
-7. **LLM 全局优先级限流**（`PriorityLimiter`，并发默认 2）：对话 > 搭话 > 关系摘要 > 反思 > 八卦。所有调用写 `llm_log` 表供实验分析。
+7. **LLM 全局优先级限流**（`PriorityLimiter`，并发默认 2）：`dialogue`/`dialogue_summary`/`embed`=0 > `greet`=1 > `relationship`=2 > `reflection`=3（默认）> `gossip`=4。`llm.chat` 按 purpose 自动取级，新增 purpose 要在 `PRIORITY` 里登记。所有调用写 `llm_log` 表供实验分析。
 
 ## 环境与配置
 
@@ -50,7 +50,7 @@ RESET_ON_START=false   # true=每次启动后端清空数据库（SQLite+Chroma 
 
 ### 本地运行
 
-当前客户端：Godot 导入 `xia-ai-town/project.godot`，F5 运行主场景 `scenes/main.tscn`；或根目录 `godot --path xia-ai-town`。默认连接 `http://127.0.0.1:8000`，可在设置面板保存地址或用 `XIA_API_URL` 覆盖。隔离真实接口验证：`server/.venv/bin/python xia-ai-town/tools/smoke_test.py`。后端保持现有 Python 实现。
+当前客户端：Godot 导入 `xia-ai-town/project.godot`，F5 运行主场景 `scenes/main.tscn`；或根目录 `godot --path xia-ai-town`。默认连接 `http://127.0.0.1:8000`，可在设置面板保存地址或用 `XIA_API_URL` 覆盖。隔离真实接口验证：`server/.venv/bin/python xia-ai-town/tools/smoke_test.py`。无 Ollama 的后端回归：`server/.venv/bin/python server/tests/smoke.py`——stub LLM + 临时库，覆盖 M4 后台链路，重构后必须全绿。后端保持现有 Python 实现。
 
 Python 侧用 **uv**（优先 `command -v uv`；原环境为 `~/.local/bin/uv`）管理虚拟环境——本机 python3 无 pip 且缺 python3-venv，`python3 -m venv` 不可用，不要尝试。依赖装在 `server/.venv`（gitignore）：
 
@@ -66,9 +66,9 @@ cd server && uv venv .venv && uv pip install -r requirements.txt
 - **qwen3 思考模式**：对话/结构化输出必须禁用思考——请求体加 `"think": false`；旧版 Ollama 不支持该字段时退化为 system 附加 `/no_think`。
 - **4B 模型 JSON 不稳**：靠 `/api/chat` + `format: "json"` 提高成功率，但兜底链路（见上）是必需品，不是可选项。
 - **本地推理延迟 2~5s**：对话请求是同步的，前端必须显示等待指示；记忆检索与 prompt 组装并行做。
--**游戏时钟**：1 现实秒 = 1 游戏分（可配），一个游戏日 ≈ 24 现实分钟。记忆时间戳、NPC 日程、recency 衰减（半衰期 3 游戏日）全部基于游戏时间，不要混用现实时间。时钟 anchor 存 kv（`clock_anchor_real/game`），**服务器停机期间游戏时间照常流逝**（偏移语义，重启续走）；客户端（Godot）用同一 anchor 本地推算 HUD，不做轮询。
+- **游戏时钟**：1 现实秒 = 1 游戏分（可配），一个游戏日 ≈ 24 现实分钟。记忆 `ts_game`、NPC 日程、recency 衰减（半衰期 3 游戏日）全部基于游戏时间；但 M4 的 `paused_until`、`last_greet_real`、关系摘要水位 `relationship.updated_at` 和 `memory.created_at_real` 用现实时间（`time.time()`），两套时间不要混用。时钟 anchor 存 kv（`clock_anchor_real/game`），**服务器停机期间游戏时间照常流逝**（偏移语义，重启续走）；客户端（Godot）用同一 anchor 本地推算 HUD，不做轮询。气泡到期用本地 `Time.get_ticks_msec()`，不要与服务器 epoch 字段互比。
 - **ChromaDB 三坑**：① 建集合用 `embedding_function=None` 且 add/query 恒显式传 embeddings——否则 Chroma 会静默下载 onnx MiniLM（英文向），检索全错；② 集合默认相似度空间是 l2，须以 `metadata={"hnsw:space": "cosine"}` 建集合（向量入库前仍 L2 归一化）；③ `Settings(anonymized_telemetry=False)` 关遥测，免离线时 PostHog 报错刷日志。
-- **记忆双库分工**：记忆正文/元数据在 SQLite（反思按时间序、八卦按参与人过滤、调试查询都要用，Chroma 元数据不支持排序与列表值），Chroma 只做 ANN 向量检索；换 embedding 模型时删 Chroma 集合、从 SQLite 全量重嵌入重建。
+- **记忆双库分工**：记忆正文/元数据在 SQLite（反思按时间序、八卦按参与人过滤、调试查询都要用，Chroma 元数据不支持排序与列表值），Chroma 只做 ANN 向量检索；换 embedding 模型时删 Chroma 集合、从 SQLite 全量重嵌入重建。八卦的 `source_memory_id` 恒指向根记忆做祖源去重（配 `idx_memory_source`），不要改成指向直接来源，否则同一件事会沿传播链被反复转述。
 - **记忆控制噪声**：同场目击入忆仅限战斗与大额消费（≥100 两）两类显著事件，不要扩大范围。
 - **地图交互与出生点约定**：建筑是实心瓦片、玩家站不进去，商店等 E 交互判定用建筑外扩 2 格的门口区；怪物出生点放野外土路行（ROAD），避免与确定性随机树/崖重叠导致不可达。
 - **派生属性单一入口（M2 起）**：装备与内功被动通过 `modifiers(db,p)` 聚合进 `derived(p, mods)`，任何要拿攻/防/速/闪避/暴击/上下限的代码一律走 `player.stats(db,p)`，**不要直接调 `derived(p)`**（会漏装备与被动）。入门门派加成是直改 player 行四维的一次性写入，不进 mods。
@@ -92,11 +92,13 @@ Xia/
 │  ├─ app/
 │  │  ├─ main.py config.py db.py llm.py  # main 路由+lifespan装配；config 产 .env 配置；db 单写队列+WAL；llm 双后端封装+优先级限流
 │  │  ├─ game/             # data skills player inventory mobs battle shop clock schedule（确定性日程，纯函数）
-│  │  └─ agent/            # npc memory（双库+reconcile）rag dialogue summary（批总结）reflection relationship gossip greet scheduler（后台巡检）
+│  │  └─ agent/            # npc memory（双库+reconcile）rag dialogue summary（批总结）reflection（反思入忆）relationship（滚动摘要）gossip（八卦）greet（前台搭话）scheduler（后台巡检）
 │  ├─ data/               # xia.db + chroma/（向量库），均 gitignore
 │  └─ requirements.txt
 └─ README.md
 ```
+
+`agent/scheduler.py` 是后台唯一入口：按 `scheduler_tick_real` 巡检反思、按 `gossip_interval_real` 扫描八卦；两条循环都先 sleep 再工作，单个 NPC 失败不会拖死任务。反思在素材足够时写 `kind=reflection` 记忆并顺带更新关系摘要，八卦只写双方 `kind=gossip` 记忆。主动搭话不走后台，是 Godot 进入 48px 感应圈后调用的 HTTP 接口。
 
 ## 实施顺序
 
