@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS memory (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_npc_ts ON memory(npc_id, ts_game);
 CREATE INDEX IF NOT EXISTS idx_memory_npc_importance ON memory(npc_id, importance);
-CREATE INDEX IF NOT EXISTS idx_memory_source ON memory(npc_id, source_memory_id);
+-- idx_memory_source must wait for the additive migration below: old DBs lack the column.
 
 CREATE TABLE IF NOT EXISTS relationship (
     npc_id INTEGER NOT NULL REFERENCES npc(id),
