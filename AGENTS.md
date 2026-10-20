@@ -69,6 +69,7 @@ cd server && uv venv .venv && uv pip install -r requirements.txt
 - **游戏时钟**：1 现实秒 = 1 游戏分（可配），一个游戏日 ≈ 24 现实分钟。记忆 `ts_game`、NPC 日程、recency 衰减（半衰期 3 游戏日）全部基于游戏时间；但 M4 的 `paused_until`、`last_greet_real`、关系摘要水位 `relationship.updated_at` 和 `memory.created_at_real` 用现实时间（`time.time()`），两套时间不要混用。时钟 anchor 存 kv（`clock_anchor_real/game`），**服务器停机期间游戏时间照常流逝**（偏移语义，重启续走）；客户端（Godot）用同一 anchor 本地推算 HUD，不做轮询。气泡到期用本地 `Time.get_ticks_msec()`，不要与服务器 epoch 字段互比。
 - **ChromaDB 三坑**：① 建集合用 `embedding_function=None` 且 add/query 恒显式传 embeddings——否则 Chroma 会静默下载 onnx MiniLM（英文向），检索全错；② 集合默认相似度空间是 l2，须以 `metadata={"hnsw:space": "cosine"}` 建集合（向量入库前仍 L2 归一化）；③ `Settings(anonymized_telemetry=False)` 关遥测，免离线时 PostHog 报错刷日志。
 - **记忆双库分工**：记忆正文/元数据在 SQLite（反思按时间序、八卦按参与人过滤、调试查询都要用，Chroma 元数据不支持排序与列表值），Chroma 只做 ANN 向量检索；换 embedding 模型时删 Chroma 集合、从 SQLite 全量重嵌入重建。八卦的 `source_memory_id` 恒指向根记忆做祖源去重（配 `idx_memory_source`），不要改成指向直接来源，否则同一件事会沿传播链被反复转述。
+- **增量迁移顺序**：`db._open()` 先 `executescript(SCHEMA)`、后跑 ALTER 补列。给旧库加列时，SCHEMA 里不能出现引用新列的索引/触发器——旧表尚无该列会直接 `no such column` 打断启动；这类索引要放在补列之后创建，新库也会走同一段迁移。
 - **记忆控制噪声**：同场目击入忆仅限战斗与大额消费（≥100 两）两类显著事件，不要扩大范围。
 - **地图交互与出生点约定**：建筑是实心瓦片、玩家站不进去，商店等 E 交互判定用建筑外扩 2 格的门口区；怪物出生点放野外土路行（ROAD），避免与确定性随机树/崖重叠导致不可达。
 - **派生属性单一入口（M2 起）**：装备与内功被动通过 `modifiers(db,p)` 聚合进 `derived(p, mods)`，任何要拿攻/防/速/闪避/暴击/上下限的代码一律走 `player.stats(db,p)`，**不要直接调 `derived(p)`**（会漏装备与被动）。入门门派加成是直改 player 行四维的一次性写入，不进 mods。
