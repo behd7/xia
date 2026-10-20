@@ -101,12 +101,12 @@ Xia/
 ├─ docs/M2-PLAN.md         # M2 执行拆解（已实施，留作范式）
 ├─ server/
 │  ├─ app/
-│  │  ├─ main.py config.py db.py llm.py  # main 路由+lifespan装配；config 产 .env 配置；db 单写队列+WAL；llm 双后端封装+优先级限流
+│  │  ├─ main.py config.py db.py llm.py logging_setup.py  # main 路由+lifespan装配；config 产 .env 配置；db 单写队列+WAL；llm 双后端封装+优先级限流；logging_setup 运行日志/代理告警
 │  │  ├─ game/             # data skills player inventory mobs battle shop clock schedule（确定性日程，纯函数）
 │  │  │                    # world（公设/立场）world_state plan（当日偏离读取）
 │  │  └─ agent/            # npc memory（双库+reconcile）rag dialogue summary（批总结）reflection（反思入忆）relationship（滚动摘要）gossip（八卦）greet（前台搭话）scheduler（后台巡检）
 │  │                       # agenda（议程）mood（轻情绪）heart（每日心事/偏离）events（附近事件）
-│  ├─ data/               # xia.db + chroma/（向量库），均 gitignore
+│  ├─ data/               # xia.db + xia.log + chroma/（向量库），均 gitignore
 │  └─ requirements.txt
 └─ README.md
 ```
