@@ -41,16 +41,17 @@ class MemoryStore:
         participants: list[str] | None = None,
         poi: str | None = None,
         importance: int = 3,
+        source_memory_id: int | None = None,
     ) -> int:
         """Persist one memory: SQLite row + Chroma vector, atomically-ordered."""
         ts_game = self.clock.now()
         async with self._lock:
             mid = await db.execute(
                 "INSERT INTO memory(npc_id, ts_game, kind, content, participants_json, poi,"
-                " importance, created_at_real) VALUES(?,?,?,?,?,?,?,?)",
+                " importance, created_at_real, source_memory_id) VALUES(?,?,?,?,?,?,?,?,?)",
                 (npc_id, ts_game, kind, content,
                  json.dumps(participants or [], ensure_ascii=False),
-                 poi, importance, time.time()),
+                 poi, importance, time.time(), source_memory_id),
             )
             vec = (await self.llm.embed([content]))[0]
             self._coll.add(

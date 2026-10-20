@@ -7,6 +7,7 @@
 import asyncio
 
 from ..config import settings
+from . import gossip as gossip_mod
 from . import npc as npc_mod
 from . import reflection as reflection_mod
 
@@ -28,10 +29,24 @@ async def _reflect_loop(db, store) -> None:
             print(f"[scheduler] reflection tick failed: {e!r}")
 
 
+async def _gossip_loop(db, store) -> None:
+    while True:
+        await asyncio.sleep(settings.gossip_interval_real)
+        try:
+            await gossip_mod.scan(db, store)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[scheduler] gossip tick failed: {e!r}")
+
+
 async def start(db, store) -> list[asyncio.Task]:
     if not settings.scheduler_enabled:
         return []
-    return [asyncio.create_task(_reflect_loop(db, store))]
+    return [
+        asyncio.create_task(_reflect_loop(db, store)),
+        asyncio.create_task(_gossip_loop(db, store)),
+    ]
 
 
 async def stop(tasks: list[asyncio.Task]) -> None:

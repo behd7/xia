@@ -106,10 +106,12 @@ CREATE TABLE IF NOT EXISTS memory (
     participants_json TEXT NOT NULL DEFAULT '[]',
     poi TEXT,
     importance INTEGER NOT NULL DEFAULT 3,
-    created_at_real REAL NOT NULL
+    created_at_real REAL NOT NULL,
+    source_memory_id INTEGER REFERENCES memory(id)
 );
 CREATE INDEX IF NOT EXISTS idx_memory_npc_ts ON memory(npc_id, ts_game);
 CREATE INDEX IF NOT EXISTS idx_memory_npc_importance ON memory(npc_id, importance);
+CREATE INDEX IF NOT EXISTS idx_memory_source ON memory(npc_id, source_memory_id);
 
 CREATE TABLE IF NOT EXISTS relationship (
     npc_id INTEGER NOT NULL REFERENCES npc(id),
@@ -183,6 +185,13 @@ class Database:
                     conn.execute(
                         f"ALTER TABLE npc_state ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0"
                     )
+            mem_cols = {r[1] for r in conn.execute("PRAGMA table_info(memory)")}
+            if "source_memory_id" not in mem_cols:
+                conn.execute("ALTER TABLE memory ADD COLUMN source_memory_id INTEGER")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_source"
+                " ON memory(npc_id, source_memory_id)"
+            )
             # Legacy npc table carried static personality columns (persona_json/speech_style/
             # waypoints_json) that runtime never reads — NPC_ROSTER supplies & overrides them.
             # Drop as dead data. DROP COLUMN needs SQLite >= 3.35; fail-open so a leftover

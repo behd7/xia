@@ -235,7 +235,7 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
         (npc_id,),
     )
     memories = await db.fetch_all(
-        "SELECT id, ts_game, kind, importance, poi, content FROM memory"
+        "SELECT id, ts_game, kind, importance, poi, source_memory_id, content FROM memory"
         " WHERE npc_id = ? ORDER BY ts_game DESC LIMIT 50",
         (npc_id,),
     )
