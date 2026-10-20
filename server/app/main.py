@@ -1,3 +1,4 @@
+import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
@@ -11,6 +12,7 @@ from .game import battle as battle_mod
 from .game import data, mobs as mobs_mod
 from .game import inventory as inventory_mod
 from .game import player as player_mod
+from .game import schedule as schedule_mod
 from .game import shop as shop_mod
 from .game import skills as skills_mod
 from .game.clock import GameClock
@@ -173,6 +175,51 @@ async def npc_challenge(npc_id: int, pos: PosBody | None = None) -> dict[str, An
     return {"battle": snap, "player": await player_mod.api_dict(db, p)}
 
 
+@app.get("/api/npcs/state")
+async def npcs_state() -> dict[str, Any]:
+    now_game = clock.now()
+    now_real = time.time()
+    rows = await db.fetch_all(
+        "SELECT n.id, ns.affinity, ns.paused_until, ns.last_greet_real"
+        " FROM npc n JOIN npc_state ns ON ns.npc_id = n.id ORDER BY n.id"
+    )
+    out = []
+    for r in rows:
+        n = await npc_mod.by_id(db, r["id"])
+        routes = schedule_mod.ROUTES.get(str((n or {}).get("slug", "")))
+        if n is None or routes is None:
+            continue
+        home_work, work_gather = routes
+        paused_until = r["paused_until"]
+        last_greet = r["last_greet_real"]
+        greet_ready = (
+            r["affinity"] >= settings.greet_threshold
+            and (last_greet is None or now_real - last_greet >= settings.greet_cooldown_real)
+            and (paused_until is None or paused_until <= now_real)
+        )
+        pos = schedule_mod.position_for(n, now_game)
+        out.append({
+            "id": r["id"], "slug": n["slug"], "name": n["name"],
+            "home": n.get("home", ""), "work": n.get("work", ""),
+            "home_anchor": list(home_work[0]), "work_anchor": list(home_work[-1]),
+            "home_to_work": [list(p) for p in home_work],
+            "work_to_gather": [list(p) for p in work_gather],
+            "affinity": r["affinity"], "paused_until": paused_until,
+            "greet_ready": greet_ready,
+            "pos": [round(pos[0], 2), round(pos[1], 2)],
+            "poi": schedule_mod.poi_label_for(n, now_game),
+        })
+    return {
+        "clock": clock.snapshot(),
+        "sense_radius": settings.npc_sense_radius,
+        "greet_threshold": settings.greet_threshold,
+        "phases": [{"kind": k, "start": s, "end": e} for k, s, e in schedule_mod.PHASES],
+        "pacing": dict(schedule_mod.PACING),
+        "gather_anchor": list(schedule_mod.GATHER_ANCHOR),
+        "npcs": out,
+    }
+
+
 @app.get("/api/debug/npc/{npc_id}")
 async def npc_debug(npc_id: int) -> dict[str, Any]:
     n = await npc_mod.by_id(db, npc_id)
@@ -181,7 +228,7 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
     aff = await npc_mod.affinity(db, npc_id)
     ns = await db.fetch_one(
         "SELECT last_reflection_at, mem_since_reflection, interacts_since_summary,"
-        " last_summary_conv_id FROM npc_state WHERE npc_id = ?",
+        " last_summary_conv_id, paused_until, last_greet_real FROM npc_state WHERE npc_id = ?",
         (npc_id,),
     )
     memories = await db.fetch_all(
@@ -190,10 +237,25 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
         (npc_id,),
     )
     rel = await db.fetch_all("SELECT * FROM relationship WHERE npc_id = ?", (npc_id,))
+    now_game = clock.now()
+    now_real = time.time()
+    kind, _, _ = schedule_mod.phase_at(now_game % schedule_mod.GAME_SEC_PER_DAY)
+    pos = schedule_mod.position_for(n, now_game)
+    reflection = dict(ns or {})
+    last_at = reflection.get("last_reflection_at")
+    reflection["last_reflection_real"] = last_at
+    reflection["seconds_since_reflection"] = (
+        round(now_real - last_at, 1) if last_at is not None else None
+    )
+    paused = bool(reflection.get("paused_until") and reflection["paused_until"] > now_real)
     return {
         "npc": {"id": npc_id, "name": n["name"], "role": n.get("role"), "sect": n.get("sect")},
         "affinity": aff,
-        "reflection": ns,
+        "reflection": reflection,
+        "schedule": {
+            "phase": kind, "poi": schedule_mod.poi_label_for(n, now_game),
+            "pos": [round(pos[0], 1), round(pos[1], 1)], "paused": paused,
+        },
         "memories": memories,
         "relationship": rel,
     }
@@ -250,7 +312,7 @@ async def game_state() -> dict[str, Any]:
         "clock": clock.snapshot(),
         "mobs": await mobs_mod.states(db),
         "battle": await battle_mod.active_snapshot(db),
-        "npcs": await npc_mod.list_for_client(db),
+        "npcs": await npc_mod.list_for_client(db, clock),
     }
 
 

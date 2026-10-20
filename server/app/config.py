@@ -41,6 +41,20 @@ class Settings(BaseSettings):
     reflect_interval_real: int = 360
     gossip_interval_real: int = 120
 
+    # M4 background agents / schedule
+    scheduler_enabled: bool = True          # 测试与 Godot 冒烟置 false
+    scheduler_tick_real: int = 60           # 反思巡检周期（现实秒）
+    reflection_take_n: int = 30             # 反思取最近 N 条记忆
+    reflection_min_memories: int = 3        # 少于 3 条不反思
+    max_reflection_delta: int = 2           # 反思修正好感上限 ±2
+    relationship_update_events: int = 5     # 5 次交互触发关系摘要
+    relationship_mention_reflections: int = 3  # 反思提及 3 次触发
+    relationship_max_chars: int = 100       # 摘要长度
+    gossip_importance_min: int = 5          # 可传播记忆最低重要度
+    gossip_rewrite_importance: int = 7      # ≥7 才用 LLM 改写
+    gossip_max_pairs_per_scan: int = 2      # 每次扫描最多八卦对数
+    npc_sense_radius: float = 48.0          # 主动搭话感应半径（3 tile）
+
     # Dialogue memory batching (docs/DESIGN.md §6.6)
     dialogue_window_size: int = 6      # 每轮回复平铺的最近对话轮数
     event_summary_threshold: int = 5   # 对话满 N 轮即批总结成 event

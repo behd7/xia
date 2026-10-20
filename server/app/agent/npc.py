@@ -9,6 +9,7 @@ an NPC by its numeric id.
 from ..db import Database
 from ..game import inventory as inventory_mod
 from ..game import player as player_mod
+from ..game import schedule as schedule_mod
 from ..game import skills as skills_mod
 from . import summary as summary_mod
 from . import trace as trace_mod
@@ -113,6 +114,15 @@ async def by_id(db: Database, npc_id: int) -> dict | None:
     return dict(meta)
 
 
+def ids() -> list[int]:
+    return sorted(_npc_meta_by_id)
+
+
+def names_in(text: str, player_name: str | None = None) -> list[str]:
+    names = ([player_name] if player_name else []) + [n["name"] for n in NPC_ROSTER.values()]
+    return [x for x in dict.fromkeys(names) if x and x in text]
+
+
 async def affinity(db: Database, npc_id: int) -> int:
     row = await db.fetch_one("SELECT affinity FROM npc_state WHERE npc_id = ?", (npc_id,))
     return row["affinity"] if row else 0
@@ -135,17 +145,22 @@ async def apply_delta(db: Database, npc_id: int, delta: int) -> int:
     return await set_affinity(db, npc_id, cur + int(delta))
 
 
-async def list_for_client(db: Database) -> list[dict]:
+async def list_for_client(db: Database, clock) -> list[dict]:
     rows = await db.fetch_all(
-        "SELECT n.id, n.name, n.role, n.home_poi AS work, ns.affinity"
+        "SELECT n.id, n.name, n.role, n.work_poi, n.home_poi, ns.affinity, ns.paused_until"
         " FROM npc n JOIN npc_state ns ON ns.npc_id = n.id ORDER BY n.id"
     )
+    now = clock.now()
     out = []
     for r in rows:
-        entry = next((n for n in NPC_ROSTER.values() if n["name"] == r["name"]), {})
+        meta = _npc_meta_by_id.get(r["id"])
+        label_src = meta or {"home": r["home_poi"], "work": r["work_poi"]}
         out.append({
-            "id": r["id"], "slug": entry.get("slug", r["name"]), "name": r["name"],
-            "role": r["role"], "affinity": r["affinity"], "poi": r["work"],
+            "id": r["id"], "slug": (meta or {}).get("slug", r["name"]), "name": r["name"],
+            "role": r["role"], "affinity": r["affinity"],
+            "poi": schedule_mod.poi_label_for(label_src, now),
+            "work_poi": r["work_poi"], "home_poi": r["home_poi"],
+            "paused_until": r["paused_until"],
         })
     return out
 
