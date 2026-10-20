@@ -17,6 +17,7 @@ from ..game import schedule as schedule_mod
 from ..game import world as world_mod
 from ..game import world_state as world_state_mod
 from . import agenda as agenda_mod
+from . import events as events_mod
 from . import mood as mood_mod
 from . import npc as npc_mod
 from . import rag as rag_mod
@@ -68,9 +69,10 @@ def _warmth(affinity: int, name: str) -> str:
 def _build_messages(p, n, affinity, memories, turns, impression, now_str, place, message,
                     world_brief: str = "", agenda: dict | None = None,
                     mood_text: str = "", speech_examples: list[str] | None = None,
-                    heart: str = "") -> list[dict]:
+                    heart: str = "", events_text: str = "") -> list[dict]:
     mem_lines = "\n".join(m["content"] for m in memories[: settings.rag_top_k]) or "（暂无）"
     turn_lines = "\n".join(f"{p['name']}：{t['user']}\n你：{t['npc']}" for t in turns) or "（尚无可聊）"
+    events_line = f"近年附近发生的事：\n{events_text}\n" if events_text else ""
     heart_line = f"你眼下挂心的事：{heart}\n" if heart else ""
     agenda_line = ""
     if agenda:
@@ -88,6 +90,7 @@ def _build_messages(p, n, affinity, memories, turns, impression, now_str, place,
         f"{_warmth(affinity, p['name'])}\n"
         + (f"你对{p['name']}的印象：{impression}\n" if impression else "")
         + f"你记得的一些事：\n{mem_lines}\n"
+        f"{events_line}"
         f"你们最近的往来：\n{turn_lines}\n"
         f"{heart_line}{agenda_line}{examples_line}{mood_line}"
         f"此刻{now_str}，你正在{place}。\n"
@@ -123,6 +126,8 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
     heart = str(heart_row["heart"]) if heart_row else ""
     place = schedule_mod.poi_label_for(
         n, now_game, await plan_mod.deviation_for(db, npc_id, now_game))
+    nearby = events_mod.recent(mem_store, now_game, poi=place, limit=3)
+    events_text = "\n".join(f"- {event['text']}" for event in nearby)
     # 对话期间标记暂停：八卦扫描跳过、debug 可见；超时 5 现实分自动失效（DESIGN §6.10）。
     await db.execute(
         "UPDATE npc_state SET paused_until = ? WHERE npc_id = ?",
@@ -162,6 +167,7 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
                 shichen(mem_store.clock), place, message, world_brief,
                 agenda=agenda, mood_text=mood_text,
                 speech_examples=n.get("speech_examples", []), heart=heart,
+                events_text=events_text,
             )
             cr = await mem_store.llm.chat("dialogue", msgs, json_format=True, temperature=temperature,
                                           metadata={"attempt": attempts, "temperature": temperature})

@@ -39,6 +39,8 @@ MOB_TYPES = {
 
 # Spawn points sit on the wilderness trail rows so they are guaranteed
 # walkable and reachable (tree/cliff scattering never touches road tiles).
+MOB_POI = {"wolf": "东山林地", "bandit": "后山崖", "boss": "后山崖"}
+
 MOB_SPAWNS = [
     {"id": "wolf_1", "type": "wolf", "x": 14, "y": 38},
     {"id": "wolf_2", "type": "wolf", "x": 26, "y": 39},

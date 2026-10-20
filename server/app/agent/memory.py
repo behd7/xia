@@ -30,6 +30,8 @@ class MemoryStore:
             "memories", embedding_function=None, metadata={"hnsw:space": "cosine"}
         )
         self._lock = asyncio.Lock()
+        # Phase C：附近显著事件的进程内环形缓冲，不落库。
+        self.recent_events: list[dict] = []
 
     async def add_memory(
         self,

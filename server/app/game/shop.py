@@ -1,6 +1,7 @@
 import json
 
 from ..db import Database
+from ..agent import events as events_mod
 from . import data, inventory, player as player_mod
 
 
@@ -84,5 +85,8 @@ async def buy(db: Database, p: dict, shop_id: str, item_id: int, qty: int, pos: 
                 )
             if summary_bump is not None:
                 await summary_bump(db, mem_store, owner["npc_id"], p["name"], s["name"])
+        if cost >= 100:
+            events_mod.record(
+                mem_store, "spend", f"在{s['name']}一掷{cost}两", s["name"], [p["name"]])
     await player_mod.save(db, p)
     return await player_mod.api_dict(db, p)

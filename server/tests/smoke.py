@@ -318,6 +318,29 @@ async def main() -> int:
             check("debug exposes heart and deviation",
                   bool(d1a["heart"]) and d1a["deviation"].get("kind") == "gather_early")
 
+            print("\n== M5-C nearby events ==")
+            from app.agent import events as events_mod
+            from app.game import plan as plan_mod
+
+            gu = await npc_mod.by_id(main_mod.db, 1)
+            now_game = main_mod.mem_store.clock.now()
+            gu_dev = await plan_mod.deviation_for(main_mod.db, 1, now_game)
+            gu_poi = schedule_mod.poi_label_for(gu, now_game, gu_dev)
+            token = "冒烟测试异动"
+            events_mod.record(
+                main_mod.mem_store, "battle_win",
+                f"{token}：在{gu_poi}有动静", gu_poi, ["冒烟侠"])
+            r = await c.post("/api/npc/1/talk", json={"message": "方才那边怎么了？"})
+            dialogue_prompts = [m for purpose, m in PROMPTS if purpose == "dialogue"]
+            system = dialogue_prompts[-1][0]["content"] if dialogue_prompts else ""
+            check("nearby event injected into dialogue prompt", token in system)
+            check("expired event is not injected",
+                  all(token not in str(event) for event in events_mod.recent(
+                      main_mod.mem_store, now_game + 1801, poi=gu_poi)))
+            mem_hit = await main_mod.db.fetch_one(
+                "SELECT COUNT(*) AS n FROM memory WHERE content LIKE ?", (f"%{token}%",))
+            check("nearby event not written to memory", mem_hit["n"] == 0)
+
             print("\n== M5-W world premise & artifact ==")
             from app.game import battle as battle_mod
             from app.game import mobs as mobs_mod

@@ -12,6 +12,7 @@ from ..game import plan as plan_mod
 from ..game import player as player_mod
 from ..game import schedule as schedule_mod
 from ..game import skills as skills_mod
+from . import events as events_mod
 from . import mood as mood_mod
 from . import summary as summary_mod
 from . import trace as trace_mod
@@ -217,11 +218,13 @@ async def apprentice(db: Database, mem_store, npc_id: int) -> dict:
     if mem_store is not None:
         now_game = mem_store.clock.now()
         dev = await plan_mod.deviation_for(db, npc_id, now_game)
+        poi = schedule_mod.poi_label_for(n, now_game, dev)
         await mem_store.add_memory(
             db, npc_id, content=f"你将{p['name']}收归{sect_name}门下，授以入门剑诀。",
-            kind="event", participants=[p["name"]],
-            poi=schedule_mod.poi_label_for(n, now_game, dev), importance=6,
+            kind="event", participants=[p["name"]], poi=poi, importance=6,
         )
+        events_mod.record(
+            mem_store, "apprentice", f"拜入{sect_name}", poi, [p["name"], n["name"]])
     reply = CEREMONY.get(n["slug"], f"{n['name']}缓缓点头，收你入门。")
     tr = await trace_mod.trace_turn(
         "apprentice", input_={"npc": n["name"], "player": p["name"]},
@@ -263,6 +266,9 @@ async def gift(db: Database, mem_store, npc_id: int, item_id: int) -> dict:
             db, npc_id, content=f"送礼·{p['name']}送来{inv['name']}。",
             kind="event", participants=[p["name"]], poi=poi, importance=3,
         )
+        events_mod.record(
+            mem_store, "gift", f"向{n['name']}送了{inv['name']}", poi,
+            [p["name"], n["name"]])
         await summary_mod.bump(db, mem_store, npc_id, p["name"], poi)
     try:
         await mood_mod.set(db, npc_id, "pleased", f"收到{inv['name']}", 30)

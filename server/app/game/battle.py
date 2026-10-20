@@ -6,6 +6,7 @@ import time
 from ..db import Database
 from . import data, inventory, mobs, player as player_mod, skills as skills_mod
 from . import world as world_mod, world_state as world_state_mod
+from ..agent import events as events_mod
 from ..agent import mood as mood_mod
 from ..agent import npc as npc_mod
 
@@ -388,6 +389,10 @@ async def _finalize(db: Database, p: dict, state: dict, add, result: str) -> dic
         await mobs.mark_killed(db, state["mob_id"])
         advanced = False
         if mem_store is not None:
+            poi = data.MOB_POI.get(state["enemy"]["type"], "野外")
+            events_mod.record(
+                mem_store, "battle_win",
+                f"在{poi}击败了{state['enemy']['name']}", poi, [p["name"]])
             advanced = await world_state_mod.check_and_advance(db, mem_store.clock.now())
             if advanced:
                 add("world", "你取回断岳刀的消息，已经传遍了清溪镇。")
@@ -407,6 +412,10 @@ async def _finalize(db: Database, p: dict, state: dict, add, result: str) -> dic
         p["gold"] = max(0, p["gold"] - math.floor(p["gold"] * 0.1))
         p["pos_x"], p["pos_y"] = data.INN_SPAWN
         add("lose", "你不支倒地，眼前一黑……")
+        if mem_store is not None:
+            poi = data.MOB_POI.get(state["enemy"]["type"], "野外")
+            events_mod.record(
+                mem_store, "battle_lose", f"在{poi}被打倒", poi, [p["name"]])
         return None
 
     add("flee_end", "你摆脱了纠缠，退出了战斗。")

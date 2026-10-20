@@ -16,6 +16,7 @@ from ..game import schedule as schedule_mod
 from ..game import world as world_mod
 from ..game import world_state as world_state_mod
 from . import dialogue as dialogue_mod
+from . import events as events_mod
 from . import mood as mood_mod
 from . import npc as npc_mod
 from . import rag as rag_mod
@@ -37,8 +38,9 @@ def _parse(result_text: str) -> str:
 
 def _messages(n: dict, p: dict, affinity: int, memories: list[dict], now_str: str,
               place: str, world_brief: str = "", mood_text: str = "",
-              heart: str = "") -> list[dict]:
+              heart: str = "", events_text: str = "") -> list[dict]:
     mem_lines = "\n".join(m["content"] for m in memories[: settings.rag_top_k]) or "（暂无）"
+    events_line = f"近年附近发生的事：\n{events_text}\n" if events_text else ""
     heart_line = f"你眼下挂心的事：{heart}\n" if heart else ""
     mood_line = f"你此刻的心气：{mood_text}\n" if mood_text else ""
     system = (
@@ -46,7 +48,7 @@ def _messages(n: dict, p: dict, affinity: int, memories: list[dict], now_str: st
         f"{world_brief}\n"
         f"{dialogue_mod._warmth(affinity, p['name'])}\n"
         f"你记得的一些事：\n{mem_lines}\n"
-        f"{heart_line}{mood_line}"
+        f"{events_line}{heart_line}{mood_line}"
         f"此刻{now_str}，你正在{place}，看见{p['name']}走近。\n"
         f"以你的口吻主动招呼他一句（≤40字），可顺带提起一件你记得的事，不要说套话，"
         "不要每句都提后山。\n"
@@ -103,8 +105,10 @@ async def greet(db, store, npc_id: int) -> dict:
         mood_text = str(mood.get("text", "")) if mood else ""
         heart_row = await plan_mod.plan_for(db, npc_id, now_game)
         heart = str(heart_row["heart"]) if heart_row else ""
+        nearby = events_mod.recent(store, now_game, poi=place, limit=3)
+        events_text = "\n".join(f"- {event['text']}" for event in nearby)
         msgs = _messages(n, p, aff, memories, dialogue_mod.shichen(store.clock), place,
-                         world_brief, mood_text, heart)
+                         world_brief, mood_text, heart, events_text)
         reply: str | None = None
         for temperature in (0.7, 0.3):
             try:
