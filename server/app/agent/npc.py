@@ -6,6 +6,8 @@ the id/slug/affinity mapping from /api/game/state `npcs` and always addresses
 an NPC by its numeric id.
 """
 
+import logging
+
 from ..db import Database
 from ..game import inventory as inventory_mod
 from ..game import plan as plan_mod
@@ -16,6 +18,8 @@ from . import events as events_mod
 from . import mood as mood_mod
 from . import summary as summary_mod
 from . import trace as trace_mod
+
+logger = logging.getLogger(__name__)
 
 # slug -> roster entry. `work` is the daytime POI, `home` the night POI.
 NPC_ROSTER: dict[str, dict] = {
@@ -272,8 +276,8 @@ async def gift(db: Database, mem_store, npc_id: int, item_id: int) -> dict:
         await summary_mod.bump(db, mem_store, npc_id, p["name"], poi)
     try:
         await mood_mod.set(db, npc_id, "pleased", f"收到{inv['name']}", 30)
-    except Exception as e:
-        print(f"[mood] gift npc {npc_id} failed: {e!r}")
+    except Exception:
+        logger.exception("mood update failed for gift npc=%d", npc_id)
     await player_mod.save(db, p)
     reply = f"{n['name']}收下{inv['name']}，神色缓和，欣喜以为所识非虚。"
     tr = await trace_mod.trace_turn(

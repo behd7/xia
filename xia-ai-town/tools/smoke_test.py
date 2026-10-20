@@ -40,6 +40,25 @@ def stop_process(process: subprocess.Popen) -> None:
             process.wait(timeout=5)
 
 
+def reserve_listener() -> socket.socket:
+    """Reserve a non-ephemeral port.
+
+    WSL/VS Code Server can hold thousands of proxy sockets and exhaust the
+    ephemeral range, making bind(("127.0.0.1", 0)) fail with EADDRINUSE even
+    though a new client connect would still succeed. A fixed high range keeps
+    the smoke independent of that transient system state.
+    """
+    for candidate in range(18000, 19000):
+        listener = socket.socket()
+        try:
+            listener.bind(("127.0.0.1", candidate))
+            listener.listen(128)
+            return listener
+        except OSError:
+            listener.close()
+    raise RuntimeError("no free port in 18000-18999")
+
+
 def fixture(db: Path, mode: str) -> None:
     # Called only after our uvicorn has exited; never races its single write queue.
     with sqlite3.connect(db) as conn:
@@ -95,11 +114,9 @@ def run() -> int:
         })
         for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
             Path(env[key]).mkdir()
-        # Reserve the chosen ephemeral port until uvicorn inherits the socket.
+        # Reserve the chosen port until uvicorn inherits the socket.
         # --fd avoids the bind-close-bind race and never targets an existing server.
-        with socket.socket() as listener:
-            listener.bind(("127.0.0.1", 0))
-            listener.listen(128)
+        with reserve_listener() as listener:
             port = listener.getsockname()[1]
             if port == 8000:
                 raise RuntimeError("Refusing reserved user port 8000")

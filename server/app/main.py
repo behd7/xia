@@ -1,3 +1,4 @@
+import logging
 import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
@@ -7,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .config import settings
+from .logging_setup import log_proxy_env, setup_logging
 from .db import Database
 from .game import battle as battle_mod
 from .game import data, mobs as mobs_mod
@@ -30,6 +32,9 @@ from .agent import scheduler as scheduler_mod
 from .agent import summary as summary_mod
 from .agent import trace as trace_mod
 
+LOG_PATH = setup_logging()
+logger = logging.getLogger(__name__)
+
 db = Database(settings.db_path_abs)
 ollama = OllamaClient(settings.ollama_host, settings.llm_timeout, db)
 clock = GameClock(db, settings.time_scale, settings.game_start_sec)
@@ -39,31 +44,56 @@ mem_store: memory_mod.MemoryStore | None = None
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     global mem_store
+    use_api = bool(settings.llm_api_key and settings.llm_api_base_url)
+    logger.info("startup: log=%s db=%s chroma=%s reset_on_start=%s",
+                LOG_PATH, settings.db_path_abs, settings.chroma_dir_abs,
+                settings.reset_on_start)
+    logger.info("startup: chat_backend=%s model=%s api_base=%s api_trust_env=%s "
+                "api_timeout=%.1fs ollama=%s chat_model=%s llm_timeout=%.1fs",
+                "openai-api" if use_api else "ollama",
+                (settings.llm_api_model or settings.chat_model) if use_api else settings.chat_model,
+                settings.llm_api_base_url or "-", settings.llm_api_trust_env,
+                settings.llm_api_timeout, settings.ollama_host, settings.chat_model,
+                settings.llm_timeout)
+    if bool(settings.llm_api_key) != bool(settings.llm_api_base_url):
+        logger.warning("startup: LLM_API_KEY 与 LLM_API_BASE_URL 只配置了一个，将使用本地 Ollama")
+    log_proxy_env(logger)
+
     await db.connect()
     if settings.reset_on_start:
         await db.reset()
-        print("[startup] reset_on_start=true：SQLite 已清空，本次全新开局")
+        logger.warning("startup: reset_on_start=true，SQLite 已清空，本次全新开局")
     await data.seed_and_load(db)
     await skills_mod.seed_and_load(db)
     await npc_mod.seed_and_load(db)
     await clock.load()
     # 补算上次进程在“最后一名山贼胜利结算”后、写世界阶段前退出的情况；幂等。
     await world_state_mod.check_and_advance(db, clock.now())
+    snap = clock.snapshot()
+    logger.info("startup: npcs=%d game_day=%d game_sec=%.1f world_stage=%d",
+                len(npc_mod.ids()), snap["day"], snap["game_sec"],
+                await world_state_mod.stage(db))
     await trace_mod.setup()
     mem_store = memory_mod.MemoryStore(settings.chroma_dir_abs, ollama, clock)
-    await mem_store.reconcile(db)  # Chroma 派生索引与 SQLite SSOT 对齐（损坏/缺失时自愈）
+    reconciled = await mem_store.reconcile(db)
+    logger.info("startup: chroma reconcile %s",
+                "rebuilt from SQLite" if reconciled else "already in sync")
     battle_mod.mem_store = mem_store  # 切磋写入 NPC 记忆的注入点
     shop_mod.mem_store = mem_store  # 大额消费写入店主记忆的注入点
     battle_mod.summary_bump = summary_mod.bump  # 切磋累加互动判断值
     shop_mod.summary_bump = summary_mod.bump  # 购买累加互动判断值
     scheduler_tasks = await scheduler_mod.start(db, mem_store)
+    logger.info("startup: scheduler_enabled=%s plan_enabled=%s tasks=%d",
+                settings.scheduler_enabled, settings.plan_enabled, len(scheduler_tasks))
     yield
+    logger.info("shutdown: stopping scheduler")
     await scheduler_mod.stop(scheduler_tasks)  # 必须先于 close mem_store/llm/db
     await trace_mod.close()
     if mem_store is not None:
         mem_store.close()
     await ollama.close()
     await db.close()
+    logger.info("shutdown: complete")
 
 
 app = FastAPI(title="Xia server", version="0.2.0", lifespan=lifespan)
@@ -74,6 +104,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def log_request(request, call_next):
+    started = time.perf_counter()
+    client = request.client.host if request.client else "-"
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed = (time.perf_counter() - started) * 1000
+        logger.exception("http %s %s from=%s failed after %.1fms",
+                         request.method, request.url.path, client, elapsed)
+        raise
+    elapsed = (time.perf_counter() - started) * 1000
+    level = logging.INFO if response.status_code < 400 else logging.WARNING
+    logger.log(level, "http %s %s -> %d %.1fms from=%s",
+               request.method, request.url.path, response.status_code, elapsed, client)
+    response.headers["X-Process-Time-Ms"] = f"{elapsed:.1f}"
+    return response
 
 
 class NewGameReq(BaseModel):
@@ -326,6 +375,9 @@ async def health() -> dict[str, Any]:
             "chat_backend": "openai-api" if use_api else "ollama",
             "api_configured": bool(use_api),
             "api_model": (settings.llm_api_model or settings.chat_model) if use_api else None,
+            "api_base_url": settings.llm_api_base_url or None,
+            "api_trust_env": settings.llm_api_trust_env,
+            "api_timeout": settings.llm_api_timeout,
             "chat_model": settings.chat_model,
             "chat_model_ok": (True if use_api else settings.chat_model in names),
             "embed_model": settings.embed_model,
@@ -337,6 +389,9 @@ async def health() -> dict[str, Any]:
             "chat_backend": "openai-api" if use_api else "ollama",
             "api_configured": bool(use_api),
             "api_model": (settings.llm_api_model or settings.chat_model) if use_api else None,
+            "api_base_url": settings.llm_api_base_url or None,
+            "api_trust_env": settings.llm_api_trust_env,
+            "api_timeout": settings.llm_api_timeout,
             "chat_model": settings.chat_model,
             "chat_model_ok": bool(use_api),
             "embed_model": settings.embed_model,
@@ -349,7 +404,8 @@ async def health() -> dict[str, Any]:
         npc_ok = bool(row and row["n"] == len(npc_mod.NPC_ROSTER))
     except Exception:
         npc_ok = False
-    return {"status": "ok", "db": db_ok, "ollama": ollama_info, "npcs_seeded": npc_ok}
+    return {"status": "ok", "db": db_ok, "ollama": ollama_info,
+            "npcs_seeded": npc_ok, "log_path": LOG_PATH}
 
 
 @app.get("/api/game/state")
@@ -388,6 +444,7 @@ async def new_game(req: NewGameReq) -> dict[str, Any]:
     p = await player_mod.create(db, name)
     # 新档不能继承上个存档的世界阶段，否则 NPC 会对着新角色讲旧角色的事。
     await world_state_mod.reset(db)
+    logger.info("new game: name=%s id=%s; world state reset", name, p["id"])
     return {"player": await player_mod.api_dict(db, p)}
 
 

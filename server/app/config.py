@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_api_model: str = ""
     llm_api_base_url: str = ""
+    # 外接 API 默认不继承 shell 的 http(s)_proxy：本地开发常见代理未启动时，
+    # httpx 会把请求送到死端口并一直等到超时。需要代理时显式设为 true。
+    llm_api_trust_env: bool = False
+    # 外接 API 单独用较短超时；失败后仍走对话的“重试一次 -> 模板兜底”链路。
+    llm_api_timeout: float = 8.0
 
     # Game clock: 60 means 1 real second = 1 game minute.
     time_scale: int = 60

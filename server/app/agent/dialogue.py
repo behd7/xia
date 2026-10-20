@@ -7,6 +7,7 @@
 
 import asyncio
 import json
+import logging
 import re
 import time
 
@@ -24,6 +25,8 @@ from . import rag as rag_mod
 from . import relationship as relationship_mod
 from . import summary as summary_mod
 from . import trace as trace_mod
+
+logger = logging.getLogger(__name__)
 
 SHICHEN_PHASES = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"]
 
@@ -191,8 +194,8 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
         if new_affinity < 30:
             try:
                 await mood_mod.set(db, npc_id, "impatient", "话不投机", 20)
-            except Exception as e:
-                print(f"[mood] talk npc {npc_id} failed: {e!r}")
+            except Exception:
+                logger.exception("mood update failed for talk npc=%d", npc_id)
 
     # 本轮流进对话表（短期窗口）；不改逐轮入忆。计数+1，达阈值或 end=true 时
     # 把该批未总结轮批总结成 event 落库（DESIGN §6.6 窗口批总结）。

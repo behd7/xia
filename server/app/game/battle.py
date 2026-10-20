@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import random
 import time
@@ -9,6 +10,8 @@ from . import world as world_mod, world_state as world_state_mod
 from ..agent import events as events_mod
 from ..agent import mood as mood_mod
 from ..agent import npc as npc_mod
+
+logger = logging.getLogger(__name__)
 
 
 class BattleError(Exception):
@@ -351,8 +354,8 @@ async def _finalize(db: Database, p: dict, state: dict, add, result: str) -> dic
         try:
             await mood_mod.set(db, npc_id, "respectful" if result == "win" else "pleased",
                                "与你切磋", 30)
-        except Exception as e:
-            print(f"[mood] spar npc {npc_id} failed: {e!r}")
+        except Exception:
+            logger.exception("mood update failed for spar npc=%d", npc_id)
         if mem_store is not None:  # 本场切磋写入该 NPC 记忆（importance 6）+ 互动判断值
             await mem_store.add_memory(
                 db, npc_id, content=f"在练武场与你切磋，{verdict}。",

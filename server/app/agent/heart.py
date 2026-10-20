@@ -7,6 +7,7 @@ LLM 输出经校验 -> 重试一次(temperature 0.3) -> 空心事/无偏离兜�
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 
@@ -19,6 +20,8 @@ from . import npc as npc_mod
 from . import relationship as relationship_mod
 
 DEVIATION_KINDS = ("gather_early", "gather_late", "stay_work", "home_early")
+
+logger = logging.getLogger(__name__)
 
 
 def _parse(result_text: str) -> tuple[str, str, str, int]:
@@ -93,6 +96,7 @@ async def ensure_today(db: Database, store, npc_id: int) -> dict | None:
 
     heart, reason, kind = "", "", "none"
     minutes = 10
+    last_error: Exception | None = None
     for temperature in (0.7, 0.3):
         try:
             cr = await store.llm.chat(
@@ -101,9 +105,14 @@ async def ensure_today(db: Database, store, npc_id: int) -> dict | None:
                 metadata={"npc_id": npc_id, "day": day},
             )
             heart, reason, kind, minutes = _parse(cr.text)
+            last_error = None
             break
-        except Exception:
+        except Exception as exc:
+            last_error = exc
             continue
+    if last_error is not None:
+        logger.warning("heart npc=%d day=%d generation failed after retry: %s: %s",
+                       npc_id, day, type(last_error).__name__, last_error)
 
     deviation: dict = {}
     if kind != "none":
@@ -115,6 +124,8 @@ async def ensure_today(db: Database, store, npc_id: int) -> dict | None:
         " created_at_real) VALUES(?,?,?,?,?,?)",
         (npc_id, day, heart, reason, json.dumps(deviation, ensure_ascii=False), time.time()),
     )
+    logger.info("heart npc=%d day=%d heart=%r deviation=%s",
+                npc_id, day, heart[:40], deviation.get("kind", "none"))
     return await db.fetch_one(
         "SELECT * FROM npc_plan WHERE npc_id = ? AND game_day = ?", (npc_id, day))
 
@@ -123,5 +134,5 @@ async def ensure_all(db: Database, store) -> None:
     for npc_id in npc_mod.ids():
         try:
             await ensure_today(db, store, npc_id)
-        except Exception as e:
-            print(f"[scheduler] heart npc {npc_id} failed: {e!r}")
+        except Exception:
+            logger.exception("heart npc=%d failed", npc_id)

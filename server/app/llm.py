@@ -1,5 +1,6 @@
 import asyncio
 import heapq
+import logging
 import math
 import time
 from contextlib import asynccontextmanager
@@ -11,6 +12,8 @@ import httpx
 from .config import settings
 from .db import Database
 from .agent import trace as trace_mod
+
+logger = logging.getLogger(__name__)
 
 
 # LLM 调用优先级（AGENTS #7：对话 > 搭话 > 关系摘要 > 反思 > 八卦）。
@@ -95,7 +98,9 @@ class OllamaClient:
         if settings.llm_api_key and settings.llm_api_base_url:
             self._api_model = settings.llm_api_model or settings.chat_model
             self._api_client = httpx.AsyncClient(
-                base_url=settings.llm_api_base_url, timeout=timeout,
+                base_url=settings.llm_api_base_url,
+                timeout=settings.llm_api_timeout,
+                trust_env=settings.llm_api_trust_env,
                 headers={"Authorization": f"Bearer {settings.llm_api_key}"},
             )
 
@@ -138,6 +143,7 @@ class OllamaClient:
         start = time.time()
         in_tok = out_tok = None
         ok = False
+        error: Exception | None = None
         try:
             async with self._limiter.slot(p):
                 if self._api_client is not None:
@@ -149,8 +155,17 @@ class OllamaClient:
                                    {**(metadata or {}), "priority": p},
                                    in_tok, out_tok, model=model)
             return ChatResult(text=text, in_tokens=in_tok, out_tokens=out_tok)
+        except Exception as exc:
+            error = exc
+            raise
         finally:
             ms = int((time.time() - start) * 1000)
+            if error is None:
+                logger.info("llm %s ok model=%s priority=%d %dms in=%s out=%s",
+                            purpose, model, p, ms, in_tok, out_tok)
+            else:
+                logger.warning("llm %s FAILED model=%s priority=%d %dms error=%s: %s",
+                               purpose, model, p, ms, type(error).__name__, error)
             await self._log(purpose, ok, in_tok, out_tok, ms, model=model)
 
     async def _call_ollama(self, messages, json_format, temperature):
@@ -201,6 +216,7 @@ class OllamaClient:
         """
         start = time.time()
         ok = False
+        error: Exception | None = None
         try:
             async with self._limiter.slot(0):
                 res = await self._client.post(
@@ -215,8 +231,16 @@ class OllamaClient:
             ok = True
             self._trace_embed(texts, out)
             return out
+        except Exception as exc:
+            error = exc
+            raise
         finally:
             ms = int((time.time() - start) * 1000)
+            if error is None:
+                logger.debug("embed ok n=%d %dms", len(texts), ms)
+            else:
+                logger.warning("embed FAILED n=%d %dms error=%s: %s",
+                               len(texts), ms, type(error).__name__, error)
             await self._log("embed", ok, None, None, ms, model=settings.embed_model)
 
     async def close(self) -> None:

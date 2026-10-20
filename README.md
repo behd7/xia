@@ -2,7 +2,7 @@
 
 二维像素武侠 RPG 与生成式 NPC 实验。当前客户端使用 **Godot 4**，工程位于 [`xia-ai-town/`](xia-ai-town/)，通过 HTTP 连接 [`server/`](server/) 的 FastAPI 后端。旧 `client/`（Phaser 前端）已删除，历史见 git。
 
-设计文档：[`docs/DESIGN.md`](docs/DESIGN.md)。M0–M4 已全部接入：开档、地图探索、成长、装备、商店、拜师、回合制战斗，NPC 对话（记忆检索 RAG）、送礼、切磋与拜师，以及反思、关系摘要、NPC 间八卦、主动搭话和按游戏时钟确定性推算的 NPC 日程。客户端每十秒随 `/api/npcs/state` 拉取日程参数，本地推算 NPC 位置，不轮询坐标；好感到达阈值后靠近 NPC 会自动触发搭话气泡。
+设计文档：[`docs/DESIGN.md`](docs/DESIGN.md)。M0–M5 已全部接入：开档、地图探索、成长、装备、商店、拜师、回合制战斗，NPC 对话（记忆检索 RAG）、送礼、切磋与拜师，反思、关系摘要、NPC 间八卦、主动搭话和按游戏时钟确定性推算的 NPC 日程，以及世界公设/断岳刀、对话议程/口癖/轻情绪、每日心事/安全偏离与附近事件感知。客户端每十秒随 `/api/npcs/state` 拉取日程参数，本地推算 NPC 位置，不轮询坐标；好感到达阈值后靠近 NPC 会自动触发搭话气泡。
 
 ## 本地运行
 
@@ -18,6 +18,8 @@ cp .env.example .env  # 首次运行；已有配置时跳过
 NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 \
   .venv/bin/uvicorn app.main:app --reload --port 8000
 ```
+
+如果 Godot 跑在 Windows、后端跑在 WSL2，`localhost` 转发偶尔会失效：后端改用 `--host 0.0.0.0` 启动，并在 Godot 设置里填 `http://<WSL-IP>:8000`（WSL 内 `hostname -I` 第一项），必要时在 Windows 防火墙放行该端口。外接 LLM API 默认直连（`LLM_API_TRUST_ENV=false`），不会受 shell 里未启动的 `HTTP(S)_PROXY` 影响；需要代理时再显式开启。若 WSL 内出现偶发连接失败，可检查是否有进程（如 VS Code Server）占用大量到 `127.0.0.1:7897` 的连接并耗尽临时端口，重载 VS Code 窗口即可释放。
 
 在 Godot 项目管理器中导入 `xia-ai-town/project.godot`，按 **F6** 运行 `scenes/main.tscn`，或按 **F5** 运行主场景。也可以在仓库根目录执行：
 
@@ -36,6 +38,8 @@ XIA_API_URL=http://127.0.0.1:8000 godot --path xia-ai-town
 基础探索与战斗无需 Ollama。NPC 对话、主动搭话、反思、关系摘要与八卦改写需要本地 Ollama 模型；模型 tag 通过 `server/.env` 配置（模板见 `server/.env.example`），不得写死在代码中。后台调度可用 `SCHEDULER_ENABLED=false` 关闭（测试与冒烟默认关闭）。`GET /api/health` 可检查数据库、Ollama 及模型状态。
 
 LLM 调用默认落 `llm_log` 表便于本地排查；如需跨链路可视化（检索的记忆 + 组装的 prompt + 生成输出 + 重试/兜底轨迹），可开启自托管 Langfuse 观测——默认关、fail-closed，在 `server/.env` 设 `LANGFUSE_ENABLED=true` 即可，部署栈见 `server/deploy/langfuse/`，详见 `docs/DESIGN.md §7.4`。
+
+运行日志同时写控制台与 `server/data/xia.log`（滚动，5MB×3），包含启动配置、HTTP 请求状态/耗时、LLM purpose/model/耗时/异常和后台调度结果；`GET /api/health` 会返回 `log_path`。Godot 输出面板以 `[xia/api]` / `[xia/main]` 前缀记录请求耗时、网络错误与连接状态变化。
 
 ## 本地停止
 

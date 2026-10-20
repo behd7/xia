@@ -51,11 +51,11 @@ RESET_ON_START=false   # true=每次启动后端清空数据库（SQLite+Chroma 
 
 可调参数集中在 server 端 config（`server/app/config.py`，pydantic-settings 读 `.env`，§14 清单已全量落入：时间流速、好感阈值 70、反思/八卦周期、RAG 权重与 top-k、ChromaDB 目录等）。server 依赖 chromadb（向量库），清单见 DESIGN.md §12。
 
-M5 新增 `PLAN_ENABLED`（默认 true）、`PLAN_DEVIATION_SHIFT_SEC`（默认 1200）、`PLAN_HEART_MAX_CHARS`（默认 60）；`PLAN_ENABLED=false` 会立即停用心事与日程偏离（已有 `npc_plan` 行保留）。可选后端/观测见 DESIGN §7.1/§7.4：同时设置 `LLM_API_KEY` + `LLM_API_BASE_URL`（base_url 以 `/v1` 结尾，`LLM_API_MODEL` 可选）时对话走 OpenAI 兼容 API，嵌入仍走本地 Ollama；`LANGFUSE_*` 默认关闭，不可达不影响玩法。
+M5 新增 `PLAN_ENABLED`（默认 true）、`PLAN_DEVIATION_SHIFT_SEC`（默认 1200）、`PLAN_HEART_MAX_CHARS`（默认 60）；`PLAN_ENABLED=false` 会立即停用心事与日程偏离（已有 `npc_plan` 行保留）。可选后端/观测见 DESIGN §7.1/§7.4：同时设置 `LLM_API_KEY` + `LLM_API_BASE_URL`（base_url 以 `/v1` 结尾，`LLM_API_MODEL` 可选）时对话走 OpenAI 兼容 API，嵌入仍走本地 Ollama；`LLM_API_TRUST_ENV=false` 默认直连（需要 shell 代理时改 true），`LLM_API_TIMEOUT=8` 控制外接 API 单次超时；`LANGFUSE_*` 默认关闭，不可达不影响玩法。运行日志同时写控制台与 `server/data/xia.log`（5MB×3 滚动），`/api/health` 返回 `log_path`。
 
 ### 本地运行
 
-当前客户端：Godot 导入 `xia-ai-town/project.godot`，F5 运行主场景 `scenes/main.tscn`；或根目录 `godot --path xia-ai-town`。默认连接 `http://127.0.0.1:8000`，可在设置面板保存地址或用 `XIA_API_URL` 覆盖。隔离真实接口验证：`server/.venv/bin/python xia-ai-town/tools/smoke_test.py`（若 `godot` 不在 PATH，设 `GODOT_BIN=/path/to/godot`，本机为 `/home/behd/.local/bin/godot`）。无 Ollama 的后端回归：`server/.venv/bin/python server/tests/smoke.py`——stub LLM + 临时库，覆盖 M4/M5 后台链路（世界阶段、议程/情绪、心事/偏离、附近事件），重构后必须全绿。后端保持现有 Python 实现。
+当前客户端：Godot 导入 `xia-ai-town/project.godot`，F5 运行主场景 `scenes/main.tscn`；或根目录 `godot --path xia-ai-town`。默认连接 `http://127.0.0.1:8000`，可在设置面板保存地址或用 `XIA_API_URL` 覆盖。若 Godot 跑在 Windows 而 server 在 WSL2，uvicorn 加 `--host 0.0.0.0`，客户端地址填 `http://<WSL-IP>:8000`（WSL 内 `hostname -I` 第一项）；只在本机 WSL 内玩可保持 127.0.0.1。隔离真实接口验证：`server/.venv/bin/python xia-ai-town/tools/smoke_test.py`（若 `godot` 不在 PATH，设 `GODOT_BIN=/path/to/godot`，本机为 `/home/behd/.local/bin/godot`）。无 Ollama 的后端回归：`server/.venv/bin/python server/tests/smoke.py`——stub LLM + 临时库，覆盖 M4/M5 后台链路（世界阶段、议程/情绪、心事/偏离、附近事件），重构后必须全绿。后端保持现有 Python 实现。
 
 Python 侧用 **uv**（优先 `command -v uv`；原环境为 `~/.local/bin/uv`）管理虚拟环境——本机 python3 无 pip 且缺 python3-venv，`python3 -m venv` 不可用，不要尝试。依赖装在 `server/.venv`（gitignore）：
 
@@ -84,6 +84,9 @@ cd server && uv venv .venv && uv pip install -r requirements.txt
 - **NPC 位置零同步**：服务端 `game/schedule.py` 与客户端 `town_world.gd` 各实现同一套相位/折线/LCG 踱步；改任一侧常量或算法必须同步另一侧，否则两端位置漂移。客户端不轮询 NPC 坐标，只随 10 秒状态同步取参数。
 - **M5 世界阶段与偏离**：`world.stage` 只有 0/2，推进条件是 `mob_kills` 存在 boss+三名山贼且已取得断岳刀；`POST /api/game/new` 必须调 `world_state.reset`，启动时幂等补算。日程偏离只平移相位，`plan_enabled=false` 会立即隐藏心事/偏离；`npc_plan`/`npc_mood` 是 SCHEMA 新表，无 ALTER 迁移。
 - **M5 prompt 预算**：世界公设、心事、议程、口癖、情绪、附近事件全部塞进原有单次对话/搭话调用，**不得新增前台 LLM 调用**；心事是唯一新增后台 purpose（优先级 3）。附近事件只存在 `MemoryStore.recent_events` 内存中（20 条、30 游戏分钟 TTL），重启即丢，不要落库或当长期记忆。
+- **代理与外接 API**：外接 API 默认 `LLM_API_TRUST_ENV=false` 直连；若改 true 且 shell 的 `HTTP(S)_PROXY` 指向未启动的代理，每次 LLM 调用会等到 `LLM_API_TIMEOUT`（默认 8s）才失败。启动日志会检查代理端口并告警；本地 Ollama 仍靠 `NO_PROXY=localhost,127.0.0.1` 绕开代理。
+- **前端断连判定**：只有 `/api/game/state` 轮询失败才会把 UI 标成“连接中断”；对话/搭话/送礼等应用层超时只写 `[xia/main]` 日志，不再误标离线。排查连接问题先看 `server/data/xia.log` 的 `app.main | http` 与 `app.llm` 行，以及 Godot 输出面板的 `[xia/api]` / `[xia/main]`。
+- **WSL 临时端口耗尽**：VS Code Server 等进程可能持有数千条到 `127.0.0.1:7897` 的连接，耗尽 WSL 临时端口，表现为 `bind(0)` / 新连接偶发 `EADDRINUSE`；用 `ss -tn state established '( dport = :7897 )' | wc -l` 确认，重载 VS Code 窗口可释放。Godot 冒烟已固定用 18000–18999 高位端口段，不依赖临时端口。
 
 ## 当前 Godot 客户端
 

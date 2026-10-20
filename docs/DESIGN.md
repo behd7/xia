@@ -458,6 +458,8 @@ Ollama**（RAG 需要，API 不一定提供兼容 embedding）。健康检查
 LLM_API_KEY=
 LLM_API_MODEL=
 LLM_API_BASE_URL=
+LLM_API_TRUST_ENV=false   # 外接 API 默认直连；需要 shell 代理时改 true
+LLM_API_TIMEOUT=8         # 外接 API 单次超时（秒），失败后仍走重试/模板兜底
 ```
 
 ### 7.2 调用面与 token 预算
@@ -491,6 +493,10 @@ embedding：`POST /api/embed {"model": ..., "input": [...]}`，向量 L2 归一�
 ### 7.5 并发控制
 
 `PriorityLimiter`（堆式异步优先级队列，并发上限 `LLM_CONCURRENCY=2`）全局限流；优先级：对话/批总结/embedding（0）> 搭话（1）> 关系摘要（2）> 反思/每日心事与默认（3）> 八卦（4）。等待者按优先级与入队顺序取槽，取消安全；后台反思/心事/八卦不会挤占玩家对话。
+
+### 7.6 本地运行日志
+
+服务端同时输出控制台与 `server/data/xia.log`（5MB×3 滚动）：启动配置、HTTP 方法/路径/状态/耗时、LLM purpose/model/耗时/成败与异常、后台反思/八卦/心事结果。`/api/health` 返回 `log_path` 与当前对话后端/API 直连开关。客户端在 Godot 输出面板以 `[xia/api]` / `[xia/main]` 记录请求耗时、网络错误与连接状态变化；只有 `/api/game/state` 轮询失败才切换“连接中断”，应用层 4xx/超时不会误标离线。
 
 ---
 
@@ -690,6 +696,8 @@ Xia/
 | MAX_DIALOGUE_DELTA | ±3 | 对话单回合好感变化上限 |
 | LLM_API_KEY / LLM_API_BASE_URL | 空 | 同时设置则对话走该 OpenAI 兼容 API |
 | LLM_API_MODEL | 空 | API 对话模型名；缺省回退 CHAT_MODEL |
+| LLM_API_TRUST_ENV | false | 外接 API 是否继承 shell 的 http(s)_proxy；默认直连 |
+| LLM_API_TIMEOUT | 8s | 外接 API 单次超时；失败后仍走重试/模板兜底 |
 
 ---
 

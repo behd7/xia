@@ -11,10 +11,13 @@ Gift/切磋/大额消费的规则事件仍各自即时入忆（§6.3 直接交�
 """
 
 import json
+import logging
 import re
 
 from ..config import settings
 from . import trace as trace_mod
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_events(result_text: str) -> list[dict]:
@@ -78,6 +81,7 @@ async def _distill_window(db, mem_store, npc_id: int, player_name: str, place: s
 
     events: list[dict] | None = None
     attempts = 0
+    last_error: Exception | None = None
     for temperature in (0.7, 0.3):
         attempts += 1
         try:
@@ -87,12 +91,20 @@ async def _distill_window(db, mem_store, npc_id: int, player_name: str, place: s
                 temperature=temperature, metadata={"npc_id": npc_id, "attempt": attempts},
             )
             events = _parse_events(cr.text)
+            last_error = None
             break
-        except Exception:
+        except Exception as exc:
+            last_error = exc
             continue
     if events is None:
+        logger.warning("dialogue_summary npc=%d fallback after retry: %s: %s",
+                       npc_id, type(last_error).__name__ if last_error else "unknown",
+                       last_error)
         events = [{"content": turns[-1]["user"] if turns else "与玩家闲聊了几句。",
                    "importance": 3}]
+    else:
+        logger.info("dialogue_summary npc=%d turns=%d events=%d",
+                    npc_id, len(turns), len(events))
     for ev in events:
         await mem_store.add_memory(
             db, npc_id, content=ev["content"], kind="event",
@@ -127,6 +139,7 @@ async def bump(db, mem_store, npc_id: int, player_name: str, place: str, *,
         " WHERE npc_id = ?",
         (low_id, npc_id),
     )
+    logger.info("summary npc=%d interactions=%d waterline=%d", npc_id, count, low_id)
     if trace is not None:
         await trace_mod.span(trace, "interact_bump",
                              metadata={"count": count, "summarized": True,

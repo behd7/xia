@@ -1,7 +1,10 @@
 import asyncio
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any, Sequence
+
+logger = logging.getLogger(__name__)
 
 # Full data model per docs/DESIGN.md §8.
 # Memory embeddings intentionally absent: they live in the ChromaDB
@@ -219,7 +222,7 @@ class Database:
                     try:
                         conn.execute(f"ALTER TABLE npc DROP COLUMN {col}")
                     except sqlite3.OperationalError as e:
-                        print(f"[db] skip drop npc.{col}: {e}")
+                        logger.warning("skip dropping npc.%s: %s", col, e)
             conn.commit()
             return conn
 

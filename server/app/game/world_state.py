@@ -1,7 +1,11 @@
 """世界阶段推进（docs/DESIGN.md §6.11）：黑旋风 + 三名山贼 + 断岳刀齐备后全镇皆知。"""
 
+import logging
+
 from ..db import Database
 from . import mobs, world
+
+logger = logging.getLogger(__name__)
 
 BANDIT_IDS = ("bandit_1", "bandit_2", "bandit_3")
 BOSS_ID = "boss_1"
@@ -35,6 +39,7 @@ async def check_and_advance(db: Database, now_game: float) -> bool:
         return False
     await db.kv_set(world.STAGE_KEY, "2")
     await db.kv_set(world.ANNOUNCED_AT_KEY, str(now_game))
+    logger.info("world stage advanced to 2 at game_sec=%.1f", now_game)
     return True
 
 

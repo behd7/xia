@@ -66,6 +66,7 @@ func _ready() -> void:
 	timer.timeout.connect(refresh)
 	add_child(timer)
 	timer.start()
+	_log("client ready")
 	refresh()
 
 func _bind_inputs() -> void:
@@ -290,10 +291,15 @@ func _check_greet() -> void:
 
 func _request_greet(npc_id: int, slug: String) -> void:
 	greet_busy[npc_id] = true
-	var response: Dictionary = await api.request("/api/npc/%d/greet" % npc_id, {}, 20.0)
+	var response: Dictionary = await api.request("/api/npc/%d/greet" % npc_id, {}, 45.0)
 	greet_busy.erase(npc_id)
-	if not response.ok or not bool(response.data.get("greet", false)):
+	if not response.ok:
+		_log("greet npc=%d failed: %s" % [npc_id, str(response.error)])
 		return
+	if not bool(response.data.get("greet", false)):
+		_log("greet npc=%d skipped: %s" % [npc_id, str(response.data.get("reason", ""))])
+		return
+	_log("greet npc=%d ok affinity=%d" % [npc_id, int(response.data.get("affinity", 0))])
 	world.show_bubble(slug, str(response.data.get("reply", "")))
 	_mark_greeted(slug, int(response.data.get("affinity", 0)))
 
@@ -336,7 +342,15 @@ func notify(text: String) -> void:
 	move_child(toast_label, -1)
 	toast_until = Time.get_ticks_msec() / 1000.0 + 4.5
 
-func _connection(ok: bool) -> void:
+func _log(message: String) -> void:
+	print("[xia/main %s] %s" % [Time.get_datetime_string_from_system(), message])
+
+func _connection(ok: bool, reason: String = "") -> void:
+	if ok:
+		if not online:
+			_log("connection restored (%s)" % api.base_url)
+	else:
+		_log("connection lost: %s" % (reason if not reason.is_empty() else "unknown"))
 	online = ok
 	connection_label.text = "●  江湖已连接" if ok else "○  连接中断"
 	connection_label.add_theme_color_override("font_color", UI.JADE if ok else UI.RED)
@@ -350,8 +364,10 @@ func refresh() -> void:
 	if requested_version != state_version or busy:
 		syncing = false
 		return
-	_connection(response.ok)
-	if not response.ok:
+	if response.ok:
+		_connection(true)
+	else:
+		_connection(false, "game/state: %s" % str(response.error))
 		syncing = false
 		if modal == null and player.is_empty():
 			open_settings()
@@ -387,7 +403,9 @@ func refresh() -> void:
 		open_new_game()
 	var detail: Dictionary = await api.request("/api/npcs/state")
 	syncing = false
-	if detail.ok and requested_version == state_version and not busy:
+	if not detail.ok:
+		_log("npcs/state failed: %s" % str(detail.error))
+	elif requested_version == state_version and not busy:
 		npc_state = detail.data
 		world.apply_state(detail.data)
 
@@ -428,13 +446,15 @@ func mutate(path: String, body: Dictionary, success: String = "", redraw: Callab
 	_set_request_buttons(true)
 	if is_instance_valid(modal_status):
 		modal_status.text = "正在办理，请稍候……"
-	var response: Dictionary = await api.request(path, body)
+	var response: Dictionary = await api.request(path, body, 30.0)
 	busy = false
 	_set_request_buttons(false)
-	_connection(response.ok or response.has("status"))
 	if is_instance_valid(modal_status):
 		modal_status.text = "" if response.ok else str(response.error)
 	if not response.ok:
+		_log("mutate %s failed: %s" % [path, str(response.error)])
+		if bool(response.get("network", false)):
+			_connection(false, "%s: %s" % [path, str(response.error)])
 		notify(str(response.error))
 		return false
 	if response.data.get("player") != null:
@@ -831,14 +851,17 @@ func send_talk(message: String, clear_input: bool = false) -> void:
 	busy = true
 	_set_request_buttons(true)
 	modal_status.text = "%s沉吟许久……" % dialogue_name
-	var response: Dictionary = await api.request("/api/npc/%d/talk" % dialogue_id, {"message": text}, 20.0)
+	var response: Dictionary = await api.request("/api/npc/%d/talk" % dialogue_id, {"message": text}, 45.0)
 	busy = false
 	_set_request_buttons(false)
-	_connection(response.ok)
 	if not response.ok:
+		_log("talk npc=%d failed: %s" % [dialogue_id, str(response.error)])
 		modal_status.text = str(response.error)
 		return
 	var data: Dictionary = response.data
+	_log("talk npc=%d ok end=%s affinity=%d reply_chars=%d" % [
+		dialogue_id, str(data.get("end", false)), int(data.get("affinity", -1)),
+		str(data.get("reply", "")).length()])
 	_append_talk(dialogue_name, str(data.get("reply", "")))
 	if data.has("player"):
 		_apply_player(data.player)
@@ -852,13 +875,16 @@ func dialog_apprentice() -> void:
 	busy = true
 	_set_request_buttons(true)
 	modal_status.text = "恭谨而立，静候应允……"
-	var response: Dictionary = await api.request("/api/npc/%d/apprentice" % dialogue_id, {})
+	var response: Dictionary = await api.request("/api/npc/%d/apprentice" % dialogue_id, {}, 20.0)
 	busy = false
 	_set_request_buttons(false)
 	if not response.ok:
+		_log("apprentice npc=%d failed: %s" % [dialogue_id, str(response.error)])
 		modal_status.text = str(response.error)
 		return
 	var data: Dictionary = response.data
+	_log("apprentice npc=%d joined=%s affinity=%d" % [
+		dialogue_id, str(data.get("joined", false)), int(data.get("affinity", -1))])
 	_append_talk(dialogue_name, str(data.get("reply", "")))
 	if data.has("player"):
 		_apply_player(data.player)
@@ -873,12 +899,14 @@ func dialog_challenge() -> void:
 	busy = true
 	_set_request_buttons(true)
 	modal_status.text = "剑拔弩张，切磋以待……"
-	var response: Dictionary = await api.request("/api/npc/%d/challenge" % dialogue_id, {"x": int(world.actor_pos.x), "y": int(world.actor_pos.y)}, 20.0)
+	var response: Dictionary = await api.request("/api/npc/%d/challenge" % dialogue_id, {"x": int(world.actor_pos.x), "y": int(world.actor_pos.y)}, 30.0)
 	busy = false
 	_set_request_buttons(false)
 	if not response.ok:
+		_log("challenge npc=%d failed: %s" % [dialogue_id, str(response.error)])
 		modal_status.text = str(response.error)
 		return
+	_log("challenge npc=%d ok" % dialogue_id)
 	_apply_player(response.data.get("player", {}))
 	battle = response.data.get("battle", {})
 	battle_log.assign(["与%s切磋比试。" % battle.get("enemy", {}).get("name", dialogue_name)])
@@ -890,13 +918,16 @@ func dialog_gift(item_id: int, item_name: String) -> void:
 	busy = true
 	_set_request_buttons(true)
 	modal_status.text = "%s接过%s细看。" % [dialogue_name, item_name]
-	var response: Dictionary = await api.request("/api/npc/%d/gift" % dialogue_id, {"item_id": item_id})
+	var response: Dictionary = await api.request("/api/npc/%d/gift" % dialogue_id, {"item_id": item_id}, 30.0)
 	busy = false
 	_set_request_buttons(false)
 	if not response.ok:
+		_log("gift npc=%d item=%s failed: %s" % [dialogue_id, item_name, str(response.error)])
 		modal_status.text = str(response.error)
 		return
 	var data: Dictionary = response.data
+	_log("gift npc=%d item=%s affinity=%d" % [
+		dialogue_id, item_name, int(data.get("affinity", -1))])
 	_apply_player(data.get("player", {}))
 	dialogue_affinity = int(data.get("affinity", dialogue_affinity))
 	_append_talk(dialogue_name, str(data.get("reply", "")))
@@ -938,11 +969,13 @@ func start_battle(mob_id: String) -> void:
 	var response: Dictionary = await api.request("/api/battle/start", {"target_type": "mob", "target_id": mob_id, "pos": {"x": world.actor_pos.x, "y": world.actor_pos.y}})
 	busy = false
 	if not response.ok:
+		_log("battle start mob=%s failed: %s" % [mob_id, str(response.error)])
 		notify(response.error)
 		encounter_cooldown = 3
 		return
 	_apply_player(response.data.player)
 	battle = response.data.battle
+	_log("battle start mob=%s enemy=%s" % [mob_id, str(battle.get("enemy", {}).get("name", ""))])
 	battle_log.assign(["与%s狭路相逢。" % battle.enemy.name])
 	open_battle()
 
@@ -1000,18 +1033,20 @@ func battle_action(action: String, id: int = -1) -> void:
 	var payload := {"action": action}
 	if id >= 0:
 		payload["id"] = id
-	var response: Dictionary = await api.request("/api/battle/action", payload)
+	var response: Dictionary = await api.request("/api/battle/action", payload, 30.0)
 	busy = false
 	_set_request_buttons(false)
 	if not response.ok:
+		_log("battle action=%s id=%d failed: %s" % [action, id, str(response.error)])
 		modal_status.text = response.error
 		notify(response.error)
-		_connection(response.has("status"))
 		await refresh()
 		return
-	_connection(true)
-	_apply_player(response.data.player, not response.data.battle.get("active", false))
-	battle = response.data.battle
+	var result_battle: Dictionary = response.data.battle
+	_log("battle action=%s id=%d result=%s active=%s" % [
+		action, id, str(result_battle.get("result", "")), str(result_battle.get("active", false))])
+	_apply_player(response.data.player, not result_battle.get("active", false))
+	battle = result_battle
 	for entry in response.data.get("log", []):
 		battle_log.append(str(entry.text))
 	var rewards: Variant = response.data.get("rewards")

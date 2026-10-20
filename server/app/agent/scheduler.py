@@ -5,12 +5,15 @@
 """
 
 import asyncio
+import logging
 
 from ..config import settings
 from . import gossip as gossip_mod
 from . import heart as heart_mod
 from . import npc as npc_mod
 from . import reflection as reflection_mod
+
+logger = logging.getLogger(__name__)
 
 
 async def _reflect_loop(db, store) -> None:
@@ -19,26 +22,30 @@ async def _reflect_loop(db, store) -> None:
         try:
             for npc_id in npc_mod.ids():
                 try:
-                    await reflection_mod.run_once(db, store, npc_id)
+                    ran = await reflection_mod.run_once(db, store, npc_id)
+                    if ran:
+                        logger.info("reflection npc=%d completed", npc_id)
                 except asyncio.CancelledError:
                     raise
-                except Exception as e:
-                    print(f"[scheduler] reflection npc {npc_id} failed: {e!r}")
+                except Exception:
+                    logger.exception("reflection npc=%d failed", npc_id)
         except asyncio.CancelledError:
             raise
-        except Exception as e:
-            print(f"[scheduler] reflection tick failed: {e!r}")
+        except Exception:
+            logger.exception("reflection tick failed")
 
 
 async def _gossip_loop(db, store) -> None:
     while True:
         await asyncio.sleep(settings.gossip_interval_real)
         try:
-            await gossip_mod.scan(db, store)
+            spread = await gossip_mod.scan(db, store)
+            if spread:
+                logger.info("gossip spread pairs=%d", spread)
         except asyncio.CancelledError:
             raise
-        except Exception as e:
-            print(f"[scheduler] gossip tick failed: {e!r}")
+        except Exception:
+            logger.exception("gossip tick failed")
 
 
 async def _plan_loop(db, store) -> None:
@@ -50,8 +57,8 @@ async def _plan_loop(db, store) -> None:
             await heart_mod.ensure_all(db, store)
         except asyncio.CancelledError:
             raise
-        except Exception as e:
-            print(f"[scheduler] plan tick failed: {e!r}")
+        except Exception:
+            logger.exception("plan tick failed")
 
 
 async def start(db, store) -> list[asyncio.Task]:
