@@ -18,6 +18,7 @@ from .game import skills as skills_mod
 from .game.clock import GameClock
 from .llm import OllamaClient
 from .agent import dialogue as dialogue_mod
+from .agent import greet as greet_mod
 from .agent import memory as memory_mod
 from .agent import npc as npc_mod
 from .agent import scheduler as scheduler_mod
@@ -142,6 +143,17 @@ async def npc_talk(npc_id: int, req: TalkReq) -> dict[str, Any]:
         raise HTTPException(404, "查无此人")
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@app.post("/api/npc/{npc_id}/greet")
+async def npc_greet(npc_id: int) -> dict[str, Any]:
+    await _player_or_409()
+    try:
+        return await greet_mod.greet(db, mem_store, npc_id)
+    except LookupError:
+        raise HTTPException(404, "查无此人")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
 
 
 @app.post("/api/npc/{npc_id}/gift")
