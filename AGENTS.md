@@ -1,6 +1,6 @@
 # AGENTS.md
 
-本文件是每个新会话的行动指南。用户已决定将当前前端改为 **Godot 4 + GDScript**：代码放在 `xia-ai-town/`，以 `server/` 实际接口为准；旧 `client/`（Phaser 历史前端）已删除，历史见 git，勿再引用。如需新的图片资源，须提供生图提示词与存放路径，等待用户手动生成。本版采用 Godot 原生绘制，无外部图片依赖。M0–M4 已全部落地：脚手架、战斗、成长、NPC 记忆/RAG/对话、反思/关系/八卦/主动搭话与确定性日程。
+本文件是每个新会话的行动指南。用户已决定将当前前端改为 **Godot 4 + GDScript**：代码放在 `xia-ai-town/`，以 `server/` 实际接口为准；旧 `client/`（Phaser 历史前端）已删除，历史见 git，勿再引用。如需新的图片资源，须提供生图提示词与存放路径，等待用户手动生成。本版采用 Godot 原生绘制，无外部图片依赖。M0–M5 已全部落地：脚手架、战斗、成长、NPC 记忆/RAG/对话、反思/关系/八卦/主动搭话与确定性日程、世界公设与断岳刀、对话议程/口癖/轻情绪、每日心事与安全偏离、附近事件感知。
 
 ## 项目是什么
 
@@ -31,7 +31,10 @@
 4. **LLM 调用永不阻塞玩法**：所有 LLM 结构化输出必须走 校验 → 重试一次(temperature 0.3) → 模板兜底 的链路；JSON 解析失败时用模板回复，游戏可继续。
 5. **好感度防漂移**：LLM 单回合好感变化 clamp ±3；送礼/切磋等规则类增益以规则为准。
 6. **SQLite 单写队列**：对话写入与后台反思/八卦任务并发写库，用 asyncio.Lock 串行化 + WAL，不要改成多连接并行写。记忆写入 = SQLite 落库 → 同一锁内 Chroma upsert（先 SQLite 后 Chroma）。
-7. **LLM 全局优先级限流**（`PriorityLimiter`，并发默认 2）：`dialogue`/`dialogue_summary`/`embed`=0 > `greet`=1 > `relationship`=2 > `reflection`=3（默认）> `gossip`=4。`llm.chat` 按 purpose 自动取级，新增 purpose 要在 `PRIORITY` 里登记。所有调用写 `llm_log` 表供实验分析。
+7. **LLM 全局优先级限流**（`PriorityLimiter`，并发默认 2）：`dialogue`/`dialogue_summary`/`embed`=0 > `greet`=1 > `relationship`=2 > `reflection`/`heart`=3（默认）> `gossip`=4。`llm.chat` 按 purpose 自动取级，新增 purpose 要在 `PRIORITY` 里登记。所有调用写 `llm_log` 表供实验分析。
+8. **M5 只影响措辞**：世界阶段、心事、议程、口癖、轻情绪、附近事件都不改好感数值；好感仍只走 LLM `affinity_delta`、送礼、切磋、反思。
+9. **偏离零同步**：心事偏离只平移相位边界，不新增路径/坐标/轮询；服务端 `schedule._day_phases` 与客户端 `town_world._deviated_phases` 常量必须同步。
+10. **公设与事件不逐人入忆**：世界公设、全镇通告、附近事件只作常驻 prompt 上下文；只有具体互动/目击按原规则写记忆。
 
 ## 环境与配置
 
@@ -77,10 +80,12 @@ cd server && uv venv .venv && uv pip install -r requirements.txt
 - **杀 dev server 用端口，别用 pkill -f**：`pkill -f "uvicorn ..."` 会匹配到自己这条 bash 命令行里同样含该文本的部分而自杀。用 `fuser -k 8000/tcp` / TaskStop，或 `pkill -f "app[.]main"`（字符类技巧）。
 - **测试/冒烟必须 `SCHEDULER_ENABLED=false`**：否则 lifespan 启动的后台反思/八卦会调用真实 Ollama，拖慢甚至污染断言；`server/tests/smoke.py` 在 import 前设置，Godot 冒烟在子进程 env 里设置。
 - **NPC 位置零同步**：服务端 `game/schedule.py` 与客户端 `town_world.gd` 各实现同一套相位/折线/LCG 踱步；改任一侧常量或算法必须同步另一侧，否则两端位置漂移。客户端不轮询 NPC 坐标，只随 10 秒状态同步取参数。
+- **M5 世界阶段与偏离**：`world.stage` 只有 0/2，推进条件是 `mob_kills` 存在 boss+三名山贼且已取得断岳刀；`POST /api/game/new` 必须调 `world_state.reset`，启动时幂等补算。日程偏离只平移相位，`plan_enabled=false` 会立即隐藏心事/偏离；`npc_plan`/`npc_mood` 是 SCHEMA 新表，无 ALTER 迁移。
+- **M5 prompt 预算**：世界公设、心事、议程、口癖、情绪、附近事件全部塞进原有单次对话/搭话调用，**不得新增前台 LLM 调用**；心事是唯一新增后台 purpose（优先级 3）。
 
 ## 当前 Godot 客户端
 
-`xia-ai-town/scripts/main.gd` 负责 HUD、面板、输入、交互、战斗及状态同步；`api.gd` 是 HTTP 客户端；`ui_kit.gd` 是主题组件；`town_world.gd` 原生绘制与碰撞、坐标保持原地图约定，并在本地按日程推算 NPC 位置、绘制搭话气泡；`town_map.gd` 提供小地图与舆图。NPC 对话/送礼/切磋/拜师、日程移动与主动搭话均已接入后端；对话中的 NPC 在客户端冻结。地图与人物无需外部图片。Godot `.godot/` 缓存不入库。
+`xia-ai-town/scripts/main.gd` 负责 HUD、面板、输入、交互、战斗及状态同步，含镇志面板与人物心事显示；`api.gd` 是 HTTP 客户端；`ui_kit.gd` 是主题组件；`town_world.gd` 原生绘制与碰撞、坐标保持原地图约定，并在本地按日程（含 `deviation` 相位平移）推算 NPC 位置、绘制搭话气泡；`town_map.gd` 提供小地图与舆图。NPC 对话/送礼/切磋/拜师、日程移动与主动搭话均已接入后端；对话中的 NPC 在客户端冻结。地图与人物无需外部图片。Godot `.godot/` 缓存不入库。
 
 ## 目录结构（实现位置参考）
 
@@ -93,21 +98,23 @@ Xia/
 │  ├─ app/
 │  │  ├─ main.py config.py db.py llm.py  # main 路由+lifespan装配；config 产 .env 配置；db 单写队列+WAL；llm 双后端封装+优先级限流
 │  │  ├─ game/             # data skills player inventory mobs battle shop clock schedule（确定性日程，纯函数）
+│  │  │                    # world（公设/立场）world_state plan（当日偏离读取）
 │  │  └─ agent/            # npc memory（双库+reconcile）rag dialogue summary（批总结）reflection（反思入忆）relationship（滚动摘要）gossip（八卦）greet（前台搭话）scheduler（后台巡检）
+│  │                       # agenda（议程）mood（轻情绪）heart（每日心事/偏离）events（附近事件）
 │  ├─ data/               # xia.db + chroma/（向量库），均 gitignore
 │  └─ requirements.txt
 └─ README.md
 ```
 
-`agent/scheduler.py` 是后台唯一入口：按 `scheduler_tick_real` 巡检反思、按 `gossip_interval_real` 扫描八卦；两条循环都先 sleep 再工作，单个 NPC 失败不会拖死任务。反思在素材足够时写 `kind=reflection` 记忆并顺带更新关系摘要，八卦只写双方 `kind=gossip` 记忆。主动搭话不走后台，是 Godot 进入 48px 感应圈后调用的 HTTP 接口。
+`agent/scheduler.py` 是后台唯一入口：按 `scheduler_tick_real` 巡检反思与每日心事、按 `gossip_interval_real` 扫描八卦；所有循环都先 sleep 再工作，单个 NPC 失败不会拖死任务。反思在素材足够时写 `kind=reflection` 记忆并顺带更新关系摘要，八卦只写双方 `kind=gossip` 记忆。主动搭话不走后台，是 Godot 进入 48px 感应圈后调用的 HTTP 接口。
 
 ## 实施顺序
 
-按 DESIGN.md §13 里程碑推进：M0 脚手架、M1 战斗循环、M2 成长系统、M3 NPC 记忆+RAG+对话、M4 反思/关系摘要/八卦/主动搭话与确定性日程均已完成。每个里程碑交付可玩 build；调试观察主要靠 `GET /api/debug/npc/{id}`（好感、记忆流、反思、关系摘要、当前日程）。
+按 DESIGN.md §13 里程碑推进：M0 脚手架、M1 战斗循环、M2 成长系统、M3 NPC 记忆+RAG+对话、M4 反思/关系摘要/八卦/主动搭话与确定性日程、M5 世界公设/议程/情绪/心事偏离/附近事件均已完成。每个里程碑交付可玩 build；调试观察主要靠 `GET /api/debug/npc/{id}`（好感、记忆流、反思、关系摘要、当前日程、议程、情绪、心事、偏离、世界立场）。
 
-**里程碑的执行前必读**：M2 有专属拆解文档 [`docs/M2-PLAN.md`](docs/M2-PLAN.md)，M4 有 [`docs/M4-PLAN.md`](docs/M4-PLAN.md)——数值、API 形状、文件落点、schema 迁移、验证步骤全部内联，关键决策已在文档里拍板，**实施对应里程碑时以计划文档为准、不要重新翻 DESIGN 与旧代码做考古**；仅当实现中发现设计需要变更时才回改 DESIGN.md 并同步该计划文档。后续里程碑建议沿用 `docs/M?-PLAN.md` 模式。
+**里程碑的执行前必读**：M2 有专属拆解文档 [`docs/M2-PLAN.md`](docs/M2-PLAN.md)，M4 有 [`docs/M4-PLAN.md`](docs/M4-PLAN.md)，M5 有 [`docs/M5-PLAN.md`](docs/M5-PLAN.md)——数值、API 形状、文件落点、schema 迁移、验证步骤全部内联，关键决策已在文档里拍板，**实施对应里程碑时以计划文档为准、不要重新翻 DESIGN 与旧代码做考古**；仅当实现中发现设计需要变更时才回改 DESIGN.md 并同步该计划文档。后续里程碑建议沿用 `docs/M?-PLAN.md` 模式。
 
-下一步的 NPC 生动化改造已写成 [`docs/M5-PLAN.md`](docs/M5-PLAN.md)，状态是**方案待拍板、未实施**——在用户明确选定改造包之前，不要按该文档动代码；该文档里的默认值、开关与验收标准也可能随拍板调整。
+M5 已按 [`docs/M5-PLAN.md`](docs/M5-PLAN.md) 全部实施（W/B/A/C 四个 commit）；后续 NPC 生动化调整以 DESIGN.md §6.11/§6.12 与实际冒烟为准。
 
 ## Git 提交规范：任务完成自动提交
 

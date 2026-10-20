@@ -186,11 +186,12 @@
 | 铁剑 | 武器 | 凡品 | 攻+8 | 80 |
 | 精钢剑 | 武器 | 良品 | 攻+15 | 250 |
 | 玄铁剑(掉落) | 武器 | 稀有 | 攻+24、暴击+5% | 不可购 |
+| 断岳刀(黑旋风首掉) | 武器 | 稀有 | 攻+28、暴击+8% | 神器，不可售 |
 | 布袍 | 衣服 | 凡品 | 防+4 | 50 |
 | 精革甲 | 衣服 | 良品 | 防+9 | 200 |
 | 玉佩 | 饰品 | 良品 | MP上限+40、悟性+1 | 150 |
 
-装备不可分解/附魔；替换即回背包，可卖店（半价）。
+装备不可分解/附魔；替换即回背包，可卖店（半价），`unsellable` 神器除外。
 
 ### 5.5 恢复药剂与经济
 
@@ -238,7 +239,7 @@
 
 ### 6.1 总览
 
-对 Generative Agents 的裁剪版：保留**记忆流 + 检索 + 反思 + 关系演化**，砍掉自由规划（V1 用固定日程 + 午间聚集）、砍掉 NPC 自由行动决策（移动按日程走）。所有 LLM 调用集中在：对话、主动搭话、反思、关系摘要、少量八卦改写。
+对 Generative Agents 的裁剪版：保留**记忆流 + 检索 + 反思 + 关系演化**，砍掉自由规划（V1 用固定日程 + 午间聚集 + 每日一次安全偏离）、砍掉 NPC 自由行动决策（移动按日程走）。所有 LLM 调用集中在：对话、主动搭话、反思、关系摘要、每日心事、少量八卦改写；议程/情绪/附近事件不调 LLM。
 
 ### 6.2 NPC 花名册（7 人）
 
@@ -625,9 +626,11 @@ Xia/
 ├─ server/
 │  ├─ app/
 │  │  ├─ main.py  config.py  db.py
-│  │  ├─ game/                 # player, inventory, shop, battle(规则AI), save, clock, schedule(确定性日程)
+│  │  ├─ game/                 # player, inventory, shop, battle(规则AI), clock, schedule(确定性日程),
+│  │  │                        # world(公设/立场), world_state, plan(当日偏离读取), data
 │  │  ├─ agent/                # npc, memory(RAG·Chroma), rag, dialogue, summary(批总结),
-│  │  │                        # reflection, relationship, gossip, greet, scheduler
+│  │  │                        # reflection, relationship, gossip, greet, scheduler,
+│  │  │                        # agenda, mood, heart(心事/偏离), events(附近事件)
 │  │  └─ llm.py                # ollama 客户端 + PriorityLimiter + llm_log
 │  ├─ data/                    # xia.db + chroma/（向量库），均 gitignore
 │  └─ requirements.txt         # fastapi uvicorn numpy httpx pydantic-settings chromadb
