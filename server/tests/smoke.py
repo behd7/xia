@@ -11,6 +11,7 @@ lifespan：连库 -> seed -> 时钟 -> reconcile -> 注入），并 stub 掉 LLM
 """
 
 import asyncio
+import json
 import os
 import shutil
 import sys
@@ -29,6 +30,7 @@ os.environ["SCHEDULER_ENABLED"] = "false"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 FAIL = 0
+CALLED: list[str] = []
 
 
 def check(label: str, cond: bool) -> None:
@@ -40,14 +42,29 @@ def check(label: str, cond: bool) -> None:
 
 async def main() -> int:
     from app.main import app, ollama
+    from app.config import settings
     from app.game import data
+    from app.agent import gossip, npc as npc_mod, reflection, relationship
 
     # -- stub LLM：chat 按 purpose 返回确定 JSON；embed 返回确定向量（仅测通路） --
-    async def fake_chat(purpose, messages, *, json_format=False, temperature=0.7, metadata=None):
+    async def fake_chat(purpose, messages, *, json_format=False, temperature=0.7,
+                        metadata=None, priority=None):
+        CALLED.append(purpose)
         if purpose == "dialogue":
-            text = '{"reply":"阁下所问，某自有计较。","affinity_delta":2,"end":false}'
+            end = "告辞" in messages[-1]["content"]
+            text = json.dumps({"reply": "阁下所问，某自有计较。",
+                               "affinity_delta": 2, "end": end}, ensure_ascii=False)
         elif purpose == "dialogue_summary":
             text = '{"events":[{"content":"与玩家交谈甚欢。","importance":3}]}'
+        elif purpose == "reflection":
+            text = ('{"insights":[{"content":"冒烟侠屡次来问剑，心性倒是坚定。"}],'
+                    '"affinity_delta":1}')
+        elif purpose == "relationship":
+            text = '{"summary":"此人常来走动，是个有心人。"}'
+        elif purpose == "gossip":
+            text = '{"line":"那小子昨日在后山崖办了黑旋风。"}'
+        elif purpose == "greet":
+            text = '{"reply":"别来无恙？今日可有好酒？"}'
         else:
             text = "{}"
         return type("R", (), {"text": text, "in_tokens": 10, "out_tokens": 8})()
@@ -61,6 +78,8 @@ async def main() -> int:
     ollama.chat, ollama.embed, ollama.tags = fake_chat, fake_embed, fake_tags
 
     async with app.router.lifespan_context(app):
+        import app.main as main_mod  # lifespan 之后才能取到真实 db/mem_store
+
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as c:
@@ -76,6 +95,18 @@ async def main() -> int:
             check("new game creates player", r.status_code == 200 and p["name"] == "冒烟侠")
             check("starts with HP>0 & gold 100", p["hp"] > 0 and p["gold"] == 100)
             check("fresh char free_points==0 (现状)", p["free_points"] == 0)
+
+            print("\n== npcs/state ==")
+            sched = (await c.get("/api/npcs/state")).json()
+            check("seven scheduled NPCs", len(sched["npcs"]) == 7)
+            check("nine schedule phases", len(sched["phases"]) == 9)
+            check("every NPC has both routes", all(
+                n["home_to_work"] and n["work_to_gather"] for n in sched["npcs"]))
+            check("positions inside world", all(
+                0 <= n["pos"][0] <= 1600 and 0 <= n["pos"][1] <= 960
+                for n in sched["npcs"]))
+            check("greet threshold comes from settings",
+                  sched["greet_threshold"] == settings.greet_threshold)
 
             print("\n== allocate (无自由点时取到 400 = 路由在线) ==")
             r = await c.post("/api/game/allocate", json={"stats": {"str": 1}})
@@ -113,10 +144,69 @@ async def main() -> int:
             r = await c.post("/api/npc/1/talk", json={"message": "先生安好？"})
             check("talk returns reply", r.status_code == 200 and len(r.json()["reply"]) > 0)
             check("affinity clamped to [0,100]", 0 <= r.json()["affinity"] <= 100)
+            d1 = (await c.get("/api/debug/npc/1")).json()
+            check("dialogue pauses NPC", d1["reflection"]["paused_until"] is not None)
+            r = await c.post("/api/npc/1/talk", json={"message": "告辞"})
+            check("farewell ends dialogue", r.status_code == 200 and r.json()["end"] is True)
+            d1 = (await c.get("/api/debug/npc/1")).json()
+            check("farewell clears pause", d1["reflection"]["paused_until"] is None)
 
             print("\n== debug/npc includes memory ==")
             d = (await c.get("/api/debug/npc/5")).json()
             check("debug shows gift memory", any("送礼" in m["content"] for m in d["memories"]))
+
+            print("\n== reflection ==")
+            for i in range(8):
+                await main_mod.mem_store.add_memory(
+                    main_mod.db, 5, content=f"冒烟侠第{i + 1}次来铁匠铺问剑。",
+                    kind="event", participants=["冒烟侠"], importance=3)
+            before = (await c.get("/api/debug/npc/5")).json()["affinity"]
+            ran = await reflection.run_once(main_mod.db, main_mod.mem_store, 5, force=True)
+            d5 = (await c.get("/api/debug/npc/5")).json()
+            check("forced reflection runs", ran is True)
+            check("reflection memory written at importance 8", any(
+                m["kind"] == "reflection" and m["importance"] == 8 for m in d5["memories"]))
+            check("reflection affinity +1 (stub clamp)", d5["affinity"] == before + 1)
+
+            print("\n== relationship ==")
+            await main_mod.mem_store.add_memory(
+                main_mod.db, 5, content="冒烟侠与王大柱在炉边闲谈许久。",
+                kind="event", participants=["冒烟侠"], importance=4)
+            updated = await relationship.maybe_update(
+                main_mod.db, main_mod.mem_store, 5, "player", "冒烟侠", force=True)
+            d5 = (await c.get("/api/debug/npc/5")).json()
+            rel = next((r for r in d5["relationship"]
+                        if r["target_kind"] == "player" and r["target_id"] == "冒烟侠"), None)
+            check("forced relationship update", updated is True)
+            check("relationship summary stored", rel is not None and bool(rel["summary"].strip()))
+
+            print("\n== gossip ==")
+            root_id = await main_mod.mem_store.add_memory(
+                main_mod.db, 5, content="冒烟侠在后山崖力战黑旋风。",
+                kind="event", participants=["冒烟侠"], importance=8)
+            spread = await gossip.gossip_between(
+                main_mod.db, main_mod.mem_store, 5, 6, poi="镇口")
+            d6 = (await c.get("/api/debug/npc/6")).json()
+            heard = [m for m in d6["memories"] if m["kind"] == "gossip"]
+            check("gossip spreads", spread is True)
+            check("gossip keeps source root", bool(heard) and heard[0]["source_memory_id"] == root_id)
+            again = await gossip.gossip_between(
+                main_mod.db, main_mod.mem_store, 5, 6, poi="镇口")
+            check("same root not retold", again is False)
+
+            print("\n== proactive greet ==")
+            await npc_mod.set_affinity(main_mod.db, 5, 75)
+            r = await c.post("/api/npc/5/greet")
+            body = r.json()
+            check("greet triggered", r.status_code == 200 and body.get("greet") is True
+                  and bool(body.get("reply")))
+            again = (await c.post("/api/npc/5/greet")).json()
+            check("greet cooldown", again.get("greet") is False
+                  and again.get("reason") == "cooldown")
+
+            print("\n== M4 prompt purposes ==")
+            check("reflection/relationship/gossip/greet prompts called",
+                  {"reflection", "relationship", "gossip", "greet"} <= set(CALLED))
 
     shutil.rmtree(_tmp, ignore_errors=True)
     return FAIL

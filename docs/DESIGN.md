@@ -34,7 +34,7 @@
 
 **包含**：一座小镇+两片野外的单张地图、3 门派、7 个智能 NPC、属性/等级、装备（3 槽位）、恢复药剂、技能、1v1 回合制战斗、自由文本对话、记忆流+RAG、好感度、反思、关系演化、NPC 八卦传播、NPC 主动搭话、单存档自动保存。
 
-**不包含（留待后续版本）**：主线/支线任务、队友与多人战斗、交易所/摆摊、昼夜光照与天气、音效音乐、NPC 完整自主规划（V1 仅有"白天工作/夜晚回家"两段式日程）、存档槽多开、移动端适配、存档回滚。
+**不包含（留待后续版本）**：主线/支线任务、队友与多人战斗、交易所/摆摊、昼夜光照与天气、音效音乐、NPC 完整自主规划（V1 仅有固定日程：工作/午间镇口聚集/回家）、存档槽多开、移动端适配、存档回滚。
 
 ---
 
@@ -63,7 +63,7 @@
 │  场景渲染 / 输入 / UI     │   /api/game /api/npc ...  │  ├─ game: 状态·战斗·商店·存档    │
 │  NPC 行走由日程表本地推算  │                           │  ├─ agent: 记忆流·RAG·反思·关系  │
 └─────────────────────────┘                           │  ├─ scheduler: 反思/八卦 后台任务│
-                                                      │  └─ llm: Ollama 客户端(信号量限流)│
+                                                      │  └─ llm: Ollama 客户端(优先级限流)│
                                                       └──────────────┬───────────────┘
                                                                      │ HTTP
                                                               ┌──────▼──────┐
@@ -238,7 +238,7 @@
 
 ### 6.1 总览
 
-对 Generative Agents 的裁剪版：保留**记忆流 + 检索 + 反思 + 关系演化**，砍掉自由规划（V1 用两段式日程）、砍掉 NPC 自由行动决策（移动按日程走）。所有 LLM 调用集中在：对话、主动搭话、反思、关系摘要、少量八卦改写。
+对 Generative Agents 的裁剪版：保留**记忆流 + 检索 + 反思 + 关系演化**，砍掉自由规划（V1 用固定日程 + 午间聚集）、砍掉 NPC 自由行动决策（移动按日程走）。所有 LLM 调用集中在：对话、主动搭话、反思、关系摘要、少量八卦改写。
 
 ### 6.2 NPC 花名册（7 人）
 
@@ -310,7 +310,7 @@ recency: 半衰期 = 3 游戏日
 | 70~84 | 亲近 | **主动搭话**（阈值=70）；王大柱 9 折 |
 | 85~100 | 挚交 | 关门弟子条件；掌门偶赠药剂（CD 1 游戏日） |
 
-**主动搭话**：玩家进入 NPC 感应半径（3 tile）时，客户端询问 `/api/npc/{id}/greet`；若好感≥70 且冷却（5 现实分）已过，服务器检索记忆生成一句搭话（例如提你上次那场架），NPC 头顶冒气泡并短暂转身面向玩家。低于阈值则只在 UI 上显示"可交谈 ▸E"提示。
+**主动搭话**：玩家进入 NPC 感应半径（`npc_sense_radius=48px`，约 3 tile）时，客户端边沿检测并询问 `/api/npc/{id}/greet`；若好感≥`greet_threshold`（70）且冷却（5 现实分）已过、NPC 不在对话暂停中，服务器检索记忆生成一句搭话（例如提你上次那场架），NPC 头顶冒气泡。低于阈值则只在 UI 上显示"E 交互"提示。
 
 ### 6.6 对话流程
 
@@ -350,40 +350,53 @@ importance 3）」链路，同样永不阻塞。event 作为 RAG 检索补充，
 
 ### 6.7 反思
 
-后台调度（asyncio 任务，每 1 现实分巡检）：
+后台调度每 `scheduler_tick_real`（默认 60s）巡检，`scheduler_enabled=false` 可整体关闭：
 
-- 触发：某 NPC 自上次反思后新增记忆 ≥8 条，或距上次反思 ≥6 现实分钟且有新记忆；
-- 流程：取该 NPC 最近 30 条记忆 → LLM 归纳出 1~3 条"高阶洞察"（第三人称，NPC 视角）→ 以 `kind=reflection, importance=8` 写入记忆流；
-- 反思洞察可小幅修正好感（±2，clamp），如"此人屡次相助，好感+2"；
-- 反思与对话共用 LLM 信号量，低优先级、可延迟。
+- 触发：某 NPC 自上次反思后新增记忆 ≥`reflect_mem_threshold`（8），或新增记忆 >0 且距上次反思 ≥`reflect_interval_real`（360s）；另设 `scheduler_tick_real × 0.75` 冷却兼失败退避，避免 60s 巡检抖动成每两拍才反思；
+- 素材：取该 NPC 最近 `reflection_take_n`（30）条记忆；少于 `reflection_min_memories`（3）条直接跳过；
+- 流程：LLM 归纳 1~3 条"高阶洞察"（第三人称，每条 ≤80 字）→ 以 `kind=reflection, importance=8` 写入记忆流（importance 不采信模型）；失败时以"近来常想起：<最近一条>"兜底，不阻塞后台；
+- 好感：仅当洞察文本确实提到玩家名才应用 `affinity_delta`，clamp ±`max_reflection_delta`（2）；
+- 计数：写库后用快照扣减 `mem_since_reflection = MAX(0, mem_since_reflection - 快照值)`，不吞掉反思期间并发写入的新记忆；`last_reflection_at` 记现实时间；
+- 反思结束顺带尝试一次关系摘要刷新（§6.8）；
+- 反思走优先级 3，与对话共用全局限流，可延迟。
 
 ### 6.8 关系演化
 
-- `relationship` 表为每对 (NPC, 对象) 维护一段 LLM 滚动摘要（≤100 字）；
-- 触发更新：与该对象新增 5 次交互，或反思中提及该对象 ≥3 次；
-- 更新 = 旧摘要 + 新增事件列表 → LLM 压缩为新摘要；
-- 摘要进对话 prompt（§6.6 的"关系印象"），是长程关系记忆的压缩载体——防止历史对话无限膨胀。
+- `relationship(npc_id, target_kind, target_id)` 为每对 (NPC, 对象) 维护一段 LLM 滚动摘要（≤`relationship_max_chars`，默认 100 字）；`target_kind=player` 时 `target_id` 为玩家名，`target_kind=npc` 时为对方 NPC 名；
+- 触发更新：`updated_at`（现实时间）以来，与该对象相关的 event/gossip 新增 ≥`relationship_update_events`（5），或提及该对象的 reflection ≥`relationship_mention_reflections`（3）；material 取 events[:20] + reflections[:10]；
+- 更新 = 旧摘要 + 新增事件列表 → LLM 压缩为新摘要；失败时用"旧摘要；最近两条事件"截断兜底；
+- 摘要进对话 prompt 的"你对{玩家}的印象"，是长程关系记忆的压缩载体——防止历史对话无限膨胀；
+- 摘要用 `created_at_real` 过滤素材，与游戏时间字段严格分开；同步/测试可走 `force=True`。
 
 ### 6.9 NPC-NPC 八卦与传播
 
-- 后台每 2 现实分扫描：同一 POI 且均处于日间空闲的 NPC 两两配对；
-- 每对每天最多八卦 1 次；每次八卦 = 共享"对方不知道且 importance≥5 的最重要一条记忆"；
-- 八卦文本默认模板：`{A}与我闲聊：{事件内容}`；若该事件 importance≥7，用 LLM 改写成一句转述（省 token 的折中）；
-- 双方各写一条 `kind=gossip` 记忆（importance 原值−1）。
-- 效果：在东山打完狼，晚上客栈里的柳小蝶就"听说"了——玩家行为在网络中扩散。
+- 后台每 `gossip_interval_real`（120s）扫描：同一 POI、均处于 work/gather 相位且未被对话暂停、距离 ≤64px 的 NPC 两两配对；扫描按时间轮转配对，每次最多成功传播 `gossip_max_pairs_per_scan`（2）对；
+- 每对每个游戏日最多八卦 1 次，kv 键 `gossip_pair:{min_id}:{max_id}` 存游戏日；
+- 每次八卦 = 共享"对方未亲历、未听说过且 importance≥`gossip_importance_min`（5）的最重要一条记忆"；候选按 importance、ts_game 降序；
+- 传播链用 `memory.source_memory_id` 恒指向根记忆，B 已持有同根记忆则跳过，避免同一件事反复转述；
+- 八卦文本默认模板：`{A}与我闲聊：{事件内容}`；若根事件 importance≥`gossip_rewrite_importance`（7），用 LLM 改写成一句转述（≤60 字，失败回退原文）；
+- 双方各写一条 `kind=gossip` 记忆（importance 根值−1，`source_memory_id` 指向根），并各自尝试刷新对对方的关系摘要；
+- 效果：午间镇口聚集时消息扩散；在东山打完狼，柳小蝶也可能"听说"——玩家行为在网络中传播。
 
 ### 6.10 日程与移动
 
-位置 = 游戏时钟的**确定性函数**（客户端本地推算，零同步）：
+位置 = 游戏时钟的**确定性函数**（客户端本地推算，零同步）。服务端下发 `phases`、`pacing`、`gather_anchor` 与每人两条折线，Godot 与 Python 各自实现同一套纯函数：
 
 | 时段 | 行为 |
 |---|---|
-| 06:30~07:00 | 从家走向工作 POI（路点插值） |
-| 07:00~19:00 | 停留工作 POI（小范围踱步，伪随机但以 NPC id+游戏日为种子，两端可复现） |
-| 19:00~19:30 | 走回家 |
-| 19:30~06:30 | 停留家中 |
+| 06:30~07:00 | 从家走向工作 POI（`home_to_work` 折线插值） |
+| 07:00~11:00 | 停留工作 POI（小范围踱步） |
+| 11:00~11:10 | 走向镇口聚集点（`work_to_gather`） |
+| 11:10~13:50 | 镇口聚集（`GATHER_ANCHOR=(768,440)`，八卦扫描窗口） |
+| 13:50~14:00 | 走回工作 POI |
+| 14:00~19:00 | 停留工作 POI |
+| 19:00~19:30 | 走回家（反向 `home_to_work`） |
+| 19:30~次日 06:30 | 停留家中 |
 
-对话期间该 NPC 服务器标记暂停，客户端冻结其移动（超时 5 现实分自动恢复）。
+- 折线绕开实心建筑；踱步以 NPC id + 游戏日 + 600s 槽位为种子，用 LCG（`1103515245/12345/1013904223` 等常量，两端逐位一致）生成 ±8/±6px 偏移，120s smoothstep 过渡；
+- 相位切换处行走段端点不带踱步偏移，可能跳变 ≤10px，属预期表现；
+- 对话期间服务器把 `paused_until` 设为现实时间 +5 分钟（`end=true` 提前清除），仅用于八卦扫描排除与调试观察；客户端只冻结当前对话框对应的 NPC，关闭即恢复日程；
+- `paused_until`/`last_reflection_at`/`last_greet_real`/关系 `updated_at` 用现实时间；`ts_game`、日程、八卦日界用游戏时间，不得混用。
 
 ---
 
@@ -441,7 +454,7 @@ embedding：`POST /api/embed {"model": ..., "input": [...]}`，向量 L2 归一�
 
 ### 7.5 并发控制
 
-asyncio.Semaphore(2) 全局限流；优先级：对话 > 搭话 > 关系摘要 > 反思 > 八卦。反思/八卦任务可被取消重排。
+`PriorityLimiter`（堆式异步优先级队列，并发上限 `LLM_CONCURRENCY=2`）全局限流；优先级：对话/批总结/embedding（0）> 搭话（1）> 关系摘要（2）> 反思与默认（3）> 八卦（4）。等待者按优先级与入队顺序取槽，取消安全；后台反思/八卦不会挤占玩家对话。
 
 ---
 
@@ -473,14 +486,15 @@ npc_state(npc_id, affinity, last_reflection_at, mem_since_reflection,
 memory(id, npc_id, ts_game,           -- 游戏时钟
        kind,                           -- event|reflection|gossip
        content, participants_json, poi, importance,
-       created_at_real)               -- 向量不入 SQLite，存 Chroma（见下）
+       created_at_real,                -- 现实时间：关系摘要水位线
+       source_memory_id NULL)          -- gossip 恒指向根记忆，防重复转述
 relationship(npc_id, target_kind,     -- player|npc
-             target_id, summary, updated_at)
+             target_id, summary, updated_at)  -- updated_at 为现实时间
 
 conversation(id, npc_id, ts_game, turns_json, affinity_delta_total)
 battle(id, player_id, target_kind, target_id, state_json, active, created_at)
 llm_log(id, purpose, model, in_tokens, out_tokens, ms, ok, created_at)
-kv(k, v)  -- 全局：时钟偏移、初始化标记等
+kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=游戏日 等
 ```
 
 **Chroma 集合 `memories`**（PersistentClient 本地目录，`hnsw:space=cosine`）：
@@ -490,7 +504,7 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记等
 - 索引是**派生数据**：换 embedding 模型或索引损坏时，删集合从 SQLite 全量重嵌入重建——SQLite 不存向量正是为了留这条退路；
 - Chroma 元数据不支持排序与列表值，反思（按时间取最近 30 条）、八卦/关系（按参与人过滤）等查询走 SQLite，Chroma 只做 ANN。
 
-索引：`memory(npc_id, ts_game)`、`memory(npc_id, importance)`。WAL 模式 + 单写队列（asyncio.Lock）避免后台反思与对话写冲突。
+索引：`memory(npc_id, ts_game)`、`memory(npc_id, importance)`、`memory(source_memory_id)`（`idx_memory_source`）。WAL 模式 + 单写队列（asyncio.Lock）避免后台反思与对话写冲突。`source_memory_id` 由 `connect()` 幂等迁移补列，旧库无需重建。
 
 ---
 
@@ -499,9 +513,9 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记等
 | Method | Path | 说明 |
 |---|---|---|
 | POST | `/api/game/new` | 新档 `{name}`（覆盖旧档需确认标记） |
-| GET | `/api/game/state` | 玩家全量状态+游戏时钟+`npcs` 花名册（id/slug/好感/地点） |
-| GET | `/api/npcs/state` | 全 NPC 位置推算参数/暂停标记/是否待搭话 |
-| POST | `/api/npc/{id}/greet` | 请求主动搭话（阈值+冷却判定） |
+| GET | `/api/game/state` | 玩家全量状态+游戏时钟+`npcs` 花名册（id/slug/name/role/好感/当前 poi/锚点/`paused_until`） |
+| GET | `/api/npcs/state` | 日程推算全量参数：`clock/sense_radius/greet_threshold/phases/pacing/gather_anchor` + 每人 `home_to_work/work_to_gather/pos/poi/affinity/paused_until/greet_ready` |
+| POST | `/api/npc/{id}/greet` | 主动搭话：`{greet,reply,affinity}` 或 `{greet:false,reason:affinity|cooldown|paused}`；无存档 409、查无此人 404 |
 | POST | `/api/npc/{id}/talk` | `{message}` → `{reply, affinity, end, player}`（LLM 生成，RAG 检索记忆） |
 | POST | `/api/npc/{id}/gift` | `{item_id}` |
 | POST | `/api/npc/{id}/challenge` | 请求切磋 → 进入战斗 |
@@ -514,11 +528,11 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记等
 | POST | `/api/game/unequip` | `{slot}` 卸下槽位装备 |
 | POST | `/api/game/skill/equip` | `{skill_id, equip}` 主动技装入/卸出战斗栏（≤3） |
 | POST | `/api/game/skill/upgrade` | `{skill_id}` 修炼点升级（20×当前级） |
-| POST | `/api/sect/join` | `{sect_id}` 拜师（M2 纯条件：无门派且等级≥3；M3 换对话式+好感） |
+| POST | `/api/sect/join` | `{sect_id}` 拜师：无门派、等级≥3、掌门好感≥60（对话式流程在客户端完成） |
 | POST | `/api/battle/start` | `{target_type: mob, target_id}` 野外怪物战斗；NPC 切磋经 `/api/npc/{id}/challenge` |
 | POST | `/api/battle/action` | `{action: attack|skill|item|flee, id?}` → 结算后全量战况 |
 | GET | `/api/battle/state` | 断线重入 |
-| GET | `/api/debug/npc/{id}` | **实验观察**：好感、反思、关系摘要、最近 50 条记忆 |
+| GET | `/api/debug/npc/{id}` | **实验观察**：好感、反思计数与 `seconds_since_reflection`、关系摘要、最近 50 条记忆（含 `source_memory_id`）、当前日程 `{phase,poi,pos,paused}` |
 | GET | `/api/health` | 含 Ollama 连通性检查 |
 
 战斗响应含 log 数组（逐条结算文本），客户端按序播放浮字/震动动画。
@@ -527,10 +541,12 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记等
 
 ## 10. 客户端 UI
 
-当前实现在 `xia-ai-town/`，旧 `client/`（Phaser）已删除。采用纸墨浅色面板、低饱和玉绿像素城镇与朱砂点缀；1440×900 逻辑画布保持比例缩放，地图镜头跟随玩家。左侧角色状态与玩法提示，右侧小地图及人物录，底部快捷操作栏。实际玩法对接 `server/app/main.py` 的 M0–M3 路由；NPC 对话、好感、拜师/切磋/送礼已在 Godot 客户端开放（M3），反思/主动搭话八卦等仍属 M4。
+当前实现在 `xia-ai-town/`，旧 `client/`（Phaser）已删除。采用纸墨浅色面板、低饱和玉绿像素城镇与朱砂点缀；1440×900 逻辑画布保持比例缩放，地图镜头跟随玩家。左侧角色状态与玩法提示，右侧小地图及人物录，底部快捷操作栏。实际玩法对接 `server/app/main.py` 的 M0–M4 路由：对话、好感、拜师/切磋/送礼、日程移动与主动搭话均已在 Godot 客户端开放。
 
 - **HUD**：HP/MP 条、等级经验条、银两、游戏时辰（"未时"）、当前 POI 名；
 - **面板**：角色(I)（属性分配）、背包(B)（装备/使用/送礼入口）、技能(K)（装备/升级）；
+- **NPC 日程**：每 10 秒随状态同步拉取 `/api/npcs/state`，用与服务器一致的 LCG/折线函数逐帧本地推算位置；对话中冻结当前 NPC，关闭对话框立即回到日程位置；人物录显示当前地点，`paused_until` 未过期时标注"（正忙）"；
+- **主动搭话**：走近 NPC 进入 48px 感知半径且 `greet_ready=true` 时，客户端异步请求 `/api/npc/{id}/greet`（不阻塞走动），成功后在 NPC 头顶绘制纸色气泡，最多两行、每行约 14 字；
 - **对话**：立绘位+文本框+输入框+5 快捷键；NPC 头顶好感小图标（心形分档，仅示意档位不显数值）；
 - **战斗**：全屏半透明遮罩面板，双方状态条/Buff 图标/四指令钮/滚动战斗日志/浮字伤害；
 - **商店**：列表+价格（显示折扣）；
@@ -542,7 +558,7 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记等
 
 ## 11. 占位美术规格
 
-Godot 当前版不依赖图片资源：`town_world.gd` 原生绘制瓦顶、窗棂、灯笼、门牌、草木、像素人物与怪物；静态地图绘制缓存，动态层仅更新角色与怪物。`ui_kit.gd` 提供纸墨面板和控件主题，中文使用系统 CJK 字体回退。原 Phaser PNG 生成脚本仅作历史保留。
+Godot 当前版不依赖图片资源：`town_world.gd` 原生绘制瓦顶、窗棂、灯笼、门牌、草木、像素人物与怪物；静态地图绘制缓存，动态层更新角色、日程驱动的 NPC、搭话气泡与怪物。`ui_kit.gd` 提供纸墨面板和控件主题，中文使用系统 CJK 字体回退。原 Phaser PNG 生成脚本仅作历史保留。
 
 后期正式素材规格（预留目录 `xia-ai-town/assets/`；如需生成图片，先向用户提供提示词与精确路径，等待用户手动生成完成）：
 
@@ -570,9 +586,10 @@ Xia/
 ├─ server/
 │  ├─ app/
 │  │  ├─ main.py  config.py  db.py
-│  │  ├─ game/                 # player, inventory, shop, battle(规则AI), save
-│  │  ├─ agent/                # memory(RAG·Chroma), npc, dialogue, reflection, gossip, scheduler
-│  │  └─ llm.py                # ollama 客户端 + 信号量 + llm_log
+│  │  ├─ game/                 # player, inventory, shop, battle(规则AI), save, clock, schedule(确定性日程)
+│  │  ├─ agent/                # npc, memory(RAG·Chroma), rag, dialogue, summary(批总结),
+│  │  │                        # reflection, relationship, gossip, greet, scheduler
+│  │  └─ llm.py                # ollama 客户端 + PriorityLimiter + llm_log
 │  ├─ data/                    # xia.db + chroma/（向量库），均 gitignore
 │  └─ requirements.txt         # fastapi uvicorn numpy httpx pydantic-settings chromadb
 └─ README.md
@@ -588,7 +605,7 @@ Xia/
 | M1 战斗循环 | 野怪、回合制战斗、药剂、商店、存档、死亡复活 | 完整打一只狼并买药 | ✅ 已完成 |
 | M2 成长系统 | 属性升级、装备、技能、拜师（原纯条件判定，M3 改为好感对话式） | 入门剑阳派用出赤阳斩 | ✅ 已完成 |
 | M3 NPC智能v1 | 记忆流、RAG、自由对话、好感度、对话式拜师/切磋/送礼 | 连聊三天 NPC 记得你 | ✅ 已实现（Godot 侧 M3 路由已开放，见 §10） |
-| M4 反思与传播 | 反思、关系摘要、八卦、主动搭话 | 隔天 NPC 主动提起你昨天的事 | ⏳ 待实现 |
+| M4 反思与传播 | 反思、关系摘要、八卦、主动搭话、确定性日程 | 隔天 NPC 主动提起你昨天的事 | ✅ 已实现（确定性冒烟覆盖反思→关系→八卦→搭话链路与暂停恢复；Godot 四阶段冒烟全绿。真实 4B 长时观察按 `docs/M4-PLAN.md` §7.2 复现） |
 
 每个里程碑结束产出可玩 build + 一段实验观察记录（debug API 截图/数据）。
 
@@ -601,17 +618,29 @@ Xia/
 | TIME_SCALE | 60 | 1 现实秒=多少游戏秒 |
 | GREET_THRESHOLD | 70 | 主动搭话好感阈值 |
 | GREET_COOLDOWN_REAL | 300s | 搭话冷却 |
+| SCHEDULER_ENABLED | true | 后台反思/八卦调度总开关（测试与冒烟置 false） |
+| SCHEDULER_TICK_REAL | 60s | 反思巡检周期；反思冷却 = 该值 × 0.75 |
 | REFLECT_MEM_THRESHOLD | 8 | 触发反思的新记忆数 |
-| REFLECT_INTERVAL_REAL | 360s | 反思巡检周期 |
+| REFLECT_INTERVAL_REAL | 360s | 距上次反思的最短时间间隔 |
+| REFLECTION_TAKE_N | 30 | 每次反思取最近记忆条数 |
+| REFLECTION_MIN_MEMORIES | 3 | 少于此数不反思 |
+| MAX_REFLECTION_DELTA | ±2 | 反思单次好感修正上限 |
+| RELATIONSHIP_UPDATE_EVENTS | 5 | 关系摘要刷新所需新增事件数 |
+| RELATIONSHIP_MENTION_REFLECTIONS | 3 | 关系摘要刷新所需提及反思数 |
+| RELATIONSHIP_MAX_CHARS | 100 | 关系摘要字数上限 |
 | GOSSIP_INTERVAL_REAL | 120s | 八卦扫描周期 |
+| GOSSIP_IMPORTANCE_MIN | 5 | 可传播记忆的最低重要度 |
+| GOSSIP_REWRITE_IMPORTANCE | 7 | 触发 LLM 改写的重要度 |
+| GOSSIP_MAX_PAIRS_PER_SCAN | 2 | 每次扫描最多成功传播的对数 |
+| NPC_SENSE_RADIUS | 48 | 客户端主动搭话感知半径（像素） |
 | DIALOGUE_WINDOW_SIZE | 6 | 每轮回复平铺的最近对话轮数 |
-| EVENT_SUMMARY_THRESHOLD | 5 | 对话满 N 轮即批总结成 event |
+| EVENT_SUMMARY_THRESHOLD | 5 | 互动判断值达 N 即批总结成 event |
 | RECENCY_HALF_LIFE | 3 游戏日 | 记忆新鲜度衰减 |
 | RAG_TOP_K | 6 | 检索条数 |
 | W_REL / W_REC / W_IMP | 1.0 / 0.8 / 0.5 | 检索权重 |
 | CHROMA_DIR | server/data/chroma | Chroma 向量库目录（可删重建） |
 | RESET_ON_START | false | true 时每次启动后端清空全部数据，完全重新开一局 |
-| LLM_CONCURRENCY | 2 | 全局信号量 |
+| LLM_CONCURRENCY | 2 | PriorityLimiter 并发上限 |
 | MAX_DIALOGUE_DELTA | ±3 | 对话单回合好感变化上限 |
 | LLM_API_KEY / LLM_API_BASE_URL | 空 | 同时设置则对话走该 OpenAI 兼容 API |
 | LLM_API_MODEL | 空 | API 对话模型名；缺省回退 CHAT_MODEL |

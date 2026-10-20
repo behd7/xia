@@ -2,7 +2,7 @@
 
 二维像素武侠 RPG 与生成式 NPC 实验。当前客户端使用 **Godot 4**，工程位于 [`xia-ai-town/`](xia-ai-town/)，通过 HTTP 连接 [`server/`](server/) 的 FastAPI 后端。旧 `client/`（Phaser 前端）已删除，历史见 git。
 
-设计文档：[`docs/DESIGN.md`](docs/DESIGN.md)。目前已接入 M0–M3：开档、地图探索、成长、装备、商店、拜师、回合制战斗，以及 NPC 对话（记忆检索 RAG）、送礼、切磋与拜师。NPC 在地图上显示静态人物标记，人物录注明身份与地点；NPC 日程与反思/八卦/主动搭话等待 M4 后端实现。
+设计文档：[`docs/DESIGN.md`](docs/DESIGN.md)。M0–M4 已全部接入：开档、地图探索、成长、装备、商店、拜师、回合制战斗，NPC 对话（记忆检索 RAG）、送礼、切磋与拜师，以及反思、关系摘要、NPC 间八卦、主动搭话和按游戏时钟确定性推算的 NPC 日程。客户端每十秒随 `/api/npcs/state` 拉取日程参数，本地推算 NPC 位置，不轮询坐标；好感到达阈值后靠近 NPC 会自动触发搭话气泡。
 
 ## 本地运行
 
@@ -33,7 +33,7 @@ godot --path xia-ai-town
 XIA_API_URL=http://127.0.0.1:8000 godot --path xia-ai-town
 ```
 
-基础探索与战斗无需 Ollama。NPC 功能开放后需要本地 Ollama 模型；模型 tag 通过 `server/.env` 配置（模板见 `server/.env.example`），不得写死在代码中。`GET /api/health` 可检查数据库、Ollama 及模型状态。
+基础探索与战斗无需 Ollama。NPC 对话、主动搭话、反思、关系摘要与八卦改写需要本地 Ollama 模型；模型 tag 通过 `server/.env` 配置（模板见 `server/.env.example`），不得写死在代码中。后台调度可用 `SCHEDULER_ENABLED=false` 关闭（测试与冒烟默认关闭）。`GET /api/health` 可检查数据库、Ollama 及模型状态。
 
 LLM 调用默认落 `llm_log` 表便于本地排查；如需跨链路可视化（检索的记忆 + 组装的 prompt + 生成输出 + 重试/兜底轨迹），可开启自托管 Langfuse 观测——默认关、fail-closed，在 `server/.env` 设 `LANGFUSE_ENABLED=true` 即可，部署栈见 `server/deploy/langfuse/`，详见 `docs/DESIGN.md §7.4`。
 
@@ -66,9 +66,9 @@ LLM 调用默认落 `llm_log` 表便于本地排查；如需跨链路可视化�
 | 缩放地图 | 鼠标滚轮 |
 | 关闭面板 | Esc；战斗中须结算或选择逃走 |
 
-首次进入输入名号开档，已有存档自动恢复。药铺出售药剂；铁匠铺出售兵器与衣甲，两店均支持半价卖出未装备的物品。走近野怪自动进入 1v1 回合战斗，可普攻、使用已装备的招式、服药或逃走。胜利获得经验、银两与修炼点；战败后在客栈门口恢复探索。等级达到三重后，在三派驻地按 E 可拜师，一生只入一派。
+首次进入输入名号开档，已有存档自动恢复。药铺出售药剂；铁匠铺出售兵器与衣甲，两店均支持半价卖出未装备的物品。走近野怪自动进入 1v1 回合战斗，可普攻、使用已装备的招式、服药或逃走。胜利获得经验、银两与修炼点；战败后在客栈门口恢复探索。等级达到三重且与掌门交情热络（好感≥60）后，在三派驻地按 E 可拜师，一生只入一派。
 
-游戏时钟在本地连续推算，每十秒同步服务器状态；交互时上报玩家位置。属性、物品与战斗完全由后端结算，未完成的战斗可在重新启动后继续。若战斗响应丢失，恢复连接后会同步服务器战局。
+NPC 按游戏时钟作息：清晨出门、白天在铺面/门派、午间到镇口聚集、傍晚回家，玩家可在人物录查看其当前地点。与 NPC 的好感达到亲近（≥70）后，靠近时会主动搭话，头顶气泡显示台词；对话期间该 NPC 停在原地，关闭对话后回到日程。游戏时钟在本地连续推算，每十秒同步服务器状态；交互时上报玩家位置。属性、物品与战斗完全由后端结算，未完成的战斗可在重新启动后继续。若战斗响应丢失，恢复连接后会同步服务器战局。
 
 ## 美术与工程
 
@@ -85,7 +85,7 @@ xia-ai-town/
   scripts/town_map.gd    小地图与舆图
   tools/             隔离存档的真实接口冒烟验证
   addons/godot_ai/    工程已有的 Godot MCP 插件
-server/              FastAPI、SQLite、游戏规则与后续 NPC 智能体
+server/              FastAPI、SQLite、游戏规则与 NPC 智能体
 docs/                设计文档
 ```
 
@@ -98,6 +98,12 @@ Godot 的 `.godot/` 缓存、Python 虚拟环境、`.env` 和服务器存档均�
 ```bash
 godot --headless --path xia-ai-town --editor --import --quit
 godot --headless --path xia-ai-town --check-only --script scripts/main.gd
+```
+
+服务端关键路径冒烟使用临时 SQLite/Chroma 并 stub LLM（无需 Ollama），覆盖建档、战斗、对话、反思、关系、八卦与搭话：
+
+```bash
+server/.venv/bin/python server/tests/smoke.py
 ```
 
 完整接口冒烟验证会启动临时端口的真实后端，并使用临时数据库和独立的 Godot 用户目录，不影响现有存档：
