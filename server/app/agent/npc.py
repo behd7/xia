@@ -206,7 +206,8 @@ async def apprentice(db: Database, mem_store, npc_id: int) -> dict:
     if mem_store is not None:
         await mem_store.add_memory(
             db, npc_id, content=f"你将{p['name']}收归{sect_name}门下，授以入门剑诀。",
-            kind="event", participants=[p["name"]], poi=n["work"], importance=6,
+            kind="event", participants=[p["name"]],
+            poi=schedule_mod.poi_label_for(n, mem_store.clock.now()), importance=6,
         )
     reply = CEREMONY.get(n["slug"], f"{n['name']}缓缓点头，收你入门。")
     tr = await trace_mod.trace_turn(
@@ -242,11 +243,12 @@ async def gift(db: Database, mem_store, npc_id: int, item_id: int) -> dict:
     new_aff = await set_affinity(db, npc_id, aff + delta)
     await inventory_mod.consume(db, p["id"], item_id)
     if mem_store is not None:
+        poi = schedule_mod.poi_label_for(n, mem_store.clock.now())
         await mem_store.add_memory(
             db, npc_id, content=f"送礼·{p['name']}送来{inv['name']}。",
-            kind="event", participants=[p["name"]], poi=n["work"], importance=3,
+            kind="event", participants=[p["name"]], poi=poi, importance=3,
         )
-        await summary_mod.bump(db, mem_store, npc_id, p["name"], n["work"])
+        await summary_mod.bump(db, mem_store, npc_id, p["name"], poi)
     await player_mod.save(db, p)
     reply = f"{n['name']}收下{inv['name']}，神色缓和，欣喜以为所识非虚。"
     tr = await trace_mod.trace_turn(

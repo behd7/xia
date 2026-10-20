@@ -23,6 +23,7 @@ import httpx
 _tmp = tempfile.mkdtemp(prefix="xia_smoke_")
 os.environ["DB_PATH"] = str(Path(_tmp) / "xia.db")
 os.environ["CHROMA_DIR"] = str(Path(_tmp) / "chroma")
+os.environ["SCHEDULER_ENABLED"] = "false"
 
 # 把 server 根（含 `app` 包）放进 path，保证从任意 cwd 都能跑。
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))

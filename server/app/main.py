@@ -20,6 +20,7 @@ from .llm import OllamaClient
 from .agent import dialogue as dialogue_mod
 from .agent import memory as memory_mod
 from .agent import npc as npc_mod
+from .agent import scheduler as scheduler_mod
 from .agent import summary as summary_mod
 from .agent import trace as trace_mod
 
@@ -47,7 +48,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     shop_mod.mem_store = mem_store  # 大额消费写入店主记忆的注入点
     battle_mod.summary_bump = summary_mod.bump  # 切磋累加互动判断值
     shop_mod.summary_bump = summary_mod.bump  # 购买累加互动判断值
+    scheduler_tasks = await scheduler_mod.start(db, mem_store)
     yield
+    await scheduler_mod.stop(scheduler_tasks)  # 必须先于 close mem_store/llm/db
     await trace_mod.close()
     if mem_store is not None:
         mem_store.close()

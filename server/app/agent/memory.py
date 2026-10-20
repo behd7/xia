@@ -60,11 +60,13 @@ class MemoryStore:
                     "ts_game": ts_game, "poi": poi or "",
                 }],
             )
-        # Service column for M4 reflection trigger; M3 only accumulates it.
-        await db.execute(
-            "UPDATE npc_state SET mem_since_reflection = mem_since_reflection + 1 WHERE npc_id = ?",
-            (npc_id,),
-        )
+        # Reflection itself must not re-trigger reflection (DESIGN §6.7).
+        if kind != "reflection":
+            await db.execute(
+                "UPDATE npc_state SET mem_since_reflection = mem_since_reflection + 1"
+                " WHERE npc_id = ?",
+                (npc_id,),
+            )
         return mid
 
     def query(self, npc_id: int, query_vec: list[float], n_results: int = 20) -> dict:

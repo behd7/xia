@@ -5,13 +5,17 @@
 (temperature 0.3) -> 模板兜底。绝不让模型输出失败阻塞游戏（AGENTS.md #4）。
 """
 
+import asyncio
 import json
 import re
+import time
 
 from ..config import settings
 from ..game import player as player_mod
+from ..game import schedule as schedule_mod
 from . import npc as npc_mod
 from . import rag as rag_mod
+from . import relationship as relationship_mod
 from . import summary as summary_mod
 from . import trace as trace_mod
 
@@ -56,13 +60,14 @@ def _warmth(affinity: int, name: str) -> str:
     return f"你与{name}情谊甚笃，信得过。"
 
 
-def _build_messages(p, n, affinity, memories, turns, now_str, place, message) -> list[dict]:
+def _build_messages(p, n, affinity, memories, turns, impression, now_str, place, message) -> list[dict]:
     mem_lines = "\n".join(m["content"] for m in memories[: settings.rag_top_k]) or "（暂无）"
     turn_lines = "\n".join(f"{p['name']}：{t['user']}\n你：{t['npc']}" for t in turns) or "（尚无可聊）"
     system = (
         f"你是{n['name']}。{n['persona']}你说话{n['speech_style']}。\n"
         f"{_warmth(affinity, p['name'])}\n"
-        f"你记得的一些事：\n{mem_lines}\n"
+        + (f"你对{p['name']}的印象：{impression}\n" if impression else "")
+        + f"你记得的一些事：\n{mem_lines}\n"
         f"你们最近的往来：\n{turn_lines}\n"
         f"此刻{now_str}，你正在{place}。\n"
         f"以你的口吻应答{p['name']}（≤80字）。并给出这次你与{p['name']}的关系变化"
@@ -83,7 +88,12 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
 
     p = await player_mod.get(db)
     current_affinity = await npc_mod.affinity(db, npc_id)
-    place = n["work"] or ""
+    place = schedule_mod.poi_label_for(n, mem_store.clock.now())
+    # 对话期间标记暂停：八卦扫描跳过、debug 可见；超时 5 现实分自动失效（DESIGN §6.10）。
+    await db.execute(
+        "UPDATE npc_state SET paused_until = ? WHERE npc_id = ?",
+        (time.time() + 300, npc_id),
+    )
 
     trace = await trace_mod.trace_turn(
         "dialogue", input_=message,
@@ -92,9 +102,12 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
                   "rag_top_k": settings.rag_top_k},
     )
 
-    # 记忆检索 与 最近对话 并行做（DESIGN §7.2 前台等待 2~5s）
-    memories = await rag_mod.retrieve(db, mem_store, npc_id, message, settings=settings)
-    turns = await rag_mod.recent_turns(db, npc_id, n=settings.dialogue_window_size)
+    # 记忆检索 / 最近对话 / 关系印象 并行做（DESIGN §7.2 前台等待 2~5s）
+    memories, turns, impression = await asyncio.gather(
+        rag_mod.retrieve(db, mem_store, npc_id, message, settings=settings),
+        rag_mod.recent_turns(db, npc_id, n=settings.dialogue_window_size),
+        relationship_mod.summary_for(db, npc_id, "player", p["name"]),
+    )
     if trace is not None:
         await trace_mod.span(trace, "retrieve", input_=message,
                              output=[{k: m.get(k) for k in
@@ -102,13 +115,14 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
                                      for m in memories],
                              metadata={"top_k": settings.rag_top_k, "rerank": "w_rel/w_rec/w_imp"})
         await trace_mod.span(trace, "recent_turns", output=turns)
+        await trace_mod.span(trace, "relationship", output={"summary": impression})
 
     result: dict | None = None
     attempts = 0
     for temperature in (0.7, 0.3):  # 校验 -> 重试一次(temperature 0.3)
         attempts += 1
         try:
-            msgs = _build_messages(p, n, current_affinity, memories, turns,
+            msgs = _build_messages(p, n, current_affinity, memories, turns, impression,
                                    shichen(mem_store.clock), place, message)
             cr = await mem_store.llm.chat("dialogue", msgs, json_format=True, temperature=temperature,
                                           metadata={"attempt": attempts, "temperature": temperature})
@@ -122,6 +136,12 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
 
     delta = max(-settings.max_dialogue_delta, min(settings.max_dialogue_delta, result["affinity_delta"]))
     new_affinity = await npc_mod.apply_delta(db, npc_id, delta)
+
+    if result["end"]:
+        # 先恢复再批总结：总结失败也不能让 NPC 一直处于暂停。
+        await db.execute(
+            "UPDATE npc_state SET paused_until = NULL WHERE npc_id = ?", (npc_id,)
+        )
 
     # 本轮流进对话表（短期窗口）；不改逐轮入忆。计数+1，达阈值或 end=true 时
     # 把该批未总结轮批总结成 event 落库（DESIGN §6.6 窗口批总结）。
