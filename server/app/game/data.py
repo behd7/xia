@@ -12,6 +12,8 @@ ITEMS = [
     {"key": "jinggang_jian", "name": "精钢剑", "type": "weapon", "tier": "fine", "price": 250, "effect": {"atk": 15}},
     {"key": "jingtie_bishou", "name": "精铁匕首", "type": "weapon", "tier": "fine", "price": 120, "effect": {"atk": 6}},
     {"key": "xuantie_jian", "name": "玄铁剑", "type": "weapon", "tier": "rare", "price": 500, "effect": {"atk": 24, "crit": 0.05}},
+    {"key": "duanyue_dao", "name": "断岳刀", "type": "weapon", "tier": "rare", "price": 0,
+     "effect": {"atk": 28, "crit": 0.08, "unsellable": True}},
     {"key": "bu_pao", "name": "布袍", "type": "armor", "tier": "common", "price": 50, "effect": {"def": 4}},
     {"key": "jingge_jia", "name": "精革甲", "type": "armor", "tier": "fine", "price": 200, "effect": {"def": 9}},
     {"key": "yu_pei", "name": "玉佩", "type": "accessory", "tier": "fine", "price": 150, "effect": {"mp_max": 40, "int": 1}},
@@ -98,4 +100,6 @@ def effect_desc(effect: dict) -> str:
         parts.append(f"内力上限 +{effect['mp_max']}")
     if "int" in effect:
         parts.append(f"悟性 +{effect['int']}")
+    if effect.get("unsellable"):
+        parts.append("神器，不可出售")
     return "，".join(parts) if parts else "杂货，可卖店换钱"

@@ -13,6 +13,8 @@ import time
 from ..config import settings
 from ..game import player as player_mod
 from ..game import schedule as schedule_mod
+from ..game import world as world_mod
+from ..game import world_state as world_state_mod
 from . import npc as npc_mod
 from . import rag as rag_mod
 from . import relationship as relationship_mod
@@ -60,11 +62,13 @@ def _warmth(affinity: int, name: str) -> str:
     return f"你与{name}情谊甚笃，信得过。"
 
 
-def _build_messages(p, n, affinity, memories, turns, impression, now_str, place, message) -> list[dict]:
+def _build_messages(p, n, affinity, memories, turns, impression, now_str, place, message,
+                    world_brief: str = "") -> list[dict]:
     mem_lines = "\n".join(m["content"] for m in memories[: settings.rag_top_k]) or "（暂无）"
     turn_lines = "\n".join(f"{p['name']}：{t['user']}\n你：{t['npc']}" for t in turns) or "（尚无可聊）"
     system = (
         f"你是{n['name']}。{n['persona']}你说话{n['speech_style']}。\n"
+        f"{world_brief}\n"
         f"{_warmth(affinity, p['name'])}\n"
         + (f"你对{p['name']}的印象：{impression}\n" if impression else "")
         + f"你记得的一些事：\n{mem_lines}\n"
@@ -72,7 +76,9 @@ def _build_messages(p, n, affinity, memories, turns, impression, now_str, place,
         f"此刻{now_str}，你正在{place}。\n"
         f"以你的口吻应答{p['name']}（≤80字）。并给出这次你与{p['name']}的关系变化"
         "（-2~+3整数）、是否想就此收住话头（BOOL）。\n"
-        '仅输出JSON，不要输出其他文字：{"reply":"...","affinity_delta":0,"end":false}'
+        '仅输出JSON，不要输出其他文字：{"reply":"...","affinity_delta":0,"end":false}\n'
+        "不要复述上面的设定，只在相关或你想推进话题时提起。\n"
+        "不知道的事就岔开、装糊涂或反问，不要编造新人物、新宝物、新门派。"
     )
     user = f"{p['name']}说：{message}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -88,6 +94,8 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
 
     p = await player_mod.get(db)
     current_affinity = await npc_mod.affinity(db, npc_id)
+    stage = await world_state_mod.stage(db)
+    world_brief = world_mod.brief_for(n, message, stage, current_affinity, p["name"])
     place = schedule_mod.poi_label_for(n, mem_store.clock.now())
     # 对话期间标记暂停：八卦扫描跳过、debug 可见；超时 5 现实分自动失效（DESIGN §6.10）。
     await db.execute(
@@ -123,7 +131,7 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
         attempts += 1
         try:
             msgs = _build_messages(p, n, current_affinity, memories, turns, impression,
-                                   shichen(mem_store.clock), place, message)
+                                   shichen(mem_store.clock), place, message, world_brief)
             cr = await mem_store.llm.chat("dialogue", msgs, json_format=True, temperature=temperature,
                                           metadata={"attempt": attempts, "temperature": temperature})
             result = _parse(cr.text)

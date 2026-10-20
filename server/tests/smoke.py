@@ -208,6 +208,91 @@ async def main() -> int:
             check("reflection/relationship/gossip/greet prompts called",
                   {"reflection", "relationship", "gossip", "greet"} <= set(CALLED))
 
+            print("\n== M5-W world premise & artifact ==")
+            from app.game import battle as battle_mod
+            from app.game import mobs as mobs_mod
+            from app.game import player as player_mod
+            from app.game import world as world_mod
+            from app.game import world_state as world_state_mod
+
+            st = (await c.get("/api/game/state")).json()
+            check("world starts at stage 0", st["world"]["stage"] == 0)
+            check("world premise has four facts", len(st["world"]["premise"]) == 4)
+            check("artifact not acquired", st["world"]["artifact_acquired"] is False)
+
+            d1w = (await c.get("/api/debug/npc/1")).json()
+            check("debug exposes stance at stage 0",
+                  bool(d1w["world"]["stance"]) and d1w["world"]["stage"] == 0)
+
+            battle_mod.mem_store = main_mod.mem_store
+            p = await player_mod.get(main_mod.db)
+            boss_state = {
+                "mob_id": "boss_1",
+                "enemy": {"type": "boss", "name": "黑旋风", "level": 5,
+                          "hp": 0, "hp_max": 260, "atk": 30, "def": 9, "spd": 12, "potions": 0},
+            }
+            wlog: list[dict] = []
+
+            def add(kind: str, text: str, **kw) -> None:
+                wlog.append({"kind": kind, "text": text, **kw})
+
+            rewards = await battle_mod._finalize(main_mod.db, p, boss_state, add, "win")
+            check("boss drops the artifact",
+                  any(d["name"] == "断岳刀" for d in rewards["drops"]))
+            check("artifact flag set",
+                  await world_state_mod.artifact_acquired(main_mod.db))
+            check("boss alone does not announce",
+                  rewards["world_announced"] is False
+                  and await world_state_mod.stage(main_mod.db) == 0)
+            dao = data.item(world_mod.ARTIFACT_ITEM_KEY)
+            dao_row = await main_mod.db.fetch_one(
+                "SELECT inv.qty FROM inventory inv JOIN item it ON it.id = inv.item_id"
+                " WHERE inv.player_id = ? AND it.id = ?", (p["id"], dao["id"]))
+            check("artifact in inventory once", dao_row is not None and dao_row["qty"] == 1)
+            await battle_mod._finalize(main_mod.db, p, boss_state, add, "win")
+            dao_row = await main_mod.db.fetch_one(
+                "SELECT inv.qty FROM inventory inv JOIN item it ON it.id = inv.item_id"
+                " WHERE inv.player_id = ? AND it.id = ?", (p["id"], dao["id"]))
+            check("artifact never drops twice", dao_row is not None and dao_row["qty"] == 1)
+
+            r = await c.post("/api/shop/clinic/sell",
+                             json={"item_id": dao["id"], "qty": 1})
+            check("artifact cannot be sold",
+                  r.status_code == 400 and "不可出售" in r.json()["detail"])
+
+            now_game = main_mod.mem_store.clock.now()
+            advanced = await world_state_mod.check_and_advance(main_mod.db, now_game)
+            check("boss + artifact alone do not advance", advanced is False)
+            for mid in world_state_mod.BANDIT_IDS:
+                await mobs_mod.mark_killed(main_mod.db, mid)
+            advanced = await world_state_mod.check_and_advance(main_mod.db, now_game)
+            check("boss + three bandits + artifact advances",
+                  advanced is True and await world_state_mod.stage(main_mod.db) == 2)
+            check("advance is idempotent",
+                  await world_state_mod.check_and_advance(main_mod.db, now_game) is False)
+
+            brief = world_mod.brief_for(
+                npc_mod.NPC_ROSTER["gu_changfeng"], "后山那刀怎么回事", 2, 25, "冒烟侠")
+            check("stage2 brief announces the player", "冒烟侠杀了黑旋风" in brief)
+            st = (await c.get("/api/game/state")).json()
+            check("state announces world event",
+                  st["world"]["stage"] == 2
+                  and "冒烟侠" in (st["world"]["announcement"] or ""))
+
+            r = await c.post("/api/npc/1/apprentice")
+            check("apprentice rules unchanged after world event", r.status_code == 400)
+
+            r = await c.post("/api/game/new", json={"name": "新冒烟侠", "confirm": True})
+            st = (await c.get("/api/game/state")).json()
+            check("new game resets world",
+                  r.status_code == 200 and st["world"]["stage"] == 0
+                  and st["world"]["artifact_acquired"] is False)
+            check("new game clears kills and revives mobs",
+                  await main_mod.db.kv_get("mob_kills") is None
+                  and all(m["alive"] for m in st["mobs"]))
+            check("W adds no LLM purpose",
+                  "world" not in CALLED and "heart" not in CALLED)
+
     shutil.rmtree(_tmp, ignore_errors=True)
     return FAIL
 

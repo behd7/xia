@@ -11,6 +11,7 @@ var player: Dictionary = {}
 var battle: Dictionary = {}
 var clock: Dictionary = {}
 var clock_received: float = 0.0
+var world_info: Dictionary = {}
 var online: bool = false
 var busy: bool = false
 var syncing: bool = false
@@ -34,6 +35,7 @@ var mp_bar: ProgressBar
 var exp_bar: ProgressBar
 var gold_label: Label
 var region_label: Label
+var world_premise_label: Label
 var time_label: Label
 var connection_label: Label
 var context_label: Label
@@ -158,11 +160,17 @@ func _build_scene() -> void:
 	cv.add_child(exp_bar)
 	gold_label = UI.label("银两  —", 15, UI.GOLD)
 	cv.add_child(gold_label)
-	var guide := _panel(self, Vector2(24, 420), Vector2(274, 156), Color("ebeadd"))
+	var guide := _panel(self, Vector2(24, 420), Vector2(274, 208), Color("ebeadd"))
 	var gv := _vbox(guide, 8)
 	gv.add_child(UI.label("江 湖 小 笺", 13, UI.JADE))
-	gv.add_child(UI.paragraph("去药铺备些回春散，再出镇寻狼试剑。等级达到三重，可前往三派驻地拜师。", 14, UI.INK))
-	gv.add_child(UI.label("无主线 · 随心而行", 11, UI.MUTED))
+	gv.add_child(UI.paragraph("去药铺备些回春散，再出镇寻狼试剑。等级达到三重，可前往三派驻地拜师。", 13, UI.INK))
+	gv.add_child(UI.rule())
+	world_premise_label = UI.paragraph("后山传闻 · 黑旋风与断岳刀", 12, UI.MUTED)
+	world_premise_label.name = "WorldPremise"
+	gv.add_child(world_premise_label)
+	var chronicle := UI.button("清溪镇志", open_chronicle)
+	chronicle.custom_minimum_size.y = 36
+	gv.add_child(chronicle)
 	var atlas := _panel(self, Vector2(size.x - 254, 110), Vector2(230, 240))
 	atlas.name = "AtlasCard"
 	atlas.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
@@ -352,6 +360,9 @@ func refresh() -> void:
 	var data: Dictionary = response.data
 	clock = data.get("clock", {})
 	clock_received = Time.get_ticks_msec() / 1000.0
+	world_info = data.get("world", {})
+	if not world_info.get("premise", []).is_empty():
+		world_premise_label.text = "后山传闻 · 黑旋风与断岳刀"
 	world.mobs = data.get("mobs", [])
 	minimap.mobs = world.mobs
 	people_npcs = data.get("npcs", [])
@@ -895,6 +906,21 @@ func open_map() -> void:
 	body.add_child(map)
 	body.add_child(UI.paragraph("药铺与铁匠铺在镇西，客栈位于中央石道旁。出南门可前往东山林地；后山崖的山贼更为凶险。"))
 
+func open_chronicle() -> void:
+	if busy:
+		return
+	var body := _new_modal("清 溪 镇 志", "镇上传言，未必是实；江湖事，终要自己走一遭。", "chronicle")
+	var premise: Array = world_info.get("premise", [])
+	for line in premise:
+		body.add_child(UI.paragraph("· " + str(line), 16, UI.INK))
+	if premise.is_empty():
+		body.add_child(UI.paragraph("镇志尚未传到此处，稍后再看。", 16))
+	body.add_child(UI.rule())
+	body.add_child(UI.paragraph("镇上都说，神器现世之日三派会重开山门；但拜师仍要看掌门对你的交情与你的境界。", 15, UI.MUTED))
+	if int(world_info.get("stage", 0)) >= 2 and world_info.get("announcement") != null:
+		body.add_child(UI.rule())
+		body.add_child(UI.paragraph(str(world_info["announcement"]), 17, UI.JADE))
+
 func start_battle(mob_id: String) -> void:
 	if busy or not battle.is_empty() or modal != null:
 		return
@@ -986,6 +1012,8 @@ func battle_action(action: String, id: int = -1) -> void:
 			battle_log.append("拾得 %s ×%d" % [drop.name, int(drop.qty)])
 		if not rewards.get("level_ups", []).is_empty():
 			battle_log.append("境界精进！可前往角色面板分配属性。")
+		if bool(rewards.get("world_announced", false)):
+			notify("你取回断岳刀的消息，已经传遍了清溪镇。")
 	open_battle()
 
 func finish_battle() -> void:

@@ -12,6 +12,8 @@ import time
 from ..config import settings
 from ..game import player as player_mod
 from ..game import schedule as schedule_mod
+from ..game import world as world_mod
+from ..game import world_state as world_state_mod
 from . import dialogue as dialogue_mod
 from . import npc as npc_mod
 from . import rag as rag_mod
@@ -32,14 +34,16 @@ def _parse(result_text: str) -> str:
 
 
 def _messages(n: dict, p: dict, affinity: int, memories: list[dict], now_str: str,
-              place: str) -> list[dict]:
+              place: str, world_brief: str = "") -> list[dict]:
     mem_lines = "\n".join(m["content"] for m in memories[: settings.rag_top_k]) or "（暂无）"
     system = (
         f"你是{n['name']}。{n['persona']}你说话{n['speech_style']}。\n"
+        f"{world_brief}\n"
         f"{dialogue_mod._warmth(affinity, p['name'])}\n"
         f"你记得的一些事：\n{mem_lines}\n"
         f"此刻{now_str}，你正在{place}，看见{p['name']}走近。\n"
-        f"以你的口吻主动招呼他一句（≤40字），可顺带提起一件你记得的事，不要说套话。\n"
+        f"以你的口吻主动招呼他一句（≤40字），可顺带提起一件你记得的事，不要说套话，"
+        "不要每句都提后山。\n"
         '仅输出JSON：{"reply":"..."}'
     )
     return [{"role": "system", "content": system},
@@ -84,8 +88,12 @@ async def greet(db, store, npc_id: int) -> dict:
         except Exception:
             memories = []
 
-        place = schedule_mod.poi_label_for(n, store.clock.now())
-        msgs = _messages(n, p, aff, memories, dialogue_mod.shichen(store.clock), place)
+        now_game = store.clock.now()
+        place = schedule_mod.poi_label_for(n, now_game)
+        stage = await world_state_mod.stage(db)
+        world_brief = world_mod.brief_for(n, "", stage, aff, p["name"])
+        msgs = _messages(n, p, aff, memories, dialogue_mod.shichen(store.clock), place,
+                         world_brief)
         reply: str | None = None
         for temperature in (0.7, 0.3):
             try:

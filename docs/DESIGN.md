@@ -254,7 +254,7 @@
 
 （张馒头为后续"隐世高人"留口子，V1 只是怪话 NPC。）
 
-人设（persona）字段：姓名、身份、门派、性格标签×3、说话风格、对玩家初始好感、拜师/商店等功能角色。（无口头禅字段——对话让 NPC 自由发挥措辞，不设机械口头禅。）
+人设（persona）字段：姓名、身份、门派、性格标签×3、说话风格、对玩家初始好感、拜师/商店等功能角色。七人对后山神器的固定立场、避谈点与知识分层见 §6.11（代码 `game/world.py` 的 `NPC_STANCE`）。
 
 ### 6.3 记忆流（Memory Stream）
 
@@ -398,6 +398,18 @@ importance 3）」链路，同样永不阻塞。event 作为 RAG 检索补充，
 - 对话期间服务器把 `paused_until` 设为现实时间 +5 分钟（`end=true` 提前清除），仅用于八卦扫描排除与调试观察；客户端只冻结当前对话框对应的 NPC，关闭即恢复日程；
 - `paused_until`/`last_reflection_at`/`last_greet_real`/关系 `updated_at` 用现实时间；`ts_game`、日程、八卦日界用游戏时间，不得混用。
 
+### 6.11 世界公设与断岳刀世界事件
+
+后山、神器、张馒头与三派构成全镇共享的背景公设（代码 `game/world.py`，纯数据 + 纯函数，不依赖 DB/agent）：
+
+- **世界阶段**存 kv：`world.stage` 只有两态 `0` 传闻期、`2` 全镇皆知；`world.artifact_acquired` 标记神器已取得；`world.announced_at_game` 记通告游戏时刻。
+- **公开事实**四条（山贼占寨、断岳刀传闻、张馒头与山外、三派重开山门）按话题命中注入。知识分三层：L0 公开、L1 王大柱/柳小蝶的夸张传闻、L2 掌门与陈半松的机密（需好感门槛 50~60）；张馒头独占核心真相（断岳刀是山外旧朝信物），仅阶段 2 且问及神器/张馒头/山外时注入，并明确“只说七分”。
+- `brief_for` 生成 120~260 字 prompt 片段，固定“公开事实 → 你的立场 → 你知道的细节 → 分寸”顺序；无公设话题且阶段 0 只给一句氛围，避免每句话都谈后山。NPC 不知道的细节要求岔开、装糊涂，不编造新人物/宝物/门派。
+- **断岳刀**是唯一神器（`duanyue_dao`，rare，攻击 +28、暴击 +8%，`price=0` 且 `unsellable`）：不可出售、不重复掉落。黑旋风首次胜利必定掉落；拿到刀但未清山贼时阶段仍为 0。
+- **推进条件**：黑旋风与 `bandit_1~3` 各自至少被击杀过一次（`mob_kills` 只留最近时间戳，键存在即可，不看是否重生）且已取得断岳刀 → 写 `world.stage=2` 与通告时刻。判定幂等；启动时补算一次，防止“胜利结算后、写阶段前”进程退出漏写。`POST /api/game/new` 调 `world_state.reset` 清三个 kv 与 `mob_kills`，新档不继承旧世界事件。
+- 阶段 2 后所有 NPC 的世界简报追加“{玩家}杀了黑旋风，清了后山那伙山贼，取回了断岳刀；这件事已经传遍清溪镇”，并附各自 `stage2` 说法；拜师规则不因此改变（仍好感 ≥60、等级 ≥3）。
+- 公设与全镇通告**不逐人写记忆**，只作常驻 prompt 上下文；具体互动/目击仍按 §6.3 入忆。
+
 ---
 
 ## 7. LLM 集成（Ollama）
@@ -513,7 +525,7 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=�
 | Method | Path | 说明 |
 |---|---|---|
 | POST | `/api/game/new` | 新档 `{name}`（覆盖旧档需确认标记） |
-| GET | `/api/game/state` | 玩家全量状态+游戏时钟+`npcs` 花名册（id/slug/name/role/好感/当前 poi/锚点/`paused_until`） |
+| GET | `/api/game/state` | 玩家全量状态+游戏时钟+`npcs` 花名册（id/slug/name/role/好感/当前 poi/锚点/`paused_until`）+`world`（`stage/artifact_acquired/announced_at_game/announcement/premise`） |
 | GET | `/api/npcs/state` | 日程推算全量参数：`clock/sense_radius/greet_threshold/phases/pacing/gather_anchor` + 每人 `home_to_work/work_to_gather/pos/poi/affinity/paused_until/greet_ready` |
 | POST | `/api/npc/{id}/greet` | 主动搭话：`{greet,reply,affinity}` 或 `{greet:false,reason:affinity|cooldown|paused}`；无存档 409、查无此人 404 |
 | POST | `/api/npc/{id}/talk` | `{message}` → `{reply, affinity, end, player}`（LLM 生成，RAG 检索记忆） |
@@ -522,7 +534,7 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=�
 | POST | `/api/npc/{id}/apprentice` | 请求拜师（条件校验+仪式台词） |
 | GET | `/api/shop/{shop_id}` | 货架（含好感折扣） |
 | POST | `/api/shop/{shop_id}/buy` | `{item_id, qty}` |
-| POST | `/api/shop/{shop_id}/sell` | `{item_id, qty}` 半价卖出（装备中须先卸下） |
+| POST | `/api/shop/{shop_id}/sell` | `{item_id, qty}` 半价卖出（装备中须先卸下；`unsellable` 神器拒绝） |
 | POST | `/api/game/allocate` | `{stats:{str,con,agi,int}}` 自由点分配 |
 | POST | `/api/game/equip` | `{item_id}` 穿装备（同槽自动卸回背包） |
 | POST | `/api/game/unequip` | `{slot}` 卸下槽位装备 |
@@ -532,7 +544,7 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=�
 | POST | `/api/battle/start` | `{target_type: mob, target_id}` 野外怪物战斗；NPC 切磋经 `/api/npc/{id}/challenge` |
 | POST | `/api/battle/action` | `{action: attack|skill|item|flee, id?}` → 结算后全量战况 |
 | GET | `/api/battle/state` | 断线重入 |
-| GET | `/api/debug/npc/{id}` | **实验观察**：好感、反思计数与 `seconds_since_reflection`、关系摘要、最近 50 条记忆（含 `source_memory_id`）、当前日程 `{phase,poi,pos,paused}` |
+| GET | `/api/debug/npc/{id}` | **实验观察**：好感、反思计数与 `seconds_since_reflection`、关系摘要、最近 50 条记忆（含 `source_memory_id`）、当前日程 `{phase,poi,pos,paused}`、世界立场 `world{stage,stance,knowledge,stage2}` |
 | GET | `/api/health` | 含 Ollama 连通性检查 |
 
 战斗响应含 log 数组（逐条结算文本），客户端按序播放浮字/震动动画。
@@ -552,6 +564,7 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=�
 - **商店**：列表+价格（显示折扣）；
 - **操作**：WASD/方向键移动，E 交互，I 角色、B 行囊、K 武学、M 舆图，滚轮缩放，Esc 关闭面板。战斗进行中只能通过结算或逃走退出；靠近 NPC 按 E 进入对话（输入或快捷键[打招呼][打听消息][门派拜师][切磋][送礼]）。
 - **连接**：默认 `http://127.0.0.1:8000`，设置面板可保存地址，`XIA_API_URL` 环境变量优先；请求有超时、等待状态和错误反馈。游戏状态每 10 秒同步，时钟连续本地推算。状态版本号阻止较早发出的轮询覆盖后续操作结果；断线重连后以服务器战局恢复。
+- **镇志**：左侧“江湖小笺”第二段显示后山传闻摘要与“清溪镇志”按钮；点击才展开四条公开事实，阶段 2 追加全镇通告。**不自动弹窗**，首次进入只更新面板文案。
 - **落点**：加载或战败时，若后端坐标落在障碍物内，客户端将其投影到最近可行走位置（包括旧客栈复活坐标）；下次交互上报该位置。
 
 ---
@@ -606,6 +619,7 @@ Xia/
 | M2 成长系统 | 属性升级、装备、技能、拜师（原纯条件判定，M3 改为好感对话式） | 入门剑阳派用出赤阳斩 | ✅ 已完成 |
 | M3 NPC智能v1 | 记忆流、RAG、自由对话、好感度、对话式拜师/切磋/送礼 | 连聊三天 NPC 记得你 | ✅ 已实现（Godot 侧 M3 路由已开放，见 §10） |
 | M4 反思与传播 | 反思、关系摘要、八卦、主动搭话、确定性日程 | 隔天 NPC 主动提起你昨天的事 | ✅ 已实现（确定性冒烟覆盖反思→关系→八卦→搭话链路与暂停恢复；Godot 四阶段冒烟全绿。真实 4B 长时观察按 `docs/M4-PLAN.md` §7.2 复现） |
+| M5 世界公设与感知 | 后山公设/立场/知识分层、断岳刀世界事件、对话议程/口癖/轻情绪、每日心事与日程偏离、附近事件感知 | 取刀后全镇知晓但拜师规则不变；议程不重复、偏离两端一致 | ✅ 已实现（W/B/A/C 四包分次提交；`docs/M5-PLAN.md`） |
 
 每个里程碑结束产出可玩 build + 一段实验观察记录（debug API 截图/数据）。
 

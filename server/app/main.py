@@ -15,6 +15,8 @@ from .game import player as player_mod
 from .game import schedule as schedule_mod
 from .game import shop as shop_mod
 from .game import skills as skills_mod
+from .game import world as world_mod
+from .game import world_state as world_state_mod
 from .game.clock import GameClock
 from .llm import OllamaClient
 from .agent import dialogue as dialogue_mod
@@ -42,6 +44,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await skills_mod.seed_and_load(db)
     await npc_mod.seed_and_load(db)
     await clock.load()
+    # 补算上次进程在“最后一名山贼胜利结算”后、写世界阶段前退出的情况；幂等。
+    await world_state_mod.check_and_advance(db, clock.now())
     await trace_mod.setup()
     mem_store = memory_mod.MemoryStore(settings.chroma_dir_abs, ollama, clock)
     await mem_store.reconcile(db)  # Chroma 派生索引与 SQLite SSOT 对齐（损坏/缺失时自愈）
@@ -256,6 +260,8 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
     now_real = time.time()
     kind, _, _ = schedule_mod.phase_at(now_game % schedule_mod.GAME_SEC_PER_DAY)
     pos = schedule_mod.position_for(n, now_game)
+    world_stage = await world_state_mod.stage(db)
+    stance = world_mod.stance_entry(n.get("slug", ""))
     reflection = dict(ns or {})
     last_at = reflection.get("last_reflection_at")
     reflection["last_reflection_real"] = last_at
@@ -273,6 +279,15 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
         },
         "memories": memories,
         "relationship": rel,
+        "world": {
+            "stage": world_stage,
+            "stance": stance.get("stance", ""),
+            "knowledge": world_mod.knowledge_for(
+                n.get("slug", ""), world_stage, aff,
+                ["bandit", "artifact", "zhang", "sect"],
+            ),
+            "stage2": stance.get("stage2", ""),
+        },
     }
 
 
@@ -322,12 +337,23 @@ async def health() -> dict[str, Any]:
 @app.get("/api/game/state")
 async def game_state() -> dict[str, Any]:
     p = await player_mod.get(db)
+    stage = await world_state_mod.stage(db)
     return {
         "player": await player_mod.api_dict(db, p) if p else None,
         "clock": clock.snapshot(),
         "mobs": await mobs_mod.states(db),
         "battle": await battle_mod.active_snapshot(db),
         "npcs": await npc_mod.list_for_client(db, clock),
+        "world": {
+            "stage": stage,
+            "artifact_acquired": await world_state_mod.artifact_acquired(db),
+            "announced_at_game": await world_state_mod.announced_at(db),
+            "announcement": (
+                world_mod.STAGE2_FACT_TEMPLATE.format(player=p["name"])
+                if stage >= 2 and p else None
+            ),
+            "premise": world_mod.public_facts_for_client(),
+        },
     }
 
 
@@ -340,6 +366,8 @@ async def new_game(req: NewGameReq) -> dict[str, Any]:
     if not name:
         raise HTTPException(400, "请输入名号")
     p = await player_mod.create(db, name)
+    # 新档不能继承上个存档的世界阶段，否则 NPC 会对着新角色讲旧角色的事。
+    await world_state_mod.reset(db)
     return {"player": await player_mod.api_dict(db, p)}
 
 

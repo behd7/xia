@@ -1,3 +1,5 @@
+import json
+
 from ..db import Database
 
 
@@ -70,12 +72,14 @@ async def sell(db: Database, player_id: int, item_id: int, qty: int) -> int:
     if qty < 1:
         raise InvError("数量须为正")
     row = await db.fetch_one(
-        "SELECT it.price, inv.qty, inv.equipped_slot FROM inventory inv"
+        "SELECT it.price, it.effect_json, inv.qty, inv.equipped_slot FROM inventory inv"
         " JOIN item it ON it.id = inv.item_id WHERE inv.player_id = ? AND inv.item_id = ?",
         (player_id, item_id),
     )
     if row is None:
         raise InvError("背包里没有此物")
+    if json.loads(row["effect_json"] or "{}").get("unsellable"):
+        raise InvError("此物不可出售")
     if row["equipped_slot"] is not None:
         raise InvError("装备中的物品须先卸下")
     if row["qty"] < qty:

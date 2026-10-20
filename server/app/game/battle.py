@@ -5,6 +5,7 @@ import time
 
 from ..db import Database
 from . import data, inventory, mobs, player as player_mod, skills as skills_mod
+from . import world as world_mod, world_state as world_state_mod
 from ..agent import npc as npc_mod
 
 
@@ -352,11 +353,18 @@ async def _finalize(db: Database, p: dict, state: dict, add, result: str) -> dic
             )
             if summary_bump is not None:
                 await summary_bump(db, mem_store, npc_id, p["name"], "练武场")
-        return {"exp": exp, "gold": 0, "cultivation": 0, "drops": [], "level_ups": ups}
+        return {"exp": exp, "gold": 0, "cultivation": 0, "drops": [], "level_ups": ups,
+                "world_announced": False}
 
     if result == "win":
         t = data.MOB_TYPES[state["enemy"]["type"]]
         drops = []
+        if state["enemy"]["type"] == "boss" and not await world_state_mod.artifact_acquired(db):
+            row = data.item(world_mod.ARTIFACT_ITEM_KEY)
+            await inventory.add(db, p["id"], row["id"])
+            await world_state_mod.mark_artifact_acquired(db)
+            drops.append({"name": row["name"], "qty": 1})
+            add("drop", "拾获 断岳刀——刀身沉黑，隐有寒光。")
         for dr in t["drops"]:
             if random.random() < dr["rate"]:
                 row = data.item(dr["key"])
@@ -372,13 +380,19 @@ async def _finalize(db: Database, p: dict, state: dict, add, result: str) -> dic
         for lv in ups:
             add("levelup", f"境界提升！你升至 {lv} 级。")
         await mobs.mark_killed(db, state["mob_id"])
+        advanced = False
+        if mem_store is not None:
+            advanced = await world_state_mod.check_and_advance(db, mem_store.clock.now())
+            if advanced:
+                add("world", "你取回断岳刀的消息，已经传遍了清溪镇。")
         # Nudge the player off the mob spawn so a reload after the 60s
         # respawn doesn't instantly re-trigger the battle while idle.
         spawn = mobs.find_spawn(state["mob_id"])
         if spawn and p["pos_x"] == spawn["x"] * data.TILE + 8 and p["pos_y"] == spawn["y"] * data.TILE + 8:
             p["pos_x"] += 48
             p["pos_y"] -= 32
-        return {"exp": exp, "gold": gold, "cultivation": cult, "drops": drops, "level_ups": ups}
+        return {"exp": exp, "gold": gold, "cultivation": cult, "drops": drops, "level_ups": ups,
+                "world_announced": advanced}
 
     if result == "lose":
         d = await player_mod.stats(db, p)

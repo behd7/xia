@@ -57,6 +57,13 @@ func state() -> Dictionary:
 	check(response.ok, "read real backend state")
 	return response.get("data", {})
 
+func modal_text() -> String:
+	var parts: Array[String] = []
+	for child in app.modal_body.get_children():
+		if child is Label:
+			parts.append(child.text)
+	return "\n".join(PackedStringArray(parts))
+
 func hud_matches(data: Dictionary) -> void:
 	var p: Dictionary = data.player
 	check(app.player == p, "client player equals server snapshot")
@@ -128,6 +135,12 @@ func base() -> void:
 	check(app.modal == null and app.player.name == "联调侠客", "new-game callback creates character")
 	hud_matches(await state())
 	check(app.player.gold == 100 and app.player.level == 1, "new character default economy/level")
+	check(app.world_info.get("premise", []).size() == 4, "world premise loaded from game state")
+	app.open_chronicle()
+	check(app.modal_kind == "chronicle", "chronicle panel opens on demand")
+	check(modal_text().contains("断岳刀"), "chronicle lists the artifact rumor")
+	await escape()
+	check(app.modal == null, "Esc closes chronicle")
 	app.open_sect("jianyang", "剑阳道馆")
 	check(button("确认拜入").disabled, "level-one sect join is disabled")
 	var denied: Dictionary = await app.api.request("/api/sect/join", {"sect_id": "jianyang"})

@@ -14,6 +14,10 @@ async def _kills(db: Database) -> dict[str, float]:
     return json.loads(raw) if raw else {}
 
 
+async def kill_times(db: Database) -> dict[str, float]:
+    return await _kills(db)
+
+
 async def states(db: Database) -> list[dict]:
     kills = await _kills(db)
     now = time.time()
