@@ -51,9 +51,11 @@ RESET_ON_START=false   # true=每次启动后端清空数据库（SQLite+Chroma 
 
 可调参数集中在 server 端 config（`server/app/config.py`，pydantic-settings 读 `.env`，§14 清单已全量落入：时间流速、好感阈值 70、反思/八卦周期、RAG 权重与 top-k、ChromaDB 目录等）。server 依赖 chromadb（向量库），清单见 DESIGN.md §12。
 
+M5 新增 `PLAN_ENABLED`（默认 true）、`PLAN_DEVIATION_SHIFT_SEC`（默认 1200）、`PLAN_HEART_MAX_CHARS`（默认 60）；`PLAN_ENABLED=false` 会立即停用心事与日程偏离（已有 `npc_plan` 行保留）。可选后端/观测见 DESIGN §7.1/§7.4：同时设置 `LLM_API_KEY` + `LLM_API_BASE_URL`（base_url 以 `/v1` 结尾，`LLM_API_MODEL` 可选）时对话走 OpenAI 兼容 API，嵌入仍走本地 Ollama；`LANGFUSE_*` 默认关闭，不可达不影响玩法。
+
 ### 本地运行
 
-当前客户端：Godot 导入 `xia-ai-town/project.godot`，F5 运行主场景 `scenes/main.tscn`；或根目录 `godot --path xia-ai-town`。默认连接 `http://127.0.0.1:8000`，可在设置面板保存地址或用 `XIA_API_URL` 覆盖。隔离真实接口验证：`server/.venv/bin/python xia-ai-town/tools/smoke_test.py`。无 Ollama 的后端回归：`server/.venv/bin/python server/tests/smoke.py`——stub LLM + 临时库，覆盖 M4 后台链路，重构后必须全绿。后端保持现有 Python 实现。
+当前客户端：Godot 导入 `xia-ai-town/project.godot`，F5 运行主场景 `scenes/main.tscn`；或根目录 `godot --path xia-ai-town`。默认连接 `http://127.0.0.1:8000`，可在设置面板保存地址或用 `XIA_API_URL` 覆盖。隔离真实接口验证：`server/.venv/bin/python xia-ai-town/tools/smoke_test.py`（若 `godot` 不在 PATH，设 `GODOT_BIN=/path/to/godot`，本机为 `/home/behd/.local/bin/godot`）。无 Ollama 的后端回归：`server/.venv/bin/python server/tests/smoke.py`——stub LLM + 临时库，覆盖 M4/M5 后台链路（世界阶段、议程/情绪、心事/偏离、附近事件），重构后必须全绿。后端保持现有 Python 实现。
 
 Python 侧用 **uv**（优先 `command -v uv`；原环境为 `~/.local/bin/uv`）管理虚拟环境——本机 python3 无 pip 且缺 python3-venv，`python3 -m venv` 不可用，不要尝试。依赖装在 `server/.venv`（gitignore）：
 
@@ -78,10 +80,10 @@ cd server && uv venv .venv && uv pip install -r requirements.txt
 - **派生属性单一入口（M2 起）**：装备与内功被动通过 `modifiers(db,p)` 聚合进 `derived(p, mods)`，任何要拿攻/防/速/闪避/暴击/上下限的代码一律走 `player.stats(db,p)`，**不要直接调 `derived(p)`**（会漏装备与被动）。入门门派加成是直改 player 行四维的一次性写入，不进 mods。
 - **战斗数据分工**：战斗进行态存 `battle.state_json` + `active` 列（敌方快照、回合、药剂用量、`buffs`、`skill_cd`），玩家 HP/MP 以 player 行为单一事实源——断线重入靠这个约定，M3 加新战斗状态时继续挂 state_json。怪物存活存 kv `mob_kills`（击杀时间戳，60s 重生）。胜利结算会把玩家坐标推离怪物出生点 48px，防止重生后刷新页面被站桩开战；`_finalize` 的复活/推离规则改动时想想这条。
 - **杀 dev server 用端口，别用 pkill -f**：`pkill -f "uvicorn ..."` 会匹配到自己这条 bash 命令行里同样含该文本的部分而自杀。用 `fuser -k 8000/tcp` / TaskStop，或 `pkill -f "app[.]main"`（字符类技巧）。
-- **测试/冒烟必须 `SCHEDULER_ENABLED=false`**：否则 lifespan 启动的后台反思/八卦会调用真实 Ollama，拖慢甚至污染断言；`server/tests/smoke.py` 在 import 前设置，Godot 冒烟在子进程 env 里设置。
+- **测试/冒烟必须 `SCHEDULER_ENABLED=false`**：否则 lifespan 启动的后台反思/八卦/心事会调用真实 Ollama，拖慢甚至污染断言；`server/tests/smoke.py` 在 import 前设置，Godot 冒烟在子进程 env 里设置。
 - **NPC 位置零同步**：服务端 `game/schedule.py` 与客户端 `town_world.gd` 各实现同一套相位/折线/LCG 踱步；改任一侧常量或算法必须同步另一侧，否则两端位置漂移。客户端不轮询 NPC 坐标，只随 10 秒状态同步取参数。
 - **M5 世界阶段与偏离**：`world.stage` 只有 0/2，推进条件是 `mob_kills` 存在 boss+三名山贼且已取得断岳刀；`POST /api/game/new` 必须调 `world_state.reset`，启动时幂等补算。日程偏离只平移相位，`plan_enabled=false` 会立即隐藏心事/偏离；`npc_plan`/`npc_mood` 是 SCHEMA 新表，无 ALTER 迁移。
-- **M5 prompt 预算**：世界公设、心事、议程、口癖、情绪、附近事件全部塞进原有单次对话/搭话调用，**不得新增前台 LLM 调用**；心事是唯一新增后台 purpose（优先级 3）。
+- **M5 prompt 预算**：世界公设、心事、议程、口癖、情绪、附近事件全部塞进原有单次对话/搭话调用，**不得新增前台 LLM 调用**；心事是唯一新增后台 purpose（优先级 3）。附近事件只存在 `MemoryStore.recent_events` 内存中（20 条、30 游戏分钟 TTL），重启即丢，不要落库或当长期记忆。
 
 ## 当前 Godot 客户端
 
