@@ -1,14 +1,66 @@
 import asyncio
+import heapq
 import math
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 
 from .config import settings
 from .db import Database
 from .agent import trace as trace_mod
+
+
+# LLM 调用优先级（AGENTS #7：对话 > 搭话 > 关系摘要 > 反思 > 八卦）。
+# dialogue_summary 发生在一次前台对话请求内，必须与对话同优先级。
+PRIORITY = {
+    "dialogue": 0, "dialogue_summary": 0, "embed": 0,
+    "greet": 1, "relationship": 2, "reflection": 3, "gossip": 4,
+}
+DEFAULT_PRIORITY = 3
+
+
+class PriorityLimiter:
+    """并发上限内的优先级队列；数值越小越先拿到槽位。"""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = max(1, limit)
+        self._active = 0
+        self._seq = 0
+        self._waiters: list[tuple[int, int, asyncio.Future]] = []
+
+    @asynccontextmanager
+    async def slot(self, priority: int = DEFAULT_PRIORITY) -> AsyncIterator[None]:
+        await self._acquire(priority)
+        try:
+            yield
+        finally:
+            self._release()
+
+    async def _acquire(self, priority: int) -> None:
+        if self._active < self._limit and not self._waiters:
+            self._active += 1
+            return
+        fut = asyncio.get_running_loop().create_future()
+        heapq.heappush(self._waiters, (priority, self._seq, fut))
+        self._seq += 1
+        try:
+            await fut
+        except asyncio.CancelledError:
+            if fut.done() and not fut.cancelled():
+                self._release()  # 槽位已分配但调用方在返回前被取消
+            raise
+
+    def _release(self) -> None:
+        self._active -= 1
+        while self._active < self._limit and self._waiters:
+            _, _, fut = heapq.heappop(self._waiters)
+            if fut.done():
+                continue
+            self._active += 1
+            fut.set_result(True)
 
 
 @dataclass
@@ -25,16 +77,17 @@ class OllamaClient:
 
     M0 carried only the /api/tags health check; M3 adds chat (with JSON
     coercion, no-think, llm_log) and embed (with L2 normalisation). All
-    LLM round-trips share one global asyncio.Semaphore (AGENTS.md #7) so
-    dialogue + background agent jobs never flood Ollama. Structured-output
-    robustness (verify -> retry once -> template fallback) lives in the
-    callers; this class only guarantees a parsed result or raises.
+    LLM round-trips share one global PriorityLimiter (AGENTS.md #7) so
+    dialogue + background agent jobs never flood Ollama, and background
+    work cannot starve foreground dialogue. Structured-output robustness
+    (verify -> retry once -> template fallback) lives in the callers;
+    this class only guarantees a parsed result or raises.
     """
 
     def __init__(self, host: str, timeout: float, db: Database) -> None:
         self._client = httpx.AsyncClient(base_url=host, timeout=timeout)
         self._db = db
-        self._sem = asyncio.Semaphore(settings.llm_concurrency)
+        self._limiter = PriorityLimiter(settings.llm_concurrency)
         # Optional OpenAI-compatible chat backend: configured with key+base_url it
         # takes precedence over local Ollama for chat only (embeds stay local).
         self._api_client: httpx.AsyncClient | None = None
@@ -70,6 +123,7 @@ class OllamaClient:
         json_format: bool = False,
         temperature: float = 0.7,
         metadata: dict | None = None,
+        priority: int | None = None,
     ) -> ChatResult:
         """One chat completion.
 
@@ -80,17 +134,19 @@ class OllamaClient:
         callers own the fallback chain.
         """
         model = self._api_model if self._api_client is not None else settings.chat_model
+        p = priority if priority is not None else PRIORITY.get(purpose, DEFAULT_PRIORITY)
         start = time.time()
         in_tok = out_tok = None
         ok = False
         try:
-            async with self._sem:
+            async with self._limiter.slot(p):
                 if self._api_client is not None:
                     text, in_tok, out_tok = await self._call_api(messages, json_format, temperature)
                 else:
                     text, in_tok, out_tok = await self._call_ollama(messages, json_format, temperature)
             ok = True
-            self._trace_generation(purpose, messages, text, temperature, json_format, metadata,
+            self._trace_generation(purpose, messages, text, temperature, json_format,
+                                   {**(metadata or {}), "priority": p},
                                    in_tok, out_tok, model=model)
             return ChatResult(text=text, in_tokens=in_tok, out_tokens=out_tok)
         finally:
@@ -146,7 +202,7 @@ class OllamaClient:
         start = time.time()
         ok = False
         try:
-            async with self._sem:
+            async with self._limiter.slot(0):
                 res = await self._client.post(
                     "/api/embed", json={"model": settings.embed_model, "input": texts}
                 )
