@@ -135,6 +135,7 @@ func apply_state(state: Dictionary) -> void:
 		entry["poi"] = str(remote.get("poi", ""))
 		entry["paused_until"] = remote.get("paused_until")
 		entry["greet_ready"] = bool(remote.get("greet_ready", false))
+		entry["deviation"] = remote.get("deviation") if remote.get("deviation") is Dictionary else {}
 		entry["home_to_work_pts"] = home_work
 		entry["work_to_gather_pts"] = work_gather
 		var server_pos: Variant = remote.get("pos", [])
@@ -154,7 +155,7 @@ func tick_schedule(now_game: float, freeze_slug: String = "") -> void:
 func schedule_position(entry: Dictionary, now_game: float) -> Vector2:
 	var sod: float = fposmod(now_game, 86400.0)
 	var day: int = int(now_game / 86400.0)
-	var phase: Dictionary = _phase_at(sod)
+	var phase: Dictionary = _phase_at(sod, entry.get("deviation", {}))
 	var kind: String = str(phase.get("kind", "home"))
 	var start: float = float(phase.get("start", 0.0))
 	var end: float = float(phase.get("end", 86400.0))
@@ -179,11 +180,67 @@ func schedule_position(entry: Dictionary, now_game: float) -> Vector2:
 			return _point_along(_reversed(work_gather), t)
 
 
-func _phase_at(sod: float) -> Dictionary:
+func _phase_at(sod: float, deviation: Dictionary) -> Dictionary:
+	var kind: String = str(deviation.get("kind", "none"))
+	if not kind.is_empty() and kind != "none":
+		var shift: int = clampi(int(deviation.get("shift", 0)), 0, 3600)
+		for p: Dictionary in _deviated_phases(kind, shift):
+			if float(p["start"]) <= sod and sod < float(p["end"]):
+				return p
+		return {"kind": "home", "start": 70200.0, "end": 86400.0}
 	for p: Variant in schedule.get("phases", []):
 		if p is Dictionary and float(p["start"]) <= sod and sod < float(p["end"]):
 			return p
 	return {"kind": "home", "start": 70200.0, "end": 86400.0}
+
+func _deviated_phases(kind: String, shift: int) -> Array:
+	# 与服务端 schedule._day_phases 完全一致；偏离只平移原时段。
+	match kind:
+		"gather_early":
+			return [
+				{"kind": "home", "start": 0.0, "end": 23400.0},
+				{"kind": "walk_home_to_work", "start": 23400.0, "end": 25200.0},
+				{"kind": "work", "start": 25200.0, "end": float(39600 - shift)},
+				{"kind": "walk_work_to_gather", "start": float(39600 - shift), "end": float(40200 - shift)},
+				{"kind": "gather", "start": float(40200 - shift), "end": float(49800 - shift)},
+				{"kind": "walk_gather_to_work", "start": float(49800 - shift), "end": float(50400 - shift)},
+				{"kind": "work", "start": float(50400 - shift), "end": 68400.0},
+				{"kind": "walk_work_to_home", "start": 68400.0, "end": 70200.0},
+				{"kind": "home", "start": 70200.0, "end": 86400.0},
+			]
+		"gather_late":
+			return [
+				{"kind": "home", "start": 0.0, "end": 23400.0},
+				{"kind": "walk_home_to_work", "start": 23400.0, "end": 25200.0},
+				{"kind": "work", "start": 25200.0, "end": float(39600 + shift)},
+				{"kind": "walk_work_to_gather", "start": float(39600 + shift), "end": float(40200 + shift)},
+				{"kind": "gather", "start": float(40200 + shift), "end": float(49800 + shift)},
+				{"kind": "walk_gather_to_work", "start": float(49800 + shift), "end": float(50400 + shift)},
+				{"kind": "work", "start": float(50400 + shift), "end": 68400.0},
+				{"kind": "walk_work_to_home", "start": 68400.0, "end": 70200.0},
+				{"kind": "home", "start": 70200.0, "end": 86400.0},
+			]
+		"stay_work":
+			return [
+				{"kind": "home", "start": 0.0, "end": 23400.0},
+				{"kind": "walk_home_to_work", "start": 23400.0, "end": 25200.0},
+				{"kind": "work", "start": 25200.0, "end": 68400.0},
+				{"kind": "walk_work_to_home", "start": 68400.0, "end": 70200.0},
+				{"kind": "home", "start": 70200.0, "end": 86400.0},
+			]
+		"home_early":
+			return [
+				{"kind": "home", "start": 0.0, "end": 23400.0},
+				{"kind": "walk_home_to_work", "start": 23400.0, "end": 25200.0},
+				{"kind": "work", "start": 25200.0, "end": 39600.0},
+				{"kind": "walk_work_to_gather", "start": 39600.0, "end": 40200.0},
+				{"kind": "gather", "start": 40200.0, "end": 49800.0},
+				{"kind": "walk_gather_to_work", "start": 49800.0, "end": 50400.0},
+				{"kind": "work", "start": 50400.0, "end": float(68400 - shift)},
+				{"kind": "walk_work_to_home", "start": float(68400 - shift), "end": float(70200 - shift)},
+				{"kind": "home", "start": float(70200 - shift), "end": 86400.0},
+			]
+	return []
 
 
 func _lcg(npc_id: int, day: int, slot: int, axis: int) -> int:

@@ -11,6 +11,7 @@ import re
 import time
 
 from ..config import settings
+from ..game import plan as plan_mod
 from ..game import player as player_mod
 from ..game import schedule as schedule_mod
 from ..game import world as world_mod
@@ -118,7 +119,10 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
         db, npc_id, str(n.get("slug", "")), now_game, now_real)
     mood = await mood_mod.current(db, npc_id, now_real)
     mood_text = str(mood.get("text", "")) if mood else ""
-    place = schedule_mod.poi_label_for(n, now_game)
+    heart_row = await plan_mod.plan_for(db, npc_id, now_game)
+    heart = str(heart_row["heart"]) if heart_row else ""
+    place = schedule_mod.poi_label_for(
+        n, now_game, await plan_mod.deviation_for(db, npc_id, now_game))
     # 对话期间标记暂停：八卦扫描跳过、debug 可见；超时 5 现实分自动失效（DESIGN §6.10）。
     await db.execute(
         "UPDATE npc_state SET paused_until = ? WHERE npc_id = ?",
@@ -157,7 +161,7 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
                 p, n, current_affinity, memories, turns, impression,
                 shichen(mem_store.clock), place, message, world_brief,
                 agenda=agenda, mood_text=mood_text,
-                speech_examples=n.get("speech_examples", []),
+                speech_examples=n.get("speech_examples", []), heart=heart,
             )
             cr = await mem_store.llm.chat("dialogue", msgs, json_format=True, temperature=temperature,
                                           metadata={"attempt": attempts, "temperature": temperature})

@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 FAIL = 0
 CALLED: list[str] = []
 PROMPTS: list[tuple[str, list[dict]]] = []
+HEART_MODE = {"value": "ok"}
 
 
 def check(label: str, cond: bool) -> None:
@@ -67,6 +68,12 @@ async def main() -> int:
             text = '{"line":"那小子昨日在后山崖办了黑旋风。"}'
         elif purpose == "greet":
             text = '{"reply":"别来无恙？今日可有好酒？"}'
+        elif purpose == "heart":
+            if HEART_MODE["value"] == "fail":
+                text = "not json"
+            else:
+                text = ('{"heart":"后山那伙人总不散，叫人心里不踏实。",'
+                        '"reason":"镇上人人自危","deviation":"gather_early","minutes":10}')
         else:
             text = "{}"
         return type("R", (), {"text": text, "in_tokens": 10, "out_tokens": 8})()
@@ -251,6 +258,66 @@ async def main() -> int:
             check("B adds no LLM purpose",
                   "agenda" not in CALLED and "mood" not in CALLED)
 
+            print("\n== M5-A daily heart & schedule deviation ==")
+            from app.agent import heart as heart_mod
+            from app.game import schedule as schedule_mod
+
+            before_aff = (await c.get("/api/debug/npc/1")).json()["affinity"]
+            heart_calls = CALLED.count("heart")
+            await heart_mod.ensure_today(main_mod.db, main_mod.mem_store, 1)
+            day = int(main_mod.mem_store.clock.now() // 86400)
+            plan_row = await main_mod.db.fetch_one(
+                "SELECT * FROM npc_plan WHERE npc_id = 1 AND game_day = ?", (day,))
+            check("heart row generated",
+                  plan_row is not None and bool(plan_row["heart"]))
+            check("heart uses one LLM call", CALLED.count("heart") == heart_calls + 1)
+            await heart_mod.ensure_today(main_mod.db, main_mod.mem_store, 1)
+            row_count = await main_mod.db.fetch_one(
+                "SELECT COUNT(*) AS n FROM npc_plan WHERE npc_id = 1")
+            check("same day heart not regenerated",
+                  row_count["n"] == 1 and CALLED.count("heart") == heart_calls + 1)
+            check("heart does not change affinity",
+                  (await c.get("/api/debug/npc/1")).json()["affinity"] == before_aff)
+
+            HEART_MODE["value"] = "fail"
+            fail_calls = CALLED.count("heart")
+            await heart_mod.ensure_today(main_mod.db, main_mod.mem_store, 2)
+            plan_row2 = await main_mod.db.fetch_one(
+                "SELECT * FROM npc_plan WHERE npc_id = 2 AND game_day = ?", (day,))
+            check("failed heart writes empty row and no deviation",
+                  plan_row2 is not None and plan_row2["heart"] == ""
+                  and plan_row2["deviation_json"] == "{}")
+            check("failed heart retries exactly once",
+                  CALLED.count("heart") == fail_calls + 2)
+            attempts = CALLED.count("heart")
+            await heart_mod.ensure_today(main_mod.db, main_mod.mem_store, 2)
+            check("failed heart not retried same day", CALLED.count("heart") == attempts)
+            HEART_MODE["value"] = "ok"
+
+            dev = {"day": 0, "kind": "gather_early", "shift": 1200}
+            check("deviation shifts gather boundary",
+                  schedule_mod.phase_at(38999, dev)[0] == "walk_work_to_gather"
+                  and schedule_mod.phase_at(39000, dev)[0] == "gather")
+            gu = await npc_mod.by_id(main_mod.db, 1)
+            pos = schedule_mod.position_for(gu, 39000, dev)
+            check("deviated position stays at gather anchor",
+                  0 <= pos[0] <= 1600 and 0 <= pos[1] <= 960
+                  and abs(pos[0] - 768) <= 10 and abs(pos[1] - 440) <= 8)
+            check("stay_work keeps NPC at work",
+                  schedule_mod.poi_label_for(
+                      gu, 45000, {"kind": "stay_work", "shift": 1200}) == "剑阳道馆")
+
+            sched = (await c.get("/api/npcs/state")).json()
+            n1 = next(n for n in sched["npcs"] if n["slug"] == "gu_changfeng")
+            n2 = next(n for n in sched["npcs"] if n["slug"] == "tie_wushuang")
+            check("npcs/state exposes heart and deviation",
+                  bool(n1["heart"]) and n1["deviation"].get("kind") == "gather_early"
+                  and n1["deviation"].get("shift") == 600)
+            check("failed heart visible as empty", n2["heart"] == "")
+            d1a = (await c.get("/api/debug/npc/1")).json()
+            check("debug exposes heart and deviation",
+                  bool(d1a["heart"]) and d1a["deviation"].get("kind") == "gather_early")
+
             print("\n== M5-W world premise & artifact ==")
             from app.game import battle as battle_mod
             from app.game import mobs as mobs_mod
@@ -333,8 +400,7 @@ async def main() -> int:
             check("new game clears kills and revives mobs",
                   await main_mod.db.kv_get("mob_kills") is None
                   and all(m["alive"] for m in st["mobs"]))
-            check("W adds no LLM purpose",
-                  "world" not in CALLED and "heart" not in CALLED)
+            check("W adds no LLM purpose", "world" not in CALLED)
 
     shutil.rmtree(_tmp, ignore_errors=True)
     return FAIL

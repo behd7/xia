@@ -8,6 +8,7 @@ an NPC by its numeric id.
 
 from ..db import Database
 from ..game import inventory as inventory_mod
+from ..game import plan as plan_mod
 from ..game import player as player_mod
 from ..game import schedule as schedule_mod
 from ..game import skills as skills_mod
@@ -153,12 +154,14 @@ async def apply_delta(db: Database, npc_id: int, delta: int) -> int:
     return await set_affinity(db, npc_id, cur + int(delta))
 
 
-async def list_for_client(db: Database, clock) -> list[dict]:
+async def list_for_client(db: Database, clock,
+                          deviations: dict[int, dict] | None = None) -> list[dict]:
     rows = await db.fetch_all(
         "SELECT n.id, n.name, n.role, n.work_poi, n.home_poi, ns.affinity, ns.paused_until"
         " FROM npc n JOIN npc_state ns ON ns.npc_id = n.id ORDER BY n.id"
     )
     now = clock.now()
+    deviations = deviations or {}
     out = []
     for r in rows:
         meta = _npc_meta_by_id.get(r["id"])
@@ -166,7 +169,7 @@ async def list_for_client(db: Database, clock) -> list[dict]:
         out.append({
             "id": r["id"], "slug": (meta or {}).get("slug", r["name"]), "name": r["name"],
             "role": r["role"], "affinity": r["affinity"],
-            "poi": schedule_mod.poi_label_for(label_src, now),
+            "poi": schedule_mod.poi_label_for(label_src, now, deviations.get(r["id"])),
             "work_poi": r["work_poi"], "home_poi": r["home_poi"],
             "paused_until": r["paused_until"],
         })
@@ -212,10 +215,12 @@ async def apprentice(db: Database, mem_store, npc_id: int) -> dict:
     new_aff = await set_affinity(db, npc_id, aff_before + 3)
     sect_name = skills_mod.SECTS[n["sect"]]["name"]
     if mem_store is not None:
+        now_game = mem_store.clock.now()
+        dev = await plan_mod.deviation_for(db, npc_id, now_game)
         await mem_store.add_memory(
             db, npc_id, content=f"你将{p['name']}收归{sect_name}门下，授以入门剑诀。",
             kind="event", participants=[p["name"]],
-            poi=schedule_mod.poi_label_for(n, mem_store.clock.now()), importance=6,
+            poi=schedule_mod.poi_label_for(n, now_game, dev), importance=6,
         )
     reply = CEREMONY.get(n["slug"], f"{n['name']}缓缓点头，收你入门。")
     tr = await trace_mod.trace_turn(
@@ -251,7 +256,9 @@ async def gift(db: Database, mem_store, npc_id: int, item_id: int) -> dict:
     new_aff = await set_affinity(db, npc_id, aff + delta)
     await inventory_mod.consume(db, p["id"], item_id)
     if mem_store is not None:
-        poi = schedule_mod.poi_label_for(n, mem_store.clock.now())
+        now_game = mem_store.clock.now()
+        dev = await plan_mod.deviation_for(db, npc_id, now_game)
+        poi = schedule_mod.poi_label_for(n, now_game, dev)
         await mem_store.add_memory(
             db, npc_id, content=f"送礼·{p['name']}送来{inv['name']}。",
             kind="event", participants=[p["name"]], poi=poi, importance=3,

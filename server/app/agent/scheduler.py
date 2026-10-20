@@ -8,6 +8,7 @@ import asyncio
 
 from ..config import settings
 from . import gossip as gossip_mod
+from . import heart as heart_mod
 from . import npc as npc_mod
 from . import reflection as reflection_mod
 
@@ -40,12 +41,26 @@ async def _gossip_loop(db, store) -> None:
             print(f"[scheduler] gossip tick failed: {e!r}")
 
 
+async def _plan_loop(db, store) -> None:
+    while True:
+        await asyncio.sleep(settings.scheduler_tick_real)
+        if not settings.plan_enabled:
+            continue
+        try:
+            await heart_mod.ensure_all(db, store)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[scheduler] plan tick failed: {e!r}")
+
+
 async def start(db, store) -> list[asyncio.Task]:
     if not settings.scheduler_enabled:
         return []
     return [
         asyncio.create_task(_reflect_loop(db, store)),
         asyncio.create_task(_gossip_loop(db, store)),
+        asyncio.create_task(_plan_loop(db, store)),
     ]
 
 

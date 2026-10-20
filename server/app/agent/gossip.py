@@ -12,6 +12,7 @@ import time
 
 from ..config import settings
 from ..db import Database
+from ..game import plan as plan_mod
 from ..game import schedule as schedule_mod
 from . import npc as npc_mod
 from . import relationship as relationship_mod
@@ -126,14 +127,17 @@ async def scan(db: Database, store) -> int:
     now_real = time.time()
     states = await db.fetch_all("SELECT npc_id, paused_until FROM npc_state")
     paused = {r["npc_id"]: r["paused_until"] for r in states}
+    deviations = await plan_mod.deviations_for_day(db, now_game)
 
     active: list[tuple[dict, tuple[float, float], str]] = []
     for npc_id in npc_mod.ids():
         n = await npc_mod.by_id(db, npc_id)
-        if n is None or not schedule_mod.is_idle(now_game, paused.get(npc_id), now_real):
+        dev = deviations.get(npc_id)
+        if n is None or not schedule_mod.is_idle(
+                now_game, paused.get(npc_id), now_real, dev):
             continue
-        active.append((n, schedule_mod.position_for(n, now_game),
-                       schedule_mod.poi_label_for(n, now_game)))
+        active.append((n, schedule_mod.position_for(n, now_game, dev),
+                       schedule_mod.poi_label_for(n, now_game, dev)))
 
     pairs: list[tuple[dict, dict, str]] = []
     for i in range(len(active)):

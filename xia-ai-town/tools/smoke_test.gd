@@ -141,6 +141,7 @@ func base() -> void:
 	check(modal_text().contains("断岳刀"), "chronicle lists the artifact rumor")
 	await escape()
 	check(app.modal == null, "Esc closes chronicle")
+	deviation_mirror()
 	app.open_sect("jianyang", "剑阳道馆")
 	check(button("确认拜入").disabled, "level-one sect join is disabled")
 	var denied: Dictionary = await app.api.request("/api/sect/join", {"sect_id": "jianyang"})
@@ -169,6 +170,22 @@ func base() -> void:
 	await settle()
 	check(app.shop_id == "smith" and button("购入 · 80").disabled, "smith disables unaffordable equipment")
 	await escape()
+
+func deviation_mirror() -> void:
+	var entry: Dictionary = {}
+	for npc: Dictionary in app.world.npcs:
+		if str(npc.get("slug", "")) == "gu_changfeng":
+			entry = npc
+	check(not entry.is_empty() and int(entry.get("npc_id", 0)) == 1, "deviation fixture NPC resolved")
+	var dev := {"day": 0, "kind": "gather_early", "shift": 1200}
+	check(str(app.world._phase_at(38999.0, dev).kind) == "walk_work_to_gather", "gather_early shifts walk into gather")
+	check(str(app.world._phase_at(39000.0, dev).kind) == "gather", "gather_early starts gather 1200s early")
+	entry["deviation"] = dev
+	var expected := Vector2(771.1762, 437.4463)
+	var actual: Vector2 = app.world.schedule_position(entry, 39000.0)
+	check(actual.is_equal_approx(expected), "client deviation position matches hardcoded anchor")
+	entry["deviation"] = {}
+	check(str(app.world._phase_at(39000.0, {}).kind) == "work", "baseline schedule restored")
 
 func advanced() -> void:
 	check(app.player.level == 3 and app.player.free_points == 3, "runner fixture loaded at level three")

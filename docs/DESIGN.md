@@ -408,6 +408,9 @@ importance 3）」链路，同样永不阻塞。event 作为 RAG 检索补充，
 - 相位切换处行走段端点不带踱步偏移，可能跳变 ≤10px，属预期表现；
 - 对话期间服务器把 `paused_until` 设为现实时间 +5 分钟（`end=true` 提前清除），仅用于八卦扫描排除与调试观察；客户端只冻结当前对话框对应的 NPC，关闭即恢复日程；
 - `paused_until`/`last_reflection_at`/`last_greet_real`/关系 `updated_at` 用现实时间；`ts_game`、日程、八卦日界用游戏时间，不得混用。
+- **每日心事与安全偏离（M5-A）**：后台 `_plan_loop` 每 `scheduler_tick_real` 巡检，`plan_enabled=false` 可停用；每个 NPC 每游戏日最多一行 `npc_plan`。素材为最近 10 条记忆、关系摘要、世界阶段与固定立场；LLM 产出 `heart`（≤60 字）、`reason`（≤40 字）、偏离 `none|gather_early|gather_late|stay_work|home_early` 与 `minutes`（5~20）。校验失败重试一次后写空心事/无偏离行，当天不再重试。
+- 偏离**只平移既有相位边界**：`gather_early`/`gather_late` 同时改前后两段 `work`，`stay_work` 合并两段 `work`，`home_early` 提前回家段；`shift` clamp 0~3600，不新增坐标、不做寻路。服务端 `_day_phases` 与 Godot `_deviated_phases` 常量逐位一致；`phase_at/position_for/poi_label_for/is_idle` 均接受 `deviation`（默认 `None`，不传行为不变）。
+- `/api/npcs/state` 每人附带 `heart`/`deviation`，客户端随 10 秒状态同步取到，不新增轮询；对话/搭话/送礼/拜师/反思/八卦的地点与位置全部按偏离后的相位计算。
 
 ### 6.11 世界公设与断岳刀世界事件
 
@@ -456,6 +459,7 @@ LLM_API_BASE_URL=
 | 主动搭话 | 进入半径+达标 | ~300 / ~60 | 同步、带缓存 |
 | 反思 | 后台低频 | ~1200 / ~200 | 异步 |
 | 关系摘要 | 后台低频 | ~800 / ~150 | 异步 |
+| 每日心事 | 每 NPC 每日一次 | ~500 / ~80 | 后台低频，失败当天不再重试 |
 | 八卦改写 | 后台低频 | ~400 / ~80 | 仅 importance≥7 |
 | 记忆 embedding | 每条记忆 | — | `/api/embed` 批量 |
 
@@ -477,7 +481,7 @@ embedding：`POST /api/embed {"model": ..., "input": [...]}`，向量 L2 归一�
 
 ### 7.5 并发控制
 
-`PriorityLimiter`（堆式异步优先级队列，并发上限 `LLM_CONCURRENCY=2`）全局限流；优先级：对话/批总结/embedding（0）> 搭话（1）> 关系摘要（2）> 反思与默认（3）> 八卦（4）。等待者按优先级与入队顺序取槽，取消安全；后台反思/八卦不会挤占玩家对话。
+`PriorityLimiter`（堆式异步优先级队列，并发上限 `LLM_CONCURRENCY=2`）全局限流；优先级：对话/批总结/embedding（0）> 搭话（1）> 关系摘要（2）> 反思/每日心事与默认（3）> 八卦（4）。等待者按优先级与入队顺序取槽，取消安全；后台反思/心事/八卦不会挤占玩家对话。
 
 ---
 
@@ -501,6 +505,8 @@ npc_state(npc_id, affinity, last_reflection_at, mem_since_reflection,
           paused_until, last_greet_real,
           interacts_since_summary, last_summary_conv_id)
 npc_mood(npc_id PK, mood, reason, until_real)  -- 轻情绪，只进 prompt；until_real 为现实时间
+npc_plan(npc_id, game_day, heart, reason, deviation_json, created_at_real,
+         PRIMARY KEY(npc_id, game_day))  -- 每日心事+安全偏离，每 NPC 每天最多一行
 
 > `npc` 表只存身份/职分/地点锚点与稳定主键；**人格、说话风格等静态性格定义只
 > 在 `agent/npc.py` 的 `NPC_ROSTER`（代码）中**，对话/调取按枚举使用，不再入库
@@ -538,7 +544,7 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=�
 |---|---|---|
 | POST | `/api/game/new` | 新档 `{name}`（覆盖旧档需确认标记） |
 | GET | `/api/game/state` | 玩家全量状态+游戏时钟+`npcs` 花名册（id/slug/name/role/好感/当前 poi/锚点/`paused_until`）+`world`（`stage/artifact_acquired/announced_at_game/announcement/premise`） |
-| GET | `/api/npcs/state` | 日程推算全量参数：`clock/sense_radius/greet_threshold/phases/pacing/gather_anchor` + 每人 `home_to_work/work_to_gather/pos/poi/affinity/paused_until/greet_ready` |
+| GET | `/api/npcs/state` | 日程推算全量参数：`clock/sense_radius/greet_threshold/phases/pacing/gather_anchor` + 每人 `home_to_work/work_to_gather/pos/poi/affinity/paused_until/greet_ready/heart/deviation` |
 | POST | `/api/npc/{id}/greet` | 主动搭话：`{greet,reply,affinity}` 或 `{greet:false,reason:affinity|cooldown|paused}`；无存档 409、查无此人 404 |
 | POST | `/api/npc/{id}/talk` | `{message}` → `{reply, affinity, end, player}`（LLM 生成，RAG 检索记忆） |
 | POST | `/api/npc/{id}/gift` | `{item_id}` |
@@ -556,7 +562,7 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=�
 | POST | `/api/battle/start` | `{target_type: mob, target_id}` 野外怪物战斗；NPC 切磋经 `/api/npc/{id}/challenge` |
 | POST | `/api/battle/action` | `{action: attack|skill|item|flee, id?}` → 结算后全量战况 |
 | GET | `/api/battle/state` | 断线重入 |
-| GET | `/api/debug/npc/{id}` | **实验观察**：好感、反思计数与 `seconds_since_reflection`、关系摘要、最近 50 条记忆（含 `source_memory_id`）、当前日程 `{phase,poi,pos,paused}`、世界立场 `world{stage,stance,knowledge,stage2}`、`agenda`、`mood`、`speech_examples` |
+| GET | `/api/debug/npc/{id}` | **实验观察**：好感、反思计数与 `seconds_since_reflection`、关系摘要、最近 50 条记忆（含 `source_memory_id`）、当前日程 `{phase,poi,pos,paused}`、世界立场 `world{stage,stance,knowledge,stage2}`、`agenda`、`mood`、`speech_examples`、`heart`、`deviation` |
 | GET | `/api/health` | 含 Ollama 连通性检查 |
 
 战斗响应含 log 数组（逐条结算文本），客户端按序播放浮字/震动动画。
@@ -569,7 +575,7 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=�
 
 - **HUD**：HP/MP 条、等级经验条、银两、游戏时辰（"未时"）、当前 POI 名；
 - **面板**：角色(I)（属性分配）、背包(B)（装备/使用/送礼入口）、技能(K)（装备/升级）；
-- **NPC 日程**：每 10 秒随状态同步拉取 `/api/npcs/state`，用与服务器一致的 LCG/折线函数逐帧本地推算位置；对话中冻结当前 NPC，关闭对话框立即回到日程位置；人物录显示当前地点，`paused_until` 未过期时标注"（正忙）"；
+- **NPC 日程**：每 10 秒随状态同步拉取 `/api/npcs/state`，用与服务器一致的 LCG/折线函数逐帧本地推算位置；偏离参数随同步到达，Godot `_deviated_phases` 与服务端 `_day_phases` 同常量翻译相位；对话中冻结当前 NPC，关闭对话框立即回到日程位置；人物录显示当前地点与当日心事，`paused_until` 未过期时标注"（正忙）"；
 - **主动搭话**：走近 NPC 进入 48px 感知半径且 `greet_ready=true` 时，客户端异步请求 `/api/npc/{id}/greet`（不阻塞走动），成功后在 NPC 头顶绘制纸色气泡，最多两行、每行约 14 字；
 - **对话**：立绘位+文本框+输入框+5 快捷键；NPC 头顶好感小图标（心形分档，仅示意档位不显数值）；
 - **战斗**：全屏半透明遮罩面板，双方状态条/Buff 图标/四指令钮/滚动战斗日志/浮字伤害；
@@ -659,6 +665,9 @@ Xia/
 | GOSSIP_REWRITE_IMPORTANCE | 7 | 触发 LLM 改写的重要度 |
 | GOSSIP_MAX_PAIRS_PER_SCAN | 2 | 每次扫描最多成功传播的对数 |
 | NPC_SENSE_RADIUS | 48 | 客户端主动搭话感知半径（像素） |
+| PLAN_ENABLED | true | 每日心事/日程偏离总开关 |
+| PLAN_DEVIATION_SHIFT_SEC | 1200 | 偏离阶段平移上限（游戏秒）= 20 游戏分钟 |
+| PLAN_HEART_MAX_CHARS | 60 | 心事字数上限 |
 | DIALOGUE_WINDOW_SIZE | 6 | 每轮回复平铺的最近对话轮数 |
 | EVENT_SUMMARY_THRESHOLD | 5 | 互动判断值达 N 即批总结成 event |
 | RECENCY_HALF_LIFE | 3 游戏日 | 记忆新鲜度衰减 |

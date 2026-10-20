@@ -710,6 +710,9 @@ func open_people() -> void:
 			place += "（正忙）"
 		UI.row(body, "%s  ·  %s" % [str(npc.name), _role_text(str(npc.role))],
 			"%s  ·  好感%s" % [place, _affinity_hearts(int(npc.get("affinity", 0)))])
+		var heart := _heart_for(str(npc.get("slug", "")))
+		if not heart.is_empty():
+			body.add_child(UI.paragraph("心事：" + heart, 13, UI.MUTED))
 		body.add_child(UI.rule())
 	if people_npcs.is_empty():
 		body.add_child(UI.paragraph("故人尚未聚齐，稍后再来。", 15))
@@ -726,6 +729,12 @@ func _find_npc(slug: String) -> Dictionary:
 		if str(npc.get("slug", "")) == slug:
 			return npc
 	return {}
+
+func _heart_for(slug: String) -> String:
+	for npc: Variant in npc_state.get("npcs", []):
+		if npc is Dictionary and str(npc.get("slug", "")) == slug:
+			return str(npc.get("heart", ""))
+	return ""
 
 func open_dialogue(slug: String) -> void:
 	if busy or player.is_empty():

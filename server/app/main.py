@@ -11,6 +11,7 @@ from .db import Database
 from .game import battle as battle_mod
 from .game import data, mobs as mobs_mod
 from .game import inventory as inventory_mod
+from .game import plan as plan_mod
 from .game import player as player_mod
 from .game import schedule as schedule_mod
 from .game import shop as shop_mod
@@ -200,6 +201,8 @@ async def npc_challenge(npc_id: int, pos: PosBody | None = None) -> dict[str, An
 async def npcs_state() -> dict[str, Any]:
     now_game = clock.now()
     now_real = time.time()
+    deviations = await plan_mod.deviations_for_day(db, now_game)
+    plans = await plan_mod.plans_for_day(db, now_game)
     rows = await db.fetch_all(
         "SELECT n.id, ns.affinity, ns.paused_until, ns.last_greet_real"
         " FROM npc n JOIN npc_state ns ON ns.npc_id = n.id ORDER BY n.id"
@@ -218,7 +221,9 @@ async def npcs_state() -> dict[str, Any]:
             and (last_greet is None or now_real - last_greet >= settings.greet_cooldown_real)
             and (paused_until is None or paused_until <= now_real)
         )
-        pos = schedule_mod.position_for(n, now_game)
+        dev = deviations.get(r["id"])
+        plan = plans.get(r["id"], {})
+        pos = schedule_mod.position_for(n, now_game, dev)
         out.append({
             "id": r["id"], "slug": n["slug"], "name": n["name"],
             "home": n.get("home", ""), "work": n.get("work", ""),
@@ -228,7 +233,9 @@ async def npcs_state() -> dict[str, Any]:
             "affinity": r["affinity"], "paused_until": paused_until,
             "greet_ready": greet_ready,
             "pos": [round(pos[0], 2), round(pos[1], 2)],
-            "poi": schedule_mod.poi_label_for(n, now_game),
+            "poi": schedule_mod.poi_label_for(n, now_game, dev),
+            "heart": plan.get("heart", ""),
+            "deviation": dev or {},
         })
     return {
         "clock": clock.snapshot(),
@@ -260,8 +267,11 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
     rel = await db.fetch_all("SELECT * FROM relationship WHERE npc_id = ?", (npc_id,))
     now_game = clock.now()
     now_real = time.time()
-    kind, _, _ = schedule_mod.phase_at(now_game % schedule_mod.GAME_SEC_PER_DAY)
-    pos = schedule_mod.position_for(n, now_game)
+    deviation = await plan_mod.deviation_for(db, npc_id, now_game)
+    plan = await plan_mod.plan_for(db, npc_id, now_game)
+    kind, _, _ = schedule_mod.phase_at(
+        now_game % schedule_mod.GAME_SEC_PER_DAY, deviation)
+    pos = schedule_mod.position_for(n, now_game, deviation)
     world_stage = await world_state_mod.stage(db)
     stance = world_mod.stance_entry(n.get("slug", ""))
     reflection = dict(ns or {})
@@ -276,9 +286,12 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
         "affinity": aff,
         "reflection": reflection,
         "schedule": {
-            "phase": kind, "poi": schedule_mod.poi_label_for(n, now_game),
+            "phase": kind,
+            "poi": schedule_mod.poi_label_for(n, now_game, deviation),
             "pos": [round(pos[0], 1), round(pos[1], 1)], "paused": paused,
         },
+        "heart": plan.get("heart", "") if plan else "",
+        "deviation": deviation or {},
         "memories": memories,
         "relationship": rel,
         "agenda": await agenda_mod.current(db, npc_id),
@@ -343,12 +356,14 @@ async def health() -> dict[str, Any]:
 async def game_state() -> dict[str, Any]:
     p = await player_mod.get(db)
     stage = await world_state_mod.stage(db)
+    now_game = clock.now()
     return {
         "player": await player_mod.api_dict(db, p) if p else None,
         "clock": clock.snapshot(),
         "mobs": await mobs_mod.states(db),
         "battle": await battle_mod.active_snapshot(db),
-        "npcs": await npc_mod.list_for_client(db, clock),
+        "npcs": await npc_mod.list_for_client(
+            db, clock, await plan_mod.deviations_for_day(db, now_game)),
         "world": {
             "stage": stage,
             "artifact_acquired": await world_state_mod.artifact_acquired(db),

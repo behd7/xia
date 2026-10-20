@@ -11,6 +11,7 @@ import time
 
 from ..config import settings
 from ..db import Database
+from ..game import plan as plan_mod
 from ..game import player as player_mod
 from ..game import schedule as schedule_mod
 from . import npc as npc_mod
@@ -109,7 +110,9 @@ async def run_once(db: Database, store, npc_id: int, *, force: bool = False) -> 
         insights = [f"近来常想起：{str(rows[0]['content']).strip()}"[:80]]
         delta = 0
 
-    poi = schedule_mod.poi_label_for(n, store.clock.now())
+    now_game = store.clock.now()
+    poi = schedule_mod.poi_label_for(
+        n, now_game, await plan_mod.deviation_for(db, npc_id, now_game))
     participants = npc_mod.names_in(" ".join(insights), p["name"])
     for content in insights[:3]:
         await store.add_memory(

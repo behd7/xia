@@ -42,8 +42,59 @@ ROUTES = {
 }
 
 
-def phase_at(sec_of_day: float) -> tuple[str, float, float]:
-    for kind, start, end in PHASES:
+def _day_phases(deviation: dict | None = None) -> tuple:
+    """返回当日相位表；偏离只平移原有时段，不新增坐标或路径。"""
+    kind = str((deviation or {}).get("kind") or "none")
+    shift = max(0, min(3600, int((deviation or {}).get("shift", 0) or 0)))
+    if kind == "gather_early":
+        return (
+            ("home", 0, 23400),
+            ("walk_home_to_work", 23400, 25200),
+            ("work", 25200, 39600 - shift),
+            ("walk_work_to_gather", 39600 - shift, 40200 - shift),
+            ("gather", 40200 - shift, 49800 - shift),
+            ("walk_gather_to_work", 49800 - shift, 50400 - shift),
+            ("work", 50400 - shift, 68400),
+            ("walk_work_to_home", 68400, 70200),
+            ("home", 70200, 86400),
+        )
+    if kind == "gather_late":
+        return (
+            ("home", 0, 23400),
+            ("walk_home_to_work", 23400, 25200),
+            ("work", 25200, 39600 + shift),
+            ("walk_work_to_gather", 39600 + shift, 40200 + shift),
+            ("gather", 40200 + shift, 49800 + shift),
+            ("walk_gather_to_work", 49800 + shift, 50400 + shift),
+            ("work", 50400 + shift, 68400),
+            ("walk_work_to_home", 68400, 70200),
+            ("home", 70200, 86400),
+        )
+    if kind == "stay_work":
+        return (
+            ("home", 0, 23400),
+            ("walk_home_to_work", 23400, 25200),
+            ("work", 25200, 68400),
+            ("walk_work_to_home", 68400, 70200),
+            ("home", 70200, 86400),
+        )
+    if kind == "home_early":
+        return (
+            ("home", 0, 23400),
+            ("walk_home_to_work", 23400, 25200),
+            ("work", 25200, 39600),
+            ("walk_work_to_gather", 39600, 40200),
+            ("gather", 40200, 49800),
+            ("walk_gather_to_work", 49800, 50400),
+            ("work", 50400, 68400 - shift),
+            ("walk_work_to_home", 68400 - shift, 70200 - shift),
+            ("home", 70200 - shift, 86400),
+        )
+    return PHASES
+
+
+def phase_at(sec_of_day: float, deviation: dict | None = None) -> tuple[str, float, float]:
+    for kind, start, end in _day_phases(deviation):
         if start <= sec_of_day < end:
             return kind, float(start), float(end)
     return "home", 70200.0, 86400.0
@@ -95,14 +146,15 @@ def _pacing(npc_id: int, day: int, sec_of_day: float) -> tuple[float, float]:
     return prev_x + (cur_x - prev_x) * t, prev_y + (cur_y - prev_y) * t
 
 
-def position_for(npc: dict, now_game: float) -> tuple[float, float]:
+def position_for(npc: dict, now_game: float,
+                 deviation: dict | None = None) -> tuple[float, float]:
     routes = ROUTES.get(str(npc.get("slug", "")))
     if routes is None:
         return (792.0, 440.0)  # 未知花名册条目的兜底，正常不会发生
     home_work, work_gather = routes
     sod = now_game % GAME_SEC_PER_DAY
     day = int(now_game // GAME_SEC_PER_DAY)
-    kind, start, end = phase_at(sod)
+    kind, start, end = phase_at(sod, deviation)
     t = (sod - start) / (end - start) if end > start else 0.0
     if kind == "home":
         base = home_work[0]
@@ -122,8 +174,8 @@ def position_for(npc: dict, now_game: float) -> tuple[float, float]:
     return base[0] + ox, base[1] + oy
 
 
-def poi_label_for(npc: dict, now_game: float) -> str:
-    kind, _, _ = phase_at(now_game % GAME_SEC_PER_DAY)
+def poi_label_for(npc: dict, now_game: float, deviation: dict | None = None) -> str:
+    kind, _, _ = phase_at(now_game % GAME_SEC_PER_DAY, deviation)
     if kind == "home":
         return str(npc.get("home") or "家中")
     if kind == "work":
@@ -133,6 +185,7 @@ def poi_label_for(npc: dict, now_game: float) -> str:
     return "路上"
 
 
-def is_idle(now_game: float, paused_until: float | None, now_real: float) -> bool:
-    kind, _, _ = phase_at(now_game % GAME_SEC_PER_DAY)
+def is_idle(now_game: float, paused_until: float | None, now_real: float,
+            deviation: dict | None = None) -> bool:
+    kind, _, _ = phase_at(now_game % GAME_SEC_PER_DAY, deviation)
     return kind in ("work", "gather") and not (paused_until and paused_until > now_real)

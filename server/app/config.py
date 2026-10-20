@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     gossip_max_pairs_per_scan: int = 2      # 每次扫描最多八卦对数
     npc_sense_radius: float = 48.0          # 主动搭话感应半径（3 tile）
 
+    # M5-A 每日心事与安全日程偏离
+    plan_enabled: bool = True               # 心事/偏离总开关
+    plan_deviation_shift_sec: int = 1200    # 阶段平移上限（游戏秒）= 20 游戏分钟
+    plan_heart_max_chars: int = 60          # 心事字数上限
+
     # Dialogue memory batching (docs/DESIGN.md §6.6)
     dialogue_window_size: int = 6      # 每轮回复平铺的最近对话轮数
     event_summary_threshold: int = 5   # 对话满 N 轮即批总结成 event

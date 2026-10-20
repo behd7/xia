@@ -104,6 +104,16 @@ CREATE TABLE IF NOT EXISTS npc_mood (
     until_real REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS npc_plan (
+    npc_id INTEGER NOT NULL REFERENCES npc(id),
+    game_day INTEGER NOT NULL,
+    heart TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    deviation_json TEXT NOT NULL DEFAULT '{}',
+    created_at_real REAL NOT NULL,
+    PRIMARY KEY (npc_id, game_day)
+);
+
 CREATE TABLE IF NOT EXISTS memory (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     npc_id INTEGER NOT NULL REFERENCES npc(id),
