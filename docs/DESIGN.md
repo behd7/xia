@@ -338,7 +338,7 @@ recency: 半衰期 = 3 游戏日
 **事件入忆（互动判断值 + 窗口批总结，不逐轮）**：闲聊每轮只进短期窗口
 （`conversation` 表），不写 event 记忆。每个 NPC 维护 `interacts_since_summary`
 判断值，**每次日常互动**（对话、送礼、切磋、购买）都 +1；当它 ≥
-`event_summary_threshold`（默认 5）或某次对话 `end=true` 提前收尾时，触发一次"反思"：
+`event_summary_threshold`（默认 5）或某次对话 `end=true` 提前收尾时，触发一次**批总结**：
 把 `last_summary_conv_id` 水位线以来、尚未蒸馏的对话轮原始文本一次 LLM 归纳成
 1~3 条第三人称事件摘要（各带 importance），以 `kind=event` 落库，然后清零判断值、
 推进水位线。礼物/切磋/大额消费的规则事件仍各自即时入忆（§6.3），只累加判断值、

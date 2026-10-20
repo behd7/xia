@@ -12,7 +12,7 @@ from ..config import settings
 from ..game import player as player_mod
 from . import npc as npc_mod
 from . import rag as rag_mod
-from . import reflect as reflect_mod
+from . import summary as summary_mod
 from . import trace as trace_mod
 
 SHICHEN_PHASES = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"]
@@ -131,9 +131,9 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
         (npc_id, mem_store.clock.now(),
          json.dumps({"user": message, "npc": result["reply"]}, ensure_ascii=False), delta),
     )
-    # 互动判断值+1；对话 end 即使未满阈值也提前蒸馏。蒸馏逻辑在 reflect.py
-    # （DESIGN §6.6：闲聊只进短期窗口，达阈值才反思成 event 入忆）。
-    summarized = await reflect_mod.bump(db, mem_store, npc_id, p["name"], place,
+    # 互动判断值+1；对话 end 即使未满阈值也提前蒸馏。蒸馏逻辑在 summary.py
+    # （DESIGN §6.6：闲聊只进短期窗口，达阈值才批总结成 event 入忆）。
+    summarized = await summary_mod.bump(db, mem_store, npc_id, p["name"], place,
                                         force=result["end"], trace=trace)
     if trace is not None:
         await trace_mod.span(trace, "outcome",

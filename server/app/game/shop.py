@@ -13,7 +13,7 @@ SHOP_OWNER_ROLE = {"clinic": "clinic", "smith": "smith"}
 # 跨层受控注入：main lifespan 装配时赋值。避免 game -> agent 的模块级 import 环，
 # 仅此两处；None 表示 LLM/反思层未装配（正常开发恒装配，测试可不配）。
 mem_store = None    # injected: 大额消费写店主记忆
-reflect_bump = None  # injected: reflect.bump（互动判断值+1, 达阈值蒸馏窗口）
+summary_bump = None  # injected: summary.bump（互动判断值+1, 达阈值蒸馏窗口）
 
 
 async def _owner(db: Database, shop_id: str) -> dict | None:
@@ -82,7 +82,7 @@ async def buy(db: Database, p: dict, shop_id: str, item_id: int, qty: int, pos: 
                     content=f"你在本店花{cost}两买下{row['name']}，出手阔绰。",
                     kind="event", participants=[p["name"]], poi=s["name"], importance=3,
                 )
-            if reflect_bump is not None:
-                await reflect_bump(db, mem_store, owner["npc_id"], p["name"], s["name"])
+            if summary_bump is not None:
+                await summary_bump(db, mem_store, owner["npc_id"], p["name"], s["name"])
     await player_mod.save(db, p)
     return await player_mod.api_dict(db, p)

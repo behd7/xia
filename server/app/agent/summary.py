@@ -1,9 +1,9 @@
-"""日常互动判断值 + 对话窗口蒸馏成 event（docs/DESIGN.md §6.6）。
+"""日常互动判断值 + 对话窗口批总结成 event（docs/DESIGN.md §6.6）。
 
 机制：每个 NPC 维护 `interacts_since_summary` 判断值，**每次日常互动**（对话、
 送礼、切磋、大额消费）都 +1；对话轮只进 `conversation` 短期窗口（原始文本，
 不逐轮入忆）。当判断值达到 `event_summary_threshold`（或某次对话 end=true 提前
-收尾）时，触发一次"反思"：把 `last_summary_conv_id` 水位线以来的未蒸馏对话轮，
+收尾）时，触发一次**批总结**：把 `last_summary_conv_id` 水位线以来的未蒸馏对话轮，
 一次 LLM 归纳成 1~3 条 `kind=event` 记忆落库，然后清零判断值、推进水位线。
 
 Gift/切磋/大额消费的规则事件仍各自即时入忆（§6.3 直接交互），它们只累加判断值、
