@@ -478,7 +478,7 @@ async def sect_join(req: SectJoinReq) -> dict[str, Any]:
 @app.post("/api/shop/{shop_id}/sell")
 async def shop_sell(shop_id: str, req: SellReq) -> dict[str, Any]:
     p = await _player_or_409()
-    if shop_mod.info(shop_id) is None:
+    if await shop_mod.info(db, shop_id) is None:
         raise HTTPException(404, "查无此店")
     try:
         gain = await inventory_mod.sell(db, p["id"], req.item_id, req.qty)
