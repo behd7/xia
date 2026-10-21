@@ -447,16 +447,25 @@ LLM_TIMEOUT=20
 LLM_CONCURRENCY=2
 ```
 
-**可选 OpenAI 兼容对话后端**：本地 Ollama 是默认对话后端；若同时配置了
+**可选 OpenAI 兼容后端**：本地 Ollama 是默认后端；若同时配置了
 `LLM_API_KEY` 与 `LLM_API_BASE_URL`，则对话改走该 API（`/chat/completions`，
 base_url 需以 `/v1` 结尾，如 `LLM_API_BASE_URL=https://api.example.com/v1`），
-`LLM_API_MODEL` 指定其模型名（缺省回退 `CHAT_MODEL`）。**嵌入始终留在本地
-Ollama**（RAG 需要，API 不一定提供兼容 embedding）。健康检查
+`LLM_API_MODEL` 指定其模型名（缺省回退 `CHAT_MODEL`）。健康检查
 `/api/health` 会标注当前生效的对话后端（`openai-api` / `ollama`）与有效模型名。
+
+**嵌入的双格式兼容**：embedding 后端可能是 Ollama（`/api/embed` →
+`{"embeddings": [[...]]}`）也可能是 OpenAI 兼容服务（`/embeddings` →
+`{"data": [{"embedding": [...]}]}`）。`OllamaClient.embed` 按
+「配置的 API 后端 → Ollama `/api/embed` → Ollama `/embeddings`」顺序尝试，
+解析两种响应形状，并缓存命中成功的路由；某条路失败自动降级到下一条，
+全部失败才抛错（由调用方的兜底链路接住）。`LLM_API_EMBED_MODEL` 可单独指定
+API 侧的嵌入模型名，留空回退 `EMBED_MODEL`。健康检查的 `/api/tags` 缺失时
+自动改查 `/v1/models`，因此把 host 直接指向 OpenAI 兼容服务也不会误报不可达。
 
 ```env
 LLM_API_KEY=
 LLM_API_MODEL=
+LLM_API_EMBED_MODEL=     # API 侧嵌入模型名；留空回退 EMBED_MODEL
 LLM_API_BASE_URL=
 LLM_API_TRUST_ENV=false   # 外接 API 默认直连；需要 shell 代理时改 true
 LLM_API_TIMEOUT=8         # 外接 API 单次超时（秒），失败后仍走重试/模板兜底
@@ -602,19 +611,38 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=�
 
 ---
 
-## 11. 占位美术规格
+## 11. 美术与字体渲染规格
 
-Godot 当前版不依赖图片资源：`town_world.gd` 原生绘制瓦顶、窗棂、灯笼、门牌、草木、像素人物与怪物；静态地图绘制缓存，动态层更新角色、日程驱动的 NPC、搭话气泡与怪物。`ui_kit.gd` 提供纸墨面板和控件主题，中文使用系统 CJK 字体回退。原 Phaser PNG 生成脚本仅作历史保留。
+### 11.1 分辨率与字体
 
-后期正式素材规格（预留目录 `xia-ai-town/assets/`；如需生成图片，先向用户提供提示词与精确路径，等待用户手动生成完成）：
+**UI 与世界全部按原生分辨率渲染**：`project.godot` 的 `display/window/stretch/mode` 为 `disabled`，不做整帧拉伸。原因是 `canvas_items` 会把 1440×900 的整帧（含中文笔画）重采样到实际窗口尺寸，非整数倍时字缘必然发灰；中文无法用点阵字体规避，因此走「UI 独立原生层 + TTF 动态栅格化」路线。
 
-| 类别 | 规格 |
+| 项 | 规格 |
 |---|---|
-| tile | 16×16，tileset 单图（地面/墙/水/草木/建筑件） |
-| 角色 | 32×32，4 方向 × 3 帧行走 + 1 帧站立 |
-| 战斗立绘 | 256×256 半身 |
-| UI | 9-slice 边框一张、图标 16×16 |
-| 调色 | 武侠水墨风：低饱和、点缀朱砂/黛青 |
+| 拉伸模式 | `disabled`（禁止整帧重采样） |
+| 世界缩放 | 整数档 1×/2×/3×，滚轮切换，默认 2×；相机位置取整到像素 |
+| HUD/面板 | 锚点 + 容器布局，随窗口原生尺寸重排，字号不缩放 |
+| 字体 | `SystemFont` + CJK 回退（Noto Serif CJK / Source Han Serif / SimSun…），按最终像素尺寸直接栅格化 |
+| 采样 | 世界贴图 `TEXTURE_FILTER_NEAREST` |
+
+**约束**：任何以「先渲染小画布再放大」为手段的适配都会让中文发虚；需要缩放时只允许整数倍，且只作用于世界层，绝不作用于 HUD。
+
+### 11.2 贴图资源
+
+地图、建筑与人物已由程序绘制改为图片资源；源图在 `xia-ai-town/asserts/`，切图脚本 `tools/build_art_assets.py` 生成 `xia-ai-town/assets/`（进版本库），像素规格与生图提示词见 `docs/ART-PROMPTS.md`。
+
+| 类别 | 产出 | 规格 |
+|---|---|---|
+| 地形 | `assets/atlas/terrain.png` | 4×4 格，每格 16×16，不透明 |
+| 草木山石 | `assets/atlas/props.png` | 4×4 格，每格 32×32，透明底 |
+| 建筑部件 | `assets/atlas/parts.png` | 4×4 格，每格 64×64，透明底 |
+| 建筑成品 | `assets/buildings/<id>.png` | 按 `BUILDINGS` 的 rect 尺寸合成 |
+| 角色 | `assets/characters/<角色>.png` | 4 行朝向 × 4 帧，每格 32×32 |
+| 待补 | 怪物、野外加密道具、UI 九宫格 | 提示词见 `ART-PROMPTS.md` §5–§7 |
+
+**关键约定**：1 美术像素 = 1 世界像素。地图格 16 世界像素、人物 32 世界像素，配合整数倍缩放才能保证放大后仍锐利。世界静态层（地形 + 建筑 + 道具 + 野外植被）在启动时烘焙成单张 1600×960 纹理，动态层每帧绘制主角、NPC 与怪物并按 y 排序。
+
+**调色**：武侠水墨风，低饱和，点缀朱砂/黛青。
 
 ---
 
@@ -627,7 +655,9 @@ Xia/
 │  ├─ project.godot
 │  ├─ scenes/main.tscn         # 主场景
 │  ├─ scripts/                 # main / api / ui_kit / town_world / town_map
-│  ├─ tools/                   # 隔离存档的真实后端冒烟验证
+│  ├─ asserts/                 # 生图源素材（手放，不入库）
+│  ├─ assets/                  # 切好的图集/建筑/人物（build_art_assets.py 生成）
+│  ├─ tools/                   # 切图脚本 + 隔离存档的真实后端冒烟验证
 │  └─ addons/godot_ai/         # 已有 Godot MCP 插件
 ├─ server/
 │  ├─ app/
@@ -696,6 +726,7 @@ Xia/
 | MAX_DIALOGUE_DELTA | ±3 | 对话单回合好感变化上限 |
 | LLM_API_KEY / LLM_API_BASE_URL | 空 | 同时设置则对话走该 OpenAI 兼容 API |
 | LLM_API_MODEL | 空 | API 对话模型名；缺省回退 CHAT_MODEL |
+| LLM_API_EMBED_MODEL | 空 | API 侧嵌入模型名；缺省回退 EMBED_MODEL |
 | LLM_API_TRUST_ENV | false | 外接 API 是否继承 shell 的 http(s)_proxy；默认直连 |
 | LLM_API_TIMEOUT | 8s | 外接 API 单次超时；失败后仍走重试/模板兜底 |
 
