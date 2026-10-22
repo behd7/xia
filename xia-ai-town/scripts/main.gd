@@ -84,7 +84,10 @@ func _panel(parent: Node, at: Vector2, dimensions: Vector2, color: Color = UI.PA
 	parent.add_child(panel)
 	panel.position = at
 	panel.size = dimensions
-	panel.add_theme_stylebox_override("panel", UI.box(color))
+	if color == UI.PAPER:
+		panel.add_theme_stylebox_override("panel", UI.panel_box(16))
+	else:
+		panel.add_theme_stylebox_override("panel", UI.box(color))
 	return panel
 
 func _vbox(parent: Node, gap: int = 10) -> VBoxContainer:
@@ -520,7 +523,7 @@ func _new_modal(title: String, subtitle: String, kind: String, width: float = 78
 	modal.add_child(center)
 	var panel := PanelContainer.new()
 	panel.custom_minimum_size = Vector2(width, minf(size.y - 150, 650))
-	panel.add_theme_stylebox_override("panel", UI.box(UI.PAPER, Color("a3ad95"), 5, 26))
+	panel.add_theme_stylebox_override("panel", UI.panel_box(26))
 	center.add_child(panel)
 	var content := _vbox(panel, 12)
 	var heading := HBoxContainer.new()

@@ -47,11 +47,17 @@ CHAR_FRAMES = 4
 T_DIRT, T_PAVING, T_GRASS, T_BRUSH, T_SAND, T_WATER, T_CLIFF, T_TRAIL = range(8)
 T_BRICK, T_ROOF, T_PLASTER, T_PLINTH, T_YARD, T_PLANK, T_LITTER, T_GRAVEL = range(8, 16)
 
-# Property parts atlas indices.
+# Property parts atlas indices (草木山石.png, 0..15).
 P_PINE, P_DEAD_TREE, P_SHRUB, P_BRAMBLE = range(4)
 P_BOULDER, P_OUTCROP, P_WELL, P_FENCE = range(4, 8)
 P_TABLE, P_RACK, P_LANTERN, P_BALE = range(8, 12)
 P_BARREL, P_HERBS, P_DUMMY, P_MAT = range(12, 16)
+
+# Additional wilderness & props atlas indices (草木山石2.png, 16..31).
+P_PINE2, P_CYPRESS, P_BARE_TREE, P_DRY_GRASS = range(16, 20)
+P_MOSSY_BOULDER, P_SLAB, P_LICHEN_ROCK, P_LOG = range(20, 24)
+P_STUMP, P_BAMBOO, P_THORN_BUSH, P_FLOWER_SHRUB = range(24, 28)
+P_PUDDLE, P_CAIRN, P_WHEEL, P_FIREWOOD = range(28, 32)
 
 # Building parts atlas indices.
 B_RIDGE, B_SLOPE, B_EAVE, B_BEAM = range(4)
@@ -179,6 +185,21 @@ def build_terrain() -> Image.Image:
         inset = int(round(min(cell.width, cell.height) * 0.055))
         inner = cell.crop((inset, inset, cell.width - inset, cell.height - inset)).convert("RGB")
         cells.append(inner.resize((TERRAIN_CELL, TERRAIN_CELL), Image.BOX).convert("RGBA"))
+    return atlas(cells, 4, 4)
+
+
+def build_props() -> Image.Image:
+    """Cut out, trim and pack props into square cells.
+
+    Supports optional second sheet `asserts/草木山石2.png` appended as rows 4..7 (indices 16..31).
+    """
+    source = Image.open(SRC / "草木山石.png").convert("RGBA")
+    cells = [fit(trim(key_magenta(cell)), PROP_CELL, PROP_CELL) for cell in cut_grid(source, 4, 4)]
+    source2_path = SRC / "草木山石2.png"
+    if source2_path.exists():
+        source2 = Image.open(source2_path).convert("RGBA")
+        cells.extend([fit(trim(key_magenta(cell)), PROP_CELL, PROP_CELL) for cell in cut_grid(source2, 4, 4)])
+        return atlas(cells, 8, 4)
     return atlas(cells, 4, 4)
 
 
@@ -317,12 +338,56 @@ def build_character(path: Path) -> Image.Image:
     return sheet
 
 
+def build_mob(path: Path) -> Image.Image:
+    """Slice one mob spritesheet into 4 rows (down/left/right/up) x 4 walk frames."""
+    source = Image.open(path).convert("RGBA")
+    background = tuple(int(v) for v in np.array(source.convert("RGB"))[2, 2])
+    mask = content_mask(source, background, 80)
+    row_bands = bands(mask.any(axis=1), gap=10)
+    if len(row_bands) != 4:
+        raise SystemExit(f"mob sheet rows not detected (expected 4): {row_bands}")
+    slug = path.stem.removeprefix("mob-").removesuffix("-sprite")
+    max_height = 30 if slug == "boss" else 26
+    sheet = Image.new("RGBA", (CHAR_CELL * CHAR_FRAMES, CHAR_CELL * len(CHAR_ROWS)), (0, 0, 0, 0))
+    for r, (top, bottom) in enumerate(row_bands):
+        strip = source.crop((0, top, source.width, bottom + 1))
+        col_bands = bands(content_mask(strip, background, 80).any(axis=0), gap=10)
+        pieces = []
+        for left, right in col_bands[:CHAR_FRAMES]:
+            piece = trim(key_green(strip.crop((left, 0, right + 1, strip.height))))
+            if piece.width >= 4 and piece.height >= 4:
+                pieces.append(piece)
+        if not pieces:
+            raise SystemExit(f"no frames found for mob {slug} row {r}")
+        tallest = max(piece.height for piece in pieces)
+        target_h = min(tallest, max_height)
+        scale = target_h / tallest
+        for c, piece in enumerate(pieces[:CHAR_FRAMES]):
+            size = (max(1, round(piece.width * scale)), max(1, round(piece.height * scale)))
+            normalised = place(piece.resize(size, Image.LANCZOS), CHAR_CELL, CHAR_CELL)
+            sheet.paste(normalised, (c * CHAR_CELL, r * CHAR_CELL), normalised)
+    return sheet
+
+
+def build_ui_panel(path: Path) -> Image.Image:
+    """Trim outer edge and rescale UI nine-slice panel to 128x128."""
+    ui = Image.open(path).convert("RGBA")
+    arr = np.array(ui)
+    bright = arr[:, :, :3].mean(axis=2) > 130
+    rows = np.where(bright.any(axis=1))[0]
+    cols = np.where(bright.any(axis=0))[0]
+    top, bottom = int(rows.min()), int(rows.max()) + 1
+    left, right = int(cols.min()), int(cols.max()) + 1
+    cropped = ui.crop((left, top, right, bottom))
+    return cropped.resize((128, 128), Image.LANCZOS)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true", help="validate sources without writing")
     args = parser.parse_args()
 
-    props_atlas = build_parts("草木山石.png", PROP_CELL)
+    props_atlas = build_props()
     parts_atlas = build_parts("建筑.png", PART_CELL)
     outputs: dict[Path, Image.Image] = {
         OUT / "atlas" / "terrain.png": build_terrain(),
@@ -334,6 +399,12 @@ def main() -> int:
     for path in sorted(SRC.glob("char-*.png")):
         slug = path.stem.removeprefix("char-").removesuffix("-sprite")
         outputs[OUT / "characters" / f"{slug}.png"] = build_character(path)
+    for path in sorted(SRC.glob("mob-*-sprite.png")):
+        slug = path.stem.removeprefix("mob-").removesuffix("-sprite")
+        outputs[OUT / "mobs" / f"{slug}.png"] = build_mob(path)
+    ui_panel_path = SRC / "ui-panel.png"
+    if ui_panel_path.exists():
+        outputs[OUT / "ui" / "panel.png"] = build_ui_panel(ui_panel_path)
 
     for path, image in outputs.items():
         print(f"{path.relative_to(ROOT)}  {image.width}x{image.height}")

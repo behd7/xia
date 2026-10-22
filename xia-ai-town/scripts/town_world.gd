@@ -41,6 +41,7 @@ const PROPS_ATLAS := preload("res://assets/atlas/props.png")
 const PARTS_ATLAS := preload("res://assets/atlas/parts.png")
 const BUILDING_DIR: String = "res://assets/buildings/"
 const CHARACTER_DIR: String = "res://assets/characters/"
+const MOB_DIR: String = "res://assets/mobs/"
 const HERO_SHEET := preload("res://assets/characters/玩家初始.png")
 const CHAR_CELL: int = 32
 const TERRAIN_CELL: int = 16
@@ -81,6 +82,24 @@ const P_HERBS := 13
 const P_DUMMY := 14
 const P_MAT := 15
 
+# Additional wilderness & scenery props (草木山石2, indices 16..31).
+const P_PINE2 := 16
+const P_CYPRESS := 17
+const P_BARE_TREE := 18
+const P_DRY_GRASS := 19
+const P_MOSSY_BOULDER := 20
+const P_SLAB := 21
+const P_LICHEN_ROCK := 22
+const P_LOG := 23
+const P_STUMP := 24
+const P_BAMBOO := 25
+const P_THORN_BUSH := 26
+const P_FLOWER_SHRUB := 27
+const P_PUDDLE := 28
+const P_CAIRN := 29
+const P_WHEEL := 30
+const P_FIREWOOD := 31
+
 # Building parts atlas cells used standalone (gate arch, wall coping).
 const RB_GATE := 12
 const RB_FOUNDATION := 8
@@ -103,6 +122,7 @@ var _grid: PackedByteArray = PackedByteArray()
 var _static_texture: ImageTexture
 var _static_ready: bool = false
 var _sheets: Dictionary = {}
+var _mob_sheets: Dictionary = {}
 var _time: float = 0.0
 var hero_facing: String = "down"
 var _hero_last: Vector2 = Vector2.ZERO
@@ -518,20 +538,37 @@ func _bake_static() -> void:
 	_fill_bake(canvas, Rect2i(0, 470, 1600, 6), T_PLINTH)
 	_fill_bake(canvas, Rect2i(768, 470, 64, 6), T_PAVING)
 	_blend_part(canvas, RB_GATE, Vector2(768, 448))
-	# Wilderness: terrain first, then clustered pines and rock outcrops.
+	# Wilderness: terrain first, then clustered pines, cypresses, diverse rocks and forest undergrowth.
 	for y: int in range(34, 59):
 		for x: int in range(1, 99):
 			var tile: int = _grid[y * 100 + x]
 			var n: int = _noise(x, y)
 			if tile == TREE:
-				if n % 4 == 0:
-					_blend_prop(canvas, P_PINE, Vector2(x * TILE - 8, y * TILE - 16))
-				elif n % 4 == 1:
-					_blend_prop(canvas, P_BRAMBLE, Vector2(x * TILE - 8, y * TILE - 14))
+				match n % 6:
+					0:
+						_blend_prop(canvas, P_PINE if n % 2 == 0 else P_PINE2, Vector2(x * TILE - 8, y * TILE - 16))
+					1:
+						_blend_prop(canvas, P_CYPRESS if n % 2 == 0 else P_BAMBOO, Vector2(x * TILE - 8, y * TILE - 16))
+					2:
+						_blend_prop(canvas, P_BRAMBLE if n % 2 == 0 else P_THORN_BUSH, Vector2(x * TILE - 8, y * TILE - 14))
+					3:
+						_blend_prop(canvas, P_FLOWER_SHRUB if n % 2 == 0 else P_DRY_GRASS, Vector2(x * TILE - 8, y * TILE - 14))
+					4:
+						_blend_prop(canvas, P_LOG if n % 2 == 0 else P_STUMP, Vector2(x * TILE - 8, y * TILE - 14))
+					5:
+						if y > 46:
+							_blend_prop(canvas, P_BARE_TREE, Vector2(x * TILE - 8, y * TILE - 16))
 			elif tile == CLIFF:
-				# Sparse outcrops over the cliff texture keep the ridge readable.
+				# Diverse boulders, lichen rocks, flat slabs and stone cairns keep the ridge rich.
 				if n % 3 == 0:
-					_blend_prop(canvas, P_OUTCROP if y >= 52 else P_BOULDER, Vector2(x * TILE - 8, y * TILE - 16))
+					var rock_prop: int = P_BOULDER
+					match n % 5:
+						0: rock_prop = P_OUTCROP if y >= 52 else P_BOULDER
+						1: rock_prop = P_MOSSY_BOULDER
+						2: rock_prop = P_SLAB
+						3: rock_prop = P_LICHEN_ROCK
+						4: rock_prop = P_CAIRN
+					_blend_prop(canvas, rock_prop, Vector2(x * TILE - 8, y * TILE - 16))
 	# Planted border along the north edge of town.
 	for x: int in range(24, 1552, 26):
 		_blend_prop(canvas, P_SHRUB if x % 3 else P_BRAMBLE, Vector2(x - 8, 26))
@@ -605,6 +642,18 @@ func _draw_town_furniture(canvas: Image) -> void:
 	_blend_prop(canvas, P_BRAMBLE, Vector2(640, 225))
 	_blend_prop(canvas, P_SHRUB, Vector2(1270, 263))
 	_blend_prop(canvas, P_BRAMBLE, Vector2(1444, 263))
+	# Town scenery details: bamboo & flowers at Yanyu, firewood at Smith/Inn, broken wheel & cairn at ruins.
+	_blend_prop(canvas, P_BAMBOO, Vector2(504, 116))
+	_blend_prop(canvas, P_FLOWER_SHRUB, Vector2(674, 122))
+	_blend_prop(canvas, P_FLOWER_SHRUB, Vector2(194, 318))
+	_blend_prop(canvas, P_FIREWOOD, Vector2(232, 332))
+	_blend_prop(canvas, P_FIREWOOD, Vector2(406, 338))
+	_blend_prop(canvas, P_STUMP, Vector2(1116, 236))
+	_blend_prop(canvas, P_WHEEL, Vector2(1254, 370))
+	_blend_prop(canvas, P_CAIRN, Vector2(852, 606))
+	_blend_prop(canvas, P_PUDDLE, Vector2(744, 608))
+	_blend_prop(canvas, P_WHEEL, Vector2(688, 620))
+	_blend_prop(canvas, P_DRY_GRASS, Vector2(648, 622))
 
 
 # --- frame drawing ----------------------------------------------------------
@@ -711,17 +760,37 @@ func _draw_bubble(at: Vector2, text: String) -> void:
 			lines[i], HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color("2b3a34"))
 
 
+func _mob_sheet(type: String) -> Texture2D:
+	if _mob_sheets.has(type):
+		return _mob_sheets[type]
+	var path: String = "%s%s.png" % [MOB_DIR, type]
+	var sheet: Texture2D = load(path) if ResourceLoader.exists(path) else null
+	_mob_sheets[type] = sheet
+	return sheet
+
+
 func _draw_mob(at: Vector2, mob: Dictionary) -> void:
 	var type: String = str(mob.get("type", "wolf"))
-	var body: Color = Color("8c5f53") if type == "boss" else Color("7b7561")
-	var scale: float = 1.25 if type == "boss" else 1.0
-	draw_rect(Rect2(at + Vector2(-8 * scale, -3), Vector2(16 * scale, 5)), Color("203d3640"))
-	draw_rect(Rect2(at + Vector2(-5 * scale, -15 * scale), Vector2(10 * scale, 13 * scale)), body.darkened(0.2))
-	draw_rect(Rect2(at + Vector2(-4 * scale, -14 * scale), Vector2(8 * scale, 11 * scale)), body)
-	draw_rect(Rect2(at + Vector2(-3 * scale, -21 * scale), Vector2(6 * scale, 6 * scale)), Color("d4b690"))
-	draw_rect(Rect2(at + Vector2(-4 * scale, -23 * scale), Vector2(8 * scale, 4 * scale)), Color("354039"))
-	draw_line(at + Vector2(5 * scale, -18 * scale), at + Vector2(10 * scale, -4 * scale), Color("c2bea5"), 2)
-	if type == "boss":
-		draw_rect(Rect2(at + Vector2(-5, -25), Vector2(11, 3)), Color("a25845"))
+	var sheet: Texture2D = _mob_sheet(type)
+	if sheet != null:
+		var frame: int = int(_time * 4.0) % 4
+		var row: int = 0
+		var scale: float = 1.25 if type == "boss" else 1.0
+		var shadow_w: float = 18.0 * scale
+		draw_rect(Rect2(at + Vector2(-shadow_w * 0.5, -4), Vector2(shadow_w, 5)), Color("203d3640"))
+		var origin: Vector2 = Vector2(at.x - CHAR_CELL * 0.5, at.y - CHAR_CELL + 2)
+		draw_texture_rect_region(sheet, Rect2(origin, Vector2(CHAR_CELL, CHAR_CELL)),
+			Rect2(frame * CHAR_CELL, row * CHAR_CELL, CHAR_CELL, CHAR_CELL))
+	else:
+		var body: Color = Color("8c5f53") if type == "boss" else Color("7b7561")
+		var scale: float = 1.25 if type == "boss" else 1.0
+		draw_rect(Rect2(at + Vector2(-8 * scale, -3), Vector2(16 * scale, 5)), Color("203d3640"))
+		draw_rect(Rect2(at + Vector2(-5 * scale, -15 * scale), Vector2(10 * scale, 13 * scale)), body.darkened(0.2))
+		draw_rect(Rect2(at + Vector2(-4 * scale, -14 * scale), Vector2(8 * scale, 11 * scale)), body)
+		draw_rect(Rect2(at + Vector2(-3 * scale, -21 * scale), Vector2(6 * scale, 6 * scale)), Color("d4b690"))
+		draw_rect(Rect2(at + Vector2(-4 * scale, -23 * scale), Vector2(8 * scale, 4 * scale)), Color("354039"))
+		draw_line(at + Vector2(5 * scale, -18 * scale), at + Vector2(10 * scale, -4 * scale), Color("c2bea5"), 2)
+		if type == "boss":
+			draw_rect(Rect2(at + Vector2(-5, -25), Vector2(11, 3)), Color("a25845"))
 	var title: String = "%s  Lv.%s" % [str(mob.get("name", "野狼")), str(mob.get("level", 1))]
-	_label(self, title, at + Vector2(0, -30), 10, Color("e2c0a1"), true)
+	_label(self, title, at + Vector2(0, -34), 10, Color("e2c0a1"), true)

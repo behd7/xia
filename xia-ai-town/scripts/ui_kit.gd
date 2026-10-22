@@ -7,6 +7,7 @@ const LINE := Color("d9d9c9")
 const JADE := Color("526b57")
 const RED := Color("a75342")
 const GOLD := Color("a48148")
+const PANEL_TEXTURE_PATH := "res://assets/ui/panel.png"
 
 static func box(color: Color = PAPER, border: Color = LINE, radius: int = 4, padding: int = 16) -> StyleBoxFlat:
 	var style := StyleBoxFlat.new()
@@ -19,6 +20,21 @@ static func box(color: Color = PAPER, border: Color = LINE, radius: int = 4, pad
 	style.content_margin_top = padding
 	style.content_margin_bottom = padding
 	return style
+
+static func panel_box(padding: int = 16) -> StyleBox:
+	if ResourceLoader.exists(PANEL_TEXTURE_PATH):
+		var style := StyleBoxTexture.new()
+		style.texture = load(PANEL_TEXTURE_PATH)
+		style.texture_margin_left = 32
+		style.texture_margin_top = 32
+		style.texture_margin_right = 32
+		style.texture_margin_bottom = 32
+		style.content_margin_left = padding
+		style.content_margin_top = padding
+		style.content_margin_right = padding
+		style.content_margin_bottom = padding
+		return style
+	return box(PAPER, LINE, 4, padding)
 
 static func make_theme() -> Theme:
 	var t := Theme.new()
@@ -41,7 +57,7 @@ static func make_theme() -> Theme:
 	t.set_color("font_color", "LineEdit", INK)
 	t.set_color("font_placeholder_color", "LineEdit", MUTED)
 	t.set_color("caret_color", "LineEdit", INK)
-	t.set_stylebox("panel", "PanelContainer", box())
+	t.set_stylebox("panel", "PanelContainer", panel_box(16))
 	t.set_stylebox("background", "ProgressBar", box(Color("d8ddd0"), Color.TRANSPARENT, 1, 0))
 	t.set_stylebox("fill", "ProgressBar", box(JADE, Color.TRANSPARENT, 1, 0))
 	t.set_constant("separation", "VBoxContainer", 12)

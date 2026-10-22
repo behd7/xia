@@ -126,10 +126,10 @@ Constraints: no text, no labels, no shadows on the background, no props, no weap
 
 ---
 
-## 提示词 5：野兽与山贼（mobs）——**待生成**
+## 提示词 5：野兽与山贼（mobs）——**已实现**
 
-战斗单位目前仍是程序绘制的色块，接到贴图后替换 `town_world.gd` 的 `_draw_mob`。
-与人物同一套路：4 行朝向（下/左/右/上）× 4 帧行走，绿幕底，单张 1:1。
+已生成并切图输出到 `assets/mobs/<type>.png`，替换 `town_world.gd` 的 `_draw_mob` 动态帧绘制。
+4 行朝向（下/左/右/上）× 4 帧行走，绿幕底抠图，单张 1:1。
 
 **落点**：`xia-ai-town/asserts/mob-<type>-sprite.png`，`type` 取 `wolf` / `bandit` / `boss`；切图后输出到 `assets/mobs/<type>.png`（32×32×16 帧）。
 
@@ -155,9 +155,9 @@ a wiry mountain bandit in ragged dark-brown cotton, a cloth headwrap and a short
 a hulking bandit chief in a black padded jacket with an iron shoulder guard, a broad chopping blade resting across his back, seen from the same angle and at 1.3x the height of the ordinary bandits.
 ```
 
-## 提示词 6：野外山石与树林加密（props，可选）——**待生成**
+## 提示词 6：野外山石与树林加密（props，可选）——**已实现**
 
-`草木山石.png` 只有 1 棵树、2 块石头，野外成片铺开时会看出重复。若要加密，请生成第二张 4×4 道具图集，落点 `xia-ai-town/asserts/草木山石2.png`，
+`草木山石.png` 只有 1 棵树、2 块石头，野外成片铺开时会看出重复。已生成第二张 4×4 道具图集，落点 `xia-ai-town/asserts/草木山石2.png`，
 切图后并入 `assets/atlas/props.png`（第二张追加到第 16–31 格）。
 
 ```text
@@ -170,10 +170,9 @@ Color palette: jade #476b54, #778f72; celadon #717e72, #8fa582; wood #635e46, #8
 Constraints: no text, no labels, no numbers, no people, no creatures, no buildings, no border lines, nothing touching the cell edges.
 ```
 
-## 提示词 7：UI 边框与纸纹（可选）——**待生成**
+## 提示词 7：UI 边框与纸纹（可选）——**已实现**
 
-界面现在是纯色 StyleBox；若要换成纸纹与朱砂边框，落点 `xia-ai-town/asserts/ui-panel.png`
-（九宫格：四角各占 1/4 边长，中段可拉伸），切 3×3 后以 `StyleBoxTexture` 替代 `ui_kit.gd` 的 `box()`。
+落点 `xia-ai-town/asserts/ui-panel.png`，切图后输出为 `assets/ui/panel.png`（128×128，四角各占 32 像素九宫格拉伸），以 `StyleBoxTexture`（`UI.panel_box()`）赋予面板纸墨质感。
 
 ```text
 Use case: pixel-art game UI nine-slice panel, for a wuxia RPG interface.
@@ -201,10 +200,12 @@ uv run --with pillow python xia-ai-town/tools/build_art_assets.py --check    # �
 | 输出 | 内容 | 用法 |
 |---|---|---|
 | `assets/atlas/terrain.png` | 4×4 格，每格 16×16 | 地形，键位见 `town_world.gd` 的 `T_*` 常量 |
-| `assets/atlas/props.png` | 4×4 格，每格 32×32 | 草木山石与家具，`P_*` 常量 |
+| `assets/atlas/props.png` | 4×8 格（含草木山石2），每格 32×32 | 草木山石、野外加密与家具，`P_*` 常量 |
 | `assets/atlas/parts.png` | 4×4 格，每格 64×64 | 建筑部件（屋瓦、墙、门、窗、台基、灯笼…），`B_*` 常量 |
 | `assets/buildings/<id>.png` | 已合成的整栋房子 | 直接贴到 `BUILDINGS` 的 rect 位置 |
 | `assets/characters/<角色>.png` | 4 行朝向 × 4 帧，每格 32×32 | 主角与七位 NPC |
+| `assets/mobs/<type>.png` | 4 行朝向 × 4 帧，每格 32×32 | 野狼（wolf）、山贼（bandit）、黑旋风（boss） |
+| `assets/ui/panel.png` | 128×128 九宫格贴图（边距 32px） | 纸纹与朱砂回纹边框面板，`UI.panel_box()` |
 
 **约定**：
 
