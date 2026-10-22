@@ -1,6 +1,6 @@
 extends Node
 
-var base_url: String = "http://127.0.0.1:8000"
+var base_url: String = "http://127.0.0.1:8080"
 
 
 func _ready() -> void:

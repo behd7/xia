@@ -557,7 +557,7 @@ func open_settings() -> void:
 	address.text = api.base_url
 	address.custom_minimum_size.y = 48
 	body.add_child(address)
-	body.add_child(UI.paragraph("本机使用 http://127.0.0.1:8000；局域网可填写服务器的 IP 和端口。"))
+	body.add_child(UI.paragraph("本机使用 http://127.0.0.1:8080；局域网可填写服务器的 IP 和端口。"))
 	body.add_child(UI.button("连接江湖", func():
 		var value := address.text.strip_edges()
 		if not value.begins_with("http://") and not value.begins_with("https://"):

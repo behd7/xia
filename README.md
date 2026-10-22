@@ -16,10 +16,10 @@ uv venv .venv
 uv pip install -r requirements.txt
 cp .env.example .env  # 首次运行；已有配置时跳过
 NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1 \
-  .venv/bin/uvicorn app.main:app --reload --port 8000
+  .venv/bin/uvicorn app.main:app --reload --port 8080
 ```
 
-如果 Godot 跑在 Windows、后端跑在 WSL2，`localhost` 转发偶尔会失效：后端改用 `--host 0.0.0.0` 启动，并在 Godot 设置里填 `http://<WSL-IP>:8000`（WSL 内 `hostname -I` 第一项），必要时在 Windows 防火墙放行该端口。外接 LLM API 默认直连（`LLM_API_TRUST_ENV=false`），不会受 shell 里未启动的 `HTTP(S)_PROXY` 影响；需要代理时再显式开启。若 WSL 内出现偶发连接失败，可检查是否有进程（如 VS Code Server）占用大量到 `127.0.0.1:7897` 的连接并耗尽临时端口，重载 VS Code 窗口即可释放。
+如果 Godot 跑在 Windows、后端跑在 WSL2，`localhost` 转发偶尔会失效：后端改用 `--host 0.0.0.0` 启动，并在 Godot 设置里填 `http://<WSL-IP>:8080`（WSL 内 `hostname -I` 第一项），必要时在 Windows 防火墙放行该端口。外接 LLM API 默认直连（`LLM_API_TRUST_ENV=false`），不会受 shell 里未启动的 `HTTP(S)_PROXY` 影响；需要代理时再显式开启。若 WSL 内出现偶发连接失败，可检查是否有进程（如 VS Code Server）占用大量到 `127.0.0.1:7897` 的连接并耗尽临时端口，重载 VS Code 窗口即可释放。
 
 在 Godot 项目管理器中导入 `xia-ai-town/project.godot`，按 **F6** 运行 `scenes/main.tscn`，或按 **F5** 运行主场景。也可以在仓库根目录执行：
 
@@ -29,11 +29,13 @@ godot --path xia-ai-town --editor
 godot --path xia-ai-town
 ```
 
-默认后端地址为 `http://127.0.0.1:8000`。界面右上角的「设置」可以更改并保存地址；环境变量 `XIA_API_URL` 可覆盖已保存的配置：
+默认后端地址为 `http://127.0.0.1:8080`。界面右上角的「设置」可以更改并保存地址；环境变量 `XIA_API_URL` 可覆盖已保存的配置：
 
 ```bash
-XIA_API_URL=http://127.0.0.1:8000 godot --path xia-ai-town
+XIA_API_URL=http://127.0.0.1:8080 godot --path xia-ai-town
 ```
+
+端口 8080 是刻意避开的：Godot AI 编辑器插件默认占用 8000，且会对普通 HTTP 请求返回 401。
 
 基础探索与战斗无需 Ollama。NPC 对话、主动搭话、反思、关系摘要与八卦改写需要本地 Ollama 模型；模型 tag 通过 `server/.env` 配置（模板见 `server/.env.example`），不得写死在代码中。后台调度可用 `SCHEDULER_ENABLED=false` 关闭（测试与冒烟默认关闭）。`GET /api/health` 可检查数据库、Ollama 及模型状态。
 
@@ -47,7 +49,7 @@ LLM 调用默认落 `llm_log` 表便于本地排查；如需跨链路可视化�
 - **后端 uvicorn**：前台跑时按 `Ctrl+C`。若在后台/无头跑，按端口停止——**不要 `pkill -f "uvicorn"`**（会连你自己的命令行一起匹配而自杀），改用：
 
   ```bash
-  fuser -k 8000/tcp          # 默认端口，推荐
+  fuser -k 8080/tcp          # 默认端口，推荐
   # 或 pkill -f "app[.]main"  # 字符类技巧，避免误杀
   ```
 

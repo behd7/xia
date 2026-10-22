@@ -3,7 +3,7 @@
 
 Usage (from the repo root):
     server/.venv/bin/python xia-ai-town/tools/smoke_test.py
-Optional: GODOT_BIN=/path/to/godot. No requests go to port 8000.
+Optional: GODOT_BIN=/path/to/godot. No requests go to port 8080.
 Only the two smoke_test files are added to the source tree. All runtime writes,
 logs, fixtures, copied project resources and user:// data live under TemporaryDirectory.
 """
@@ -132,8 +132,8 @@ def run() -> int:
         # --fd avoids the bind-close-bind race and never targets an existing server.
         with reserve_listener() as listener:
             port = listener.getsockname()[1]
-            if port == 8000:
-                raise RuntimeError("Refusing reserved user port 8000")
+            if port == 8080:
+                raise RuntimeError("Refusing reserved user port 8080")
             url = f"http://127.0.0.1:{port}"
             env["XIA_API_URL"] = url
             print(f"Isolated backend: {url}; temporary DB/userdata: {scratch}", flush=True)
