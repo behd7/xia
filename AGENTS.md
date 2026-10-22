@@ -87,12 +87,13 @@ cd server && uv venv .venv && uv pip install -r requirements.txt
 - **M5 世界阶段与偏离**：`world.stage` 只有 0/2，推进条件是 `mob_kills` 存在 boss+三名山贼且已取得断岳刀；`POST /api/game/new` 必须调 `world_state.reset`，启动时幂等补算。日程偏离只平移相位，`plan_enabled=false` 会立即隐藏心事/偏离；`npc_plan`/`npc_mood` 是 SCHEMA 新表，无 ALTER 迁移。
 - **M5 prompt 预算**：世界公设、心事、议程、口癖、情绪、附近事件全部塞进原有单次对话/搭话调用，**不得新增前台 LLM 调用**；心事是唯一新增后台 purpose（优先级 3）。附近事件只存在 `MemoryStore.recent_events` 内存中（20 条、30 游戏分钟 TTL），重启即丢，不要落库或当长期记忆。
 - **代理与外接 API**：外接 API 默认 `LLM_API_TRUST_ENV=false` 直连；若改 true 且 shell 的 `HTTP(S)_PROXY` 指向未启动的代理，每次 LLM 调用会等到 `LLM_API_TIMEOUT`（默认 8s）才失败。启动日志会检查代理端口并告警；本地 Ollama 仍靠 `NO_PROXY=localhost,127.0.0.1` 绕开代理。
+- **对话走 SSE，别用 HTTPRequest**：`POST /api/npc/{id}/talk` 返回 `text/event-stream`（`start` → `token`* → `done`，重试/兜底前发 `reset`）。Godot 的 `HTTPRequest` 会缓冲整包、拿不到增量，只能用 `api.gd::stream_request`（手轮询 `HTTPClient`）；服务端仍是单次 LLM 调用（`format:"json"`），`reply` 由 `dialogue._ReplyExtractor` 边收边解码，**不要为流式再加一次 LLM 调用**。非流式工具/测试用 `dialogue.talk()` 或按 SSE 解析；`server/tests/smoke.py` 的 stub 必须同时提供 `chat_stream`。
 - **前端断连判定**：只有 `/api/game/state` 轮询失败才会把 UI 标成“连接中断”；对话/搭话/送礼等应用层超时只写 `[xia/main]` 日志，不再误标离线。排查连接问题先看 `server/data/xia.log` 的 `app.main | http` 与 `app.llm` 行，以及 Godot 输出面板的 `[xia/api]` / `[xia/main]`。
 - **WSL 临时端口耗尽**：VS Code Server 等进程可能持有数千条到 `127.0.0.1:7897` 的连接，耗尽 WSL 临时端口，表现为 `bind(0)` / 新连接偶发 `EADDRINUSE`；用 `ss -tn state established '( dport = :7897 )' | wc -l` 确认，重载 VS Code 窗口可释放。Godot 冒烟已固定用 18000–18999 高位端口段，不依赖临时端口。
 
 ## 当前 Godot 客户端
 
-`xia-ai-town/scripts/main.gd` 负责 HUD、面板、输入、交互、战斗及状态同步，含镇志面板与人物心事显示；`api.gd` 是 HTTP 客户端；`ui_kit.gd` 是主题组件；`town_world.gd` 用贴图渲染（静态层启动时烘焙成单张 1600×960 纹理，动态层每帧绘制角色与怪物并按 y 排序）与碰撞、坐标保持原地图约定，并在本地按日程（含 `deviation` 相位平移）推算 NPC 位置、绘制搭话气泡；`town_map.gd` 提供小地图与舆图。NPC 对话/送礼/切磋/拜师、日程移动与主动搭话均已接入后端；对话中的 NPC 在客户端冻结。贴图由 `tools/build_art_assets.py` 从 `asserts/` 生成，勿手改 `assets/`。Godot `.godot/` 缓存不入库。
+`xia-ai-town/scripts/main.gd` 负责 HUD、面板、输入、交互、战斗及状态同步，含镇志面板与人物心事显示；`api.gd` 是 HTTP 客户端（普通接口 + SSE 流式对话）；`ui_kit.gd` 是主题组件；`town_world.gd` 用贴图渲染（静态层启动时烘焙成单张 1600×960 纹理，动态层每帧绘制角色与怪物并按 y 排序）与碰撞、坐标保持原地图约定，并在本地按日程（含 `deviation` 相位平移）推算 NPC 位置、绘制搭话气泡；`town_map.gd` 提供小地图与舆图。NPC 对话/送礼/切磋/拜师、日程移动与主动搭话均已接入后端；对话中的 NPC 在客户端冻结，NPC 回复边流边显示。贴图由 `tools/build_art_assets.py` 从 `asserts/` 生成，勿手改 `assets/`。Godot `.godot/` 缓存不入库。
 
 ## 目录结构（实现位置参考）
 

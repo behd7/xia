@@ -317,7 +317,7 @@ recency: 半衰期 = 3 游戏日
 
 玩家按 E 进入对话 → 输入框 + 快捷项：**[打招呼] [打听消息] [门派拜师] [切磋] [送礼]**（送礼弹背包选择）。
 
-单次 LLM 调用（qwen3:4b-instruct，`format:"json"`，禁思考）：
+单次 LLM 调用（qwen3:4b-instruct，`format:"json"`，禁思考），响应以 SSE 流式返回（服务端仍只调用一次模型，不新增前台调用）：
 
 **输入 prompt 结构**（第一人称身份句，不用"玩家/游戏/好感度 X"等机械设定词；交情以档位自然带出，不强制口头禅，让 NPC 自由发挥措辞）：
 ```
@@ -346,6 +346,8 @@ recency: 半衰期 = 3 游戏日
 
 **输出处理**：reply 显示；好感 clamp 后更新；end=true 则对话结束并清当前议程。
 **失败策略**：JSON 解析失败→重试一次(temperature 0.3)→再失败用模板回复（"{NPC}沉吟片刻，不置可否。"，delta=0），永不阻塞游戏。
+
+**流式输出（SSE）**：`POST /api/npc/{id}/talk` 返回 `text/event-stream`，事件序列 `start` → `token`* → `done`；重试或模板兜底前发 `reset`，客户端据此清空已显示的文字。模型仍只输出一个 JSON 对象，服务端边收边解码 `reply` 值（转义、代理对、UTF-8 分片都安全），`affinity_delta`/`end` 在流结束后解析，`done` 携带 `{reply, affinity, end, player, fallback}`。**不新增 LLM 调用**（M5 预算不变）。Godot 的 `HTTPRequest` 会缓冲整包，客户端改用 `HTTPClient` 手动轮询读取（`api.gd::stream_request`）。
 
 **事件入忆（互动判断值 + 窗口批总结，不逐轮）**：闲聊每轮只进短期窗口
 （`conversation` 表），不写 event 记忆。每个 NPC 维护 `interacts_since_summary`
@@ -487,15 +489,15 @@ embedding：`POST /api/embed {"model": ..., "input": [...]}`，向量 L2 归一�
 
 ### 7.3 结构化输出
 
-- 对话/反思用 `/api/chat` + `format:"json"` + prompt 内 JSON schema 说明；
+- 对话/反思用 `/api/chat` + `format:"json"` + prompt 内 JSON schema 说明；对话请求 `stream:true`，服务端边收边解码 `reply` 并经 SSE 转发（§6.6），JSON 校验仍在流结束后做；
 - qwen3 禁思考：请求体 `"think": false`（旧版 Ollama 退化为 system 附加 `/no_think`）；
-- 校验→重试 1 次→模板兜底（§6.6）；所有调用写 `llm_log` 表（用途/耗时/token/成败）便于实验分析。
+- 校验→重试 1 次→模板兜底（§6.6）；所有调用写 `llm_log` 表（用途/耗时/token/成败）便于实验分析。流式调用的 token 数取 Ollama 末行或 OpenAI `stream_options.include_usage`（不支持时自动去掉该字段重试，代价是没有 token 计数）。
 
 ### 7.4 观测（Langfuse，与 llm_log 并存）
 
 可选旁路，`LANGFUSE_ENABLED`（默认 false，fail-closed：不可达/未配零副作用）。自托管 v2 栈：`server/deploy/langfuse/` docker-compose（Postgres+Redis，对外 3000，v1 Basic 用 public/secret key 鉴权）。集中装配在 `app/agent/trace.py`，钉定 SDK `langfuse==2.14.0`（v5 为 OTel 全重写、API 与下文形态不符）。
 
-- **父 trace**：对话 `dialogue.talk()` 开 `dialogue` 根 trace（tags=npc/player、metadata=affinity_before/place/rag_top_k），包 `retrieve`/`recent_turns`/`add_memory`/`outcome` span；拜师/送礼各开 `apprentice`/`gift` 轻量 trace（好感前后）。
+- **父 trace**：对话 `dialogue.talk_stream()` 开 `dialogue` 根 trace（tags=npc/player、metadata=affinity_before/place/rag_top_k），包 `retrieve`/`recent_turns`/`add_memory`/`outcome` span；拜师/送礼各开 `apprentice`/`gift` 轻量 trace（好感前后）。流式生成在流结束时以完整文本补一条 generation。
 - **全局咽喉点**：`OllamaClient.chat/embed` 命中当前 trace 上下文时，chat 发 generation（model/温度/prompt/输出/usage/attempt）、embed 发 span；M4 反思/八卦/搭话无需各自埋点即被覆盖。
 - 打点全部 best-effort、后台缓冲发送，`flush/shutdown` 只在 lifespan shutdown；绝不放热路径（AGENTS #4/#6），也不动 `llm_log` 本地 SSOT。
 
@@ -570,7 +572,7 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=�
 | GET | `/api/game/state` | 玩家全量状态+游戏时钟+`npcs` 花名册（id/slug/name/role/好感/当前 poi/锚点/`paused_until`）+`world`（`stage/artifact_acquired/announced_at_game/announcement/premise`） |
 | GET | `/api/npcs/state` | 日程推算全量参数：`clock/sense_radius/greet_threshold/phases/pacing/gather_anchor` + 每人 `home_to_work/work_to_gather/pos/poi/affinity/paused_until/greet_ready/heart/deviation` |
 | POST | `/api/npc/{id}/greet` | 主动搭话：`{greet,reply,affinity}` 或 `{greet:false,reason:affinity|cooldown|paused}`；无存档 409、查无此人 404 |
-| POST | `/api/npc/{id}/talk` | `{message}` → `{reply, affinity, end, player}`（LLM 生成，RAG 检索记忆） |
+| POST | `/api/npc/{id}/talk` | SSE `text/event-stream`：`{message}` → `start`/`token`/`reset`/`done` 事件，`done` 含 `{reply, affinity, end, player, fallback}`（LLM 生成，RAG 检索记忆；仍为单次 LLM 调用） |
 | POST | `/api/npc/{id}/gift` | `{item_id}` |
 | POST | `/api/npc/{id}/challenge` | 请求切磋 → 进入战斗 |
 | POST | `/api/npc/{id}/apprentice` | 请求拜师（条件校验+仪式台词） |

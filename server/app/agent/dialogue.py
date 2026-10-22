@@ -1,8 +1,11 @@
-"""自由对话（docs/DESIGN.md §6.6）：POST /api/npc/{id}/talk。
+"""自由对话（docs/DESIGN.md §6.6）：POST /api/npc/{id}/talk（SSE 流式）。
 
 单次 LLM 调用（qwen3:4b-instruct, format:json, 禁思考），从单回合回到：
-记忆检索（RAG）+ 最近对话平铺 并行做 -> prompt -> 校验 JSON -> 重试一次
+记忆检索（RAG）+ 最近对话平铺 并行做 -> prompt -> 流式 JSON -> 校验 -> 重试一次
 (temperature 0.3) -> 模板兜底。绝不让模型输出失败阻塞游戏（AGENTS.md #4）。
+
+仍是**一次**前台调用（M5 预算）：模型输出 JSON，`reply` 字段边到边解码成
+SSE token，`affinity_delta`/`end` 在流结束后解析，最后发 `done`。
 """
 
 import asyncio
@@ -10,6 +13,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import AsyncIterator
 
 from ..config import settings
 from ..game import plan as plan_mod
@@ -54,6 +58,79 @@ def _parse(result_text: str) -> dict:
 
 def _fallback(n: dict) -> dict:
     return {"reply": f"{n['name']}沉吟片刻，不置可否。", "affinity_delta": 0, "end": False}
+
+
+_REPLY_KEY = re.compile(r'"reply"\s*:\s*"')
+_HEX4 = re.compile(r"[0-9a-fA-F]{4}")
+_ESCAPES = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f",
+            "n": "\n", "r": "\r", "t": "\t"}
+
+
+def _reply_prefix(text: str) -> str | None:
+    """Decode the already-complete prefix of the JSON `reply` string.
+
+    Returns None until the key and opening quote arrive. A trailing incomplete
+    escape (or a lone high surrogate whose pair may still come) is held back —
+    the next chunk completes it, so the returned value only ever grows.
+    """
+    m = _REPLY_KEY.search(text)
+    if m is None:
+        return None
+    out: list[str] = []
+    i = m.end()
+    while i < len(text):
+        c = text[i]
+        if c == '"':
+            return "".join(out)
+        if c != "\\":
+            out.append(c)
+            i += 1
+            continue
+        if i + 1 >= len(text):
+            break
+        esc = text[i + 1]
+        if esc == "u":
+            if i + 6 > len(text) or not _HEX4.fullmatch(text[i + 2:i + 6]):
+                break
+            code = int(text[i + 2:i + 6], 16)
+            i += 6
+            if 0xD800 <= code <= 0xDBFF:
+                # A surrogate pair may be split across chunks; wait for the low half.
+                if not (text.startswith("\\u", i) and i + 6 <= len(text)):
+                    break
+                low_hex = text[i + 2:i + 6]
+                if not _HEX4.fullmatch(low_hex):
+                    break
+                low = int(low_hex, 16)
+                if not 0xDC00 <= low <= 0xDFFF:
+                    break
+                out.append(chr(0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)))
+                i += 6
+                continue
+            out.append(chr(code))
+            continue
+        if esc not in _ESCAPES:
+            break
+        out.append(_ESCAPES[esc])
+        i += 2
+    return "".join(out)
+
+
+class _ReplyExtractor:
+    """Turn streamed JSON fragments into `reply` text deltas for SSE."""
+
+    def __init__(self) -> None:
+        self._raw = ""
+        self._sent = ""
+
+    def feed(self, chunk: str) -> str:
+        self._raw += chunk
+        value = _reply_prefix(self._raw)
+        if value is None or not value.startswith(self._sent):
+            return ""
+        delta = value[len(self._sent):]
+        self._sent = value
+        return delta
 
 
 def _warmth(affinity: int, name: str) -> str:
@@ -107,13 +184,22 @@ def _build_messages(p, n, affinity, memories, turns, impression, now_str, place,
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-async def talk(db, mem_store, npc_id: int, message: str) -> dict:
+async def talk_stream(db, mem_store, npc_id: int, message: str) -> AsyncIterator[tuple[str, dict]]:
+    """One turn as ``(event, payload)`` pairs for the SSE route.
+
+    Events: ``start`` -> ``token``* -> ``done``; ``reset`` asks the client to
+    drop the text streamed so far (the parse-failed attempt is being retried or
+    the template fallback takes over). The final payload matches the old
+    one-shot response: ``{reply, affinity, end, player, fallback}``.
+    """
     n = await npc_mod.by_id(db, npc_id)
     if n is None:
         raise LookupError("查无此人")
     message = (message or "").strip()
     if not message:
         raise ValueError("空话一句，开不了口。")
+    # Flush headers/status immediately: RAG and the first model token take seconds.
+    yield "start", {"npc": n["name"]}
 
     p = await player_mod.get(db)
     current_affinity = await npc_mod.affinity(db, npc_id)
@@ -164,6 +250,8 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
     attempts = 0
     for temperature in (0.7, 0.3):  # 校验 -> 重试一次(temperature 0.3)
         attempts += 1
+        raw: list[str] = []
+        extractor = _ReplyExtractor()
         try:
             msgs = _build_messages(
                 p, n, current_affinity, memories, turns, impression,
@@ -172,15 +260,23 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
                 speech_examples=n.get("speech_examples", []), heart=heart,
                 events_text=events_text,
             )
-            cr = await mem_store.llm.chat("dialogue", msgs, json_format=True, temperature=temperature,
-                                          metadata={"attempt": attempts, "temperature": temperature})
-            result = _parse(cr.text)
+            async for chunk in mem_store.llm.chat_stream(
+                    "dialogue", msgs, json_format=True, temperature=temperature,
+                    metadata={"attempt": attempts, "temperature": temperature}):
+                raw.append(chunk)
+                delta = extractor.feed(chunk)
+                if delta:
+                    yield "token", {"text": delta}
+            result = _parse("".join(raw))
             break
         except Exception:
+            # The retry restarts the reply; tell the client to drop partial text.
+            yield "reset", {}
             continue
     fallback_used = result is None
     if result is None:
         result = _fallback(n)
+        yield "token", {"text": result["reply"]}
 
     delta = max(-settings.max_dialogue_delta, min(settings.max_dialogue_delta, result["affinity_delta"]))
     new_affinity = await npc_mod.apply_delta(db, npc_id, delta)
@@ -215,7 +311,19 @@ async def talk(db, mem_store, npc_id: int, message: str) -> dict:
                                        "attempts": attempts, "end": result["end"],
                                        "summarized": summarized})
 
-    return {
+    yield "done", {
         "reply": result["reply"], "affinity": new_affinity,
         "end": result["end"], "player": await player_mod.api_dict(db, p),
+        "fallback": fallback_used,
     }
+
+
+async def talk(db, mem_store, npc_id: int, message: str) -> dict:
+    """Non-streaming wrapper (tools/tests): drain the stream, return the done payload."""
+    payload: dict | None = None
+    async for event, data in talk_stream(db, mem_store, npc_id, message):
+        if event == "done":
+            payload = data
+    if payload is None:
+        raise RuntimeError("dialogue stream ended without done")
+    return payload

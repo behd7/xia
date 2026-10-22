@@ -1,5 +1,6 @@
 import asyncio
 import heapq
+import json
 import logging
 import math
 import time
@@ -180,6 +181,139 @@ class OllamaClient:
                 logger.warning("llm %s FAILED model=%s priority=%d %dms error=%s: %s",
                                purpose, model, p, ms, type(error).__name__, error)
             await self._log(purpose, ok, in_tok, out_tok, ms, model=model)
+
+    async def chat_stream(
+        self,
+        purpose: str,
+        messages: list[dict[str, str]],
+        *,
+        json_format: bool = False,
+        temperature: float = 0.7,
+        metadata: dict | None = None,
+        priority: int | None = None,
+    ) -> AsyncIterator[str]:
+        """Streaming chat completion, yielding content deltas as they arrive.
+
+        Same priority queue and accounting as ``chat``; the limiter slot is held
+        for the whole stream so a background job cannot interleave with a
+        half-finished dialogue. Deltas are raw model output — with
+        ``json_format=True`` that means fragments of the JSON object, and the
+        caller is responsible for decoding them.
+        """
+        model = self._api_model if self._api_client is not None else settings.chat_model
+        p = priority if priority is not None else PRIORITY.get(purpose, DEFAULT_PRIORITY)
+        start = time.time()
+        parts: list[str] = []
+        in_tok = out_tok = None
+        ok = False
+        error: Exception | None = None
+        try:
+            async with self._limiter.slot(p):
+                if self._api_client is not None:
+                    source = self._stream_api(messages, json_format, temperature)
+                else:
+                    source = self._stream_ollama(messages, json_format, temperature)
+                async for delta, usage in source:
+                    if usage is not None:
+                        in_tok, out_tok = usage
+                    if delta:
+                        parts.append(delta)
+                        yield delta
+            ok = True
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            ms = int((time.time() - start) * 1000)
+            if ok:
+                text = "".join(parts)
+                logger.info("llm %s ok model=%s priority=%d %dms stream in=%s out=%s",
+                            purpose, model, p, ms, in_tok, out_tok)
+                self._trace_generation(purpose, messages, text, temperature, json_format,
+                                       {**(metadata or {}), "priority": p, "stream": True},
+                                       in_tok, out_tok, model=model)
+            elif error is None:
+                logger.info("llm %s stream closed early model=%s priority=%d %dms",
+                            purpose, model, p, ms)
+            else:
+                logger.warning("llm %s stream FAILED model=%s priority=%d %dms error=%s: %s",
+                               purpose, model, p, ms, type(error).__name__, error)
+            try:
+                await self._log(purpose, ok, in_tok, out_tok, ms, model=model)
+            except BaseException:
+                pass  # cancellation / bookkeeping must never mask the stream result
+
+    async def _stream_ollama(self, messages, json_format, temperature):
+        """Ollama /api/chat NDJSON stream; the final line carries token counts."""
+        body: dict[str, Any] = {
+            "model": settings.chat_model,
+            "messages": messages,
+            "stream": True,
+            "think": False,
+            "options": {"temperature": temperature},
+        }
+        if json_format:
+            body["format"] = "json"
+        async with self._client.stream("POST", "/api/chat", json=body) as res:
+            res.raise_for_status()
+            async for line in res.aiter_lines():
+                line = line.strip()
+                if not line:
+                    continue
+                data = json.loads(line)
+                if data.get("error"):
+                    raise RuntimeError(f"ollama: {data['error']}")
+                chunk = (data.get("message") or {}).get("content") or ""
+                if chunk:
+                    yield chunk, None
+                if data.get("done"):
+                    yield "", (data.get("prompt_eval_count"), data.get("eval_count"))
+
+    async def _stream_api(self, messages, json_format, temperature):
+        """OpenAI-compatible SSE stream; retries without stream_options on 400/422.
+
+        ``stream_options.include_usage`` is an OpenAI extension that some
+        compatible servers reject, so the first attempt drops it on refusal.
+        ``raise_for_status`` runs before any delta is yielded, so the retry
+        cannot duplicate text.
+        """
+        try:
+            async for item in self._stream_api_once(messages, json_format, temperature, True):
+                yield item
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code not in (400, 422):
+                raise
+            async for item in self._stream_api_once(messages, json_format, temperature, False):
+                yield item
+
+    async def _stream_api_once(self, messages, json_format, temperature, include_usage):
+        body: dict[str, Any] = {
+            "model": self._api_model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+        }
+        if json_format:
+            body["response_format"] = {"type": "json_object"}
+        if include_usage:
+            body["stream_options"] = {"include_usage": True}
+        async with self._api_client.stream("POST", "/chat/completions", json=body) as res:
+            res.raise_for_status()
+            async for line in res.aiter_lines():
+                line = line.strip()
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                data = json.loads(payload)
+                usage = data.get("usage")
+                if usage:
+                    yield "", (usage.get("prompt_tokens"), usage.get("completion_tokens"))
+                for choice in data.get("choices") or []:
+                    chunk = (choice.get("delta") or {}).get("content") or ""
+                    if chunk:
+                        yield chunk, None
 
     async def _call_ollama(self, messages, json_format, temperature):
         body: dict[str, Any] = {
