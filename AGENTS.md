@@ -1,6 +1,6 @@
 # AGENTS.md
 
-本文件是每个新会话的行动指南。用户已决定将当前前端改为 **Godot 4 + GDScript**：代码放在 `xia-ai-town/`，以 `server/` 实际接口为准；旧 `client/`（Phaser 历史前端）已删除，历史见 git，勿再引用。如需新的图片资源，须提供生图提示词与存放路径，等待用户手动生成。本版采用 Godot 原生绘制，无外部图片依赖。M0–M5 已全部落地：脚手架、战斗、成长、NPC 记忆/RAG/对话、反思/关系/八卦/主动搭话与确定性日程、世界公设与断岳刀、对话议程/口癖/轻情绪、每日心事与安全偏离、附近事件感知。
+本文件是每个新会话的行动指南。用户已决定将当前前端改为 **Godot 4 + GDScript**：代码放在 `xia-ai-town/`，以 `server/` 实际接口为准；旧 `client/`（Phaser 历史前端）已删除，历史见 git，勿再引用。地图/建筑/人物已改用 `xia-ai-town/assets/` 贴图（源图在 `asserts/`，切图脚本 `tools/build_art_assets.py`）；新增图片资源须提供生图提示词与存放路径，等待用户手动生成（提示词写在 `docs/ART-PROMPTS.md`）。M0–M5 已全部落地：脚手架、战斗、成长、NPC 记忆/RAG/对话、反思/关系/八卦/主动搭话与确定性日程、世界公设与断岳刀、对话议程/口癖/轻情绪、每日心事与安全偏离、附近事件感知。
 
 ## 项目是什么
 
@@ -17,7 +17,8 @@
 | 存储 | SQLite 单文件（WAL 模式）存游戏状态+记忆记录（**记忆的 SSOT**）；向量检索用 **ChromaDB**（PersistentClient 本地目录，cosine 空间单集合 memories），Chroma 是可从 SQLite 全量重嵌入重建的派生索引 |
 | 对话模型 | 本地 Ollama `qwen3:4b-instruct`（4bit 量化） |
 | 向量模型 | 本地 Ollama `qwen3-embedding:0.6b`（8bit 量化，1024 维，入库前 L2 归一化） |
-| 美术 | Godot 原生程序绘制像素地图与纸墨 UI；如需新图片，按用户要求先提供提示词和路径并等待 |
+| 美术 | 16px 瓦片 + 32px 人物贴图（`assets/`），纸墨 UI 由 `ui_kit.gd` 程序绘制；如需新图片，先提供提示词和路径并等待用户生成 |
+| 渲染 | 原生分辨率（`stretch/mode=disabled`），世界整数倍 1×/2×/3× 缩放，HUD 不缩放；绝不用整帧拉伸 |
 | 玩家入门 | 无初始门派，靠与掌门 NPC 好感度达标后对话拜师；一生只入一派 |
 | 战斗 | 1v1 回合制，敌方 AI 为规则型（**不调 LLM**） |
 
@@ -51,7 +52,7 @@ RESET_ON_START=false   # true=每次启动后端清空数据库（SQLite+Chroma 
 
 可调参数集中在 server 端 config（`server/app/config.py`，pydantic-settings 读 `.env`，§14 清单已全量落入：时间流速、好感阈值 70、反思/八卦周期、RAG 权重与 top-k、ChromaDB 目录等）。server 依赖 chromadb（向量库），清单见 DESIGN.md §12。
 
-M5 新增 `PLAN_ENABLED`（默认 true）、`PLAN_DEVIATION_SHIFT_SEC`（默认 1200）、`PLAN_HEART_MAX_CHARS`（默认 60）；`PLAN_ENABLED=false` 会立即停用心事与日程偏离（已有 `npc_plan` 行保留）。可选后端/观测见 DESIGN §7.1/§7.4：同时设置 `LLM_API_KEY` + `LLM_API_BASE_URL`（base_url 以 `/v1` 结尾，`LLM_API_MODEL` 可选）时对话走 OpenAI 兼容 API，嵌入仍走本地 Ollama；`LLM_API_TRUST_ENV=false` 默认直连（需要 shell 代理时改 true），`LLM_API_TIMEOUT=8` 控制外接 API 单次超时；`LANGFUSE_*` 默认关闭，不可达不影响玩法。运行日志同时写控制台与 `server/data/xia.log`（5MB×3 滚动），`/api/health` 返回 `log_path`。
+M5 新增 `PLAN_ENABLED`（默认 true）、`PLAN_DEVIATION_SHIFT_SEC`（默认 1200）、`PLAN_HEART_MAX_CHARS`（默认 60）；`PLAN_ENABLED=false` 会立即停用心事与日程偏离（已有 `npc_plan` 行保留）。可选后端/观测见 DESIGN §7.1/§7.4：同时设置 `LLM_API_KEY` + `LLM_API_BASE_URL`（base_url 以 `/v1` 结尾，`LLM_API_MODEL` / `LLM_API_EMBED_MODEL` 可选）时对话与嵌入都优先走 OpenAI 兼容 API（嵌入解析同时兼容 OpenAI `data[].embedding` 与 Ollama `embeddings`，失败自动降级到本地 Ollama）；`LLM_API_TRUST_ENV=false` 默认直连（需要 shell 代理时改 true），`LLM_API_TIMEOUT=8` 控制外接 API 单次超时；`LANGFUSE_*` 默认关闭，不可达不影响玩法。运行日志同时写控制台与 `server/data/xia.log`（5MB×3 滚动），`/api/health` 返回 `log_path`。
 
 ### 本地运行
 
@@ -90,13 +91,13 @@ cd server && uv venv .venv && uv pip install -r requirements.txt
 
 ## 当前 Godot 客户端
 
-`xia-ai-town/scripts/main.gd` 负责 HUD、面板、输入、交互、战斗及状态同步，含镇志面板与人物心事显示；`api.gd` 是 HTTP 客户端；`ui_kit.gd` 是主题组件；`town_world.gd` 原生绘制与碰撞、坐标保持原地图约定，并在本地按日程（含 `deviation` 相位平移）推算 NPC 位置、绘制搭话气泡；`town_map.gd` 提供小地图与舆图。NPC 对话/送礼/切磋/拜师、日程移动与主动搭话均已接入后端；对话中的 NPC 在客户端冻结。地图与人物无需外部图片。Godot `.godot/` 缓存不入库。
+`xia-ai-town/scripts/main.gd` 负责 HUD、面板、输入、交互、战斗及状态同步，含镇志面板与人物心事显示；`api.gd` 是 HTTP 客户端；`ui_kit.gd` 是主题组件；`town_world.gd` 用贴图渲染（静态层启动时烘焙成单张 1600×960 纹理，动态层每帧绘制角色与怪物并按 y 排序）与碰撞、坐标保持原地图约定，并在本地按日程（含 `deviation` 相位平移）推算 NPC 位置、绘制搭话气泡；`town_map.gd` 提供小地图与舆图。NPC 对话/送礼/切磋/拜师、日程移动与主动搭话均已接入后端；对话中的 NPC 在客户端冻结。贴图由 `tools/build_art_assets.py` 从 `asserts/` 生成，勿手改 `assets/`。Godot `.godot/` 缓存不入库。
 
 ## 目录结构（实现位置参考）
 
 ```
 Xia/
-├─ xia-ai-town/           # Godot 4 客户端（当前前端，原生绘制）
+├─ xia-ai-town/           # Godot 4 客户端（当前前端；asserts 源图 → assets 贴图）
 ├─ docs/DESIGN.md          # 设计 SSOT
 ├─ docs/M2-PLAN.md         # M2 执行拆解（已实施，留作范式）
 ├─ server/

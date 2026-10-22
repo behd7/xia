@@ -4,3 +4,7 @@
 
 # Local Godot AI plugin update backups and staging data.
 addons/.godot_ai_update/
+
+# Raw generated art sheets and Python caches live outside version control.
+asserts/
+tools/__pycache__/

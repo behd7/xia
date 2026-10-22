@@ -91,8 +91,10 @@ class OllamaClient:
         self._client = httpx.AsyncClient(base_url=host, timeout=timeout)
         self._db = db
         self._limiter = PriorityLimiter(settings.llm_concurrency)
-        # Optional OpenAI-compatible chat backend: configured with key+base_url it
-        # takes precedence over local Ollama for chat only (embeds stay local).
+        # Route that last answered an embed call, reused to skip dead candidates.
+        self._embed_route: tuple[httpx.AsyncClient, str] | None = None
+        # Optional OpenAI-compatible backend: configured with key+base_url it takes
+        # precedence for chat, and is tried first for embeds.
         self._api_client: httpx.AsyncClient | None = None
         self._api_model = settings.chat_model
         if settings.llm_api_key and settings.llm_api_base_url:
@@ -105,9 +107,20 @@ class OllamaClient:
             )
 
     async def tags(self) -> list[str]:
+        """Model names from an Ollama host, falling back to OpenAI ``/v1/models``.
+
+        The configured host may be either kind of server, so the health check
+        should not report "unreachable" just because ``/api/tags`` is missing.
+        """
         res = await self._client.get("/api/tags")
+        if res.status_code >= 400:
+            res = await self._client.get("/models")
         res.raise_for_status()
-        return [m.get("name", "") for m in res.json().get("models", [])]
+        payload = res.json()
+        models = payload.get("models")
+        if isinstance(models, list) and models and "name" in models[0]:
+            return [str(m.get("name", "")) for m in models]
+        return [str(m.get("id", "")) for m in (payload.get("data") or [])]
 
     async def _log(self, purpose: str, ok: bool, in_tok: int | None, out_tok: int | None, ms: int, model: str | None = None) -> None:
         """Record one call in llm_log for experiment analysis (DESIGN §7.3)."""
@@ -210,22 +223,22 @@ class OllamaClient:
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts and L2-normalise each vector (DESIGN §8).
 
-        Chroma is built with embedding_function=None and always receives
-        explicit vectors (AGENTS.md ChromaDB 坑①); normalisation happens here
-        so the caller never has to repeat it.
+        Both wire formats are supported because the embedding backend may be
+        Ollama (``/api/embed`` -> ``{"embeddings": [[...]]}``) or any
+        OpenAI-compatible server (``/embeddings`` -> ``{"data": [{"embedding":
+        [...]}]}``); see ``_embed_routes``. Chroma is built with
+        embedding_function=None and always receives explicit vectors
+        (AGENTS.md ChromaDB 坑①); normalisation happens here so the caller
+        never has to repeat it.
         """
         start = time.time()
         ok = False
         error: Exception | None = None
         try:
             async with self._limiter.slot(0):
-                res = await self._client.post(
-                    "/api/embed", json={"model": settings.embed_model, "input": texts}
-                )
-                res.raise_for_status()
-                data = res.json()
+                vectors = await self._embed_request(texts)
             out: list[list[float]] = []
-            for v in data.get("embeddings", []):
+            for v in vectors:
                 norm = math.sqrt(sum(x * x for x in v))
                 out.append([x / norm for x in v] if norm else v)
             ok = True
@@ -241,7 +254,81 @@ class OllamaClient:
             else:
                 logger.warning("embed FAILED n=%d %dms error=%s: %s",
                                len(texts), ms, type(error).__name__, error)
-            await self._log("embed", ok, None, None, ms, model=settings.embed_model)
+            await self._log("embed", ok, None, None, ms, model=self._embed_label())
+
+    def _embed_label(self) -> str:
+        return settings.llm_api_embed_model or settings.embed_model
+
+    def _embed_routes(self, texts: list[str]) -> list[tuple[httpx.AsyncClient, str, dict[str, Any]]]:
+        """Candidate (client, path, body) calls in preference order.
+
+        The OpenAI-compatible backend is only tried when it is configured; the
+        Ollama host is kept as the fallback so a missing local server or a
+        mismatched model id cannot take RAG down permanently.
+        """
+        routes: list[tuple[httpx.AsyncClient, str, dict[str, Any]]] = []
+        if self._api_client is not None:
+            routes.append((
+                self._api_client,
+                "/embeddings",
+                {"model": self._embed_label(), "input": texts},
+            ))
+        routes.append((self._client, "/api/embed", {"model": settings.embed_model, "input": texts}))
+        routes.append((self._client, "/embeddings", {"model": settings.embed_model, "input": texts}))
+        return routes
+
+    async def _embed_request(self, texts: list[str]) -> list[list[float]]:
+        """Try the cached route first, then every remaining candidate once."""
+        routes = self._embed_routes(texts)
+        ordered = routes
+        if self._embed_route is not None:
+            ordered = [r for r in routes if (r[0], r[1]) == self._embed_route]
+            ordered += [r for r in routes if (r[0], r[1]) != self._embed_route]
+        last_error: Exception | None = None
+        for client, path, body in ordered:
+            try:
+                res = await client.post(path, json=body)
+            except httpx.HTTPError as exc:
+                last_error = exc
+                continue
+            if res.status_code >= 400:
+                last_error = httpx.HTTPStatusError(
+                    f"{path} -> {res.status_code}: {res.text[:120]}",
+                    request=res.request, response=res,
+                )
+                continue
+            try:
+                vectors = self._parse_embeddings(res.json(), len(texts))
+            except Exception as exc:  # unexpected payload shape -> next route
+                last_error = exc
+                continue
+            self._embed_route = (client, path)
+            return vectors
+        raise last_error or RuntimeError("no embedding route available")
+
+    @staticmethod
+    def _parse_embeddings(payload: Any, count: int) -> list[list[float]]:
+        """Accept both OpenAI and Ollama embedding payloads.
+
+        OpenAI: ``{"data": [{"embedding": [...]}, ...]}``
+        Ollama: ``{"embeddings": [[...], ...]}``
+        Legacy Ollama single: ``{"embedding": [...]}``
+        """
+        if not isinstance(payload, dict):
+            raise ValueError("embedding payload is not an object")
+        vectors: list[list[float]] = []
+        rows = payload.get("data")
+        if isinstance(rows, list):
+            entries = [row for row in rows if isinstance(row, dict) and "embedding" in row]
+            entries.sort(key=lambda row: row.get("index", 0))
+            vectors = [list(row["embedding"]) for row in entries]
+        if not vectors and isinstance(payload.get("embeddings"), list):
+            vectors = [list(v) for v in payload["embeddings"]]
+        if not vectors and isinstance(payload.get("embedding"), list):
+            vectors = [list(payload["embedding"])]
+        if len(vectors) != count:
+            raise ValueError(f"embedding count {len(vectors)} != {count} for payload keys {sorted(payload)}")
+        return vectors
 
     async def close(self) -> None:
         await self._client.aclose()

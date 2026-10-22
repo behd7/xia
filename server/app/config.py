@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     # Embeddings always stay on local Ollama (needed for RAG).
     llm_api_key: str = ""
     llm_api_model: str = ""
+    # Embedding model id on the OpenAI-compatible backend; empty reuses
+    # embed_model (correct for backends that share the same Ollama tags).
+    llm_api_embed_model: str = ""
     llm_api_base_url: str = ""
     # 外接 API 默认不继承 shell 的 http(s)_proxy：本地开发常见代理未启动时，
     # httpx 会把请求送到死端口并一直等到超时。需要代理时显式设为 true。

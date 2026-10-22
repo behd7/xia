@@ -23,7 +23,7 @@ var shop_id: String = ""
 var shop_data: Dictionary = {}
 var battle_log: Array[String] = []
 var camera_initialized: bool = false
-var zoom: float = 1.35
+var zoom: float = 2.0
 var encounter_cooldown: float = 0.0
 var toast_until: float = 0.0
 var character_name: Label
@@ -84,7 +84,10 @@ func _panel(parent: Node, at: Vector2, dimensions: Vector2, color: Color = UI.PA
 	parent.add_child(panel)
 	panel.position = at
 	panel.size = dimensions
-	panel.add_theme_stylebox_override("panel", UI.box(color))
+	if color == UI.PAPER:
+		panel.add_theme_stylebox_override("panel", UI.panel_box(16))
+	else:
+		panel.add_theme_stylebox_override("panel", UI.box(color))
 	return panel
 
 func _vbox(parent: Node, gap: int = 10) -> VBoxContainer:
@@ -251,8 +254,8 @@ func _process(delta: float) -> void:
 	world.moving = direction.length_squared() > 0
 	world.walk_time += delta if world.moving else 0.0
 	world.scale = Vector2.ONE * zoom
-	var target: Vector2 = world_view.size * 0.5 - (world.actor_pos + Vector2(0, -68)) * zoom
-	world.position = world.position.lerp(target, minf(delta * 8, 1)) if camera_initialized else target
+	var target: Vector2 = (world_view.size * 0.5 - (world.actor_pos + Vector2(0, -68)) * zoom).round()
+	world.position = (world.position.lerp(target, minf(delta * 8, 1))).round() if camera_initialized else target
 	camera_initialized = true
 	world.queue_redraw()
 	minimap.actor_pos = world.actor_pos
@@ -331,10 +334,11 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if modal == null and event is InputEventMouseButton and event.pressed:
+		# Integer zoom keeps every art pixel on a whole screen pixel.
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			zoom = minf(zoom + 0.1, 2.2)
+			zoom = minf(zoom + 1.0, 3.0)
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			zoom = maxf(zoom - 0.1, 0.85)
+			zoom = maxf(zoom - 1.0, 1.0)
 
 func notify(text: String) -> void:
 	toast_label.text = text
@@ -519,7 +523,7 @@ func _new_modal(title: String, subtitle: String, kind: String, width: float = 78
 	modal.add_child(center)
 	var panel := PanelContainer.new()
 	panel.custom_minimum_size = Vector2(width, minf(size.y - 150, 650))
-	panel.add_theme_stylebox_override("panel", UI.box(UI.PAPER, Color("a3ad95"), 5, 26))
+	panel.add_theme_stylebox_override("panel", UI.panel_box(26))
 	center.add_child(panel)
 	var content := _vbox(panel, 12)
 	var heading := HBoxContainer.new()
