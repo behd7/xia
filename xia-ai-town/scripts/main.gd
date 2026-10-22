@@ -557,7 +557,7 @@ func open_settings() -> void:
 	address.text = api.base_url
 	address.custom_minimum_size.y = 48
 	body.add_child(address)
-	body.add_child(UI.paragraph("本机使用 http://127.0.0.1:8000；局域网可填写服务器的 IP 和端口。"))
+	body.add_child(UI.paragraph("本机使用 http://127.0.0.1:8080；局域网可填写服务器的 IP 和端口。"))
 	body.add_child(UI.button("连接江湖", func():
 		var value := address.text.strip_edges()
 		if not value.begins_with("http://") and not value.begins_with("https://"):
@@ -834,6 +834,20 @@ func _append_talk(who: String, text: String) -> void:
 	if not who.is_empty():
 		modal_body.add_child(UI.label(who, 16, UI.JADE if who == "你" else UI.RED))
 	modal_body.add_child(UI.paragraph(text, 17))
+	_scroll_talk()
+
+# Streaming dialogue: create the NPC's text node on the first token, then update
+# it in place so retries/reset can reuse or clear the same line.
+func _begin_talk_reply(who: String) -> Label:
+	modal_body.add_child(UI.label(who, 16, UI.JADE if who == "你" else UI.RED))
+	var line := UI.paragraph("", 17)
+	modal_body.add_child(line)
+	_scroll_talk()
+	return line
+
+func _scroll_talk() -> void:
+	if not is_instance_valid(modal_body):
+		return
 	var scroll := modal_body.get_parent() as ScrollContainer
 	if scroll != null:
 		var target := scroll.get_v_scroll_bar().max_value
@@ -855,23 +869,50 @@ func send_talk(message: String, clear_input: bool = false) -> void:
 	busy = true
 	_set_request_buttons(true)
 	modal_status.text = "%s沉吟许久……" % dialogue_name
-	var response: Dictionary = await api.request("/api/npc/%d/talk" % dialogue_id, {"message": text}, 45.0)
+	var npc_id := dialogue_id
+	var turn := {"label": null, "text": "", "done": {}}
+	var on_event := func(event: String, data: Dictionary):
+		if event == "token":
+			var piece := str(data.get("text", ""))
+			if piece.is_empty() or not is_instance_valid(modal_body):
+				return
+			if turn.label == null:
+				turn.label = _begin_talk_reply(dialogue_name)
+				modal_status.text = ""
+			turn.text += piece
+			turn.label.text = turn.text
+			_scroll_talk()
+		elif event == "reset":
+			turn.text = ""
+			if turn.label != null and is_instance_valid(turn.label):
+				turn.label.text = ""
+		elif event == "done":
+			turn.done = data
+	var response: Dictionary = await api.stream_request("/api/npc/%d/talk" % npc_id, {"message": text}, on_event, 60.0)
 	busy = false
 	_set_request_buttons(false)
+	if npc_id != dialogue_id:
+		return
 	if not response.ok:
-		_log("talk npc=%d failed: %s" % [dialogue_id, str(response.error)])
+		_log("talk npc=%d failed: %s" % [npc_id, str(response.error)])
 		modal_status.text = str(response.error)
 		return
-	var data: Dictionary = response.data
-	_log("talk npc=%d ok end=%s affinity=%d reply_chars=%d" % [
-		dialogue_id, str(data.get("end", false)), int(data.get("affinity", -1)),
-		str(data.get("reply", "")).length()])
-	_append_talk(dialogue_name, str(data.get("reply", "")))
+	var data: Dictionary = turn.done if not (turn.done as Dictionary).is_empty() else response.data
+	var reply := str(data.get("reply", ""))
+	if turn.label == null:
+		_append_talk(dialogue_name, reply)
+	elif is_instance_valid(turn.label):
+		# done.reply is authoritative (retry/reset may have shifted the visible text)
+		turn.label.text = reply
+		_scroll_talk()
+	_log("talk npc=%d ok end=%s affinity=%d reply_chars=%d fallback=%s" % [
+		npc_id, str(data.get("end", false)), int(data.get("affinity", -1)),
+		reply.length(), str(data.get("fallback", false))])
 	if data.has("player"):
 		_apply_player(data.player)
-	if dialogue_affinity >= 0 and data.has("affinity"):
+	if data.has("affinity"):
 		dialogue_affinity = int(data.get("affinity"))
-		modal_status.text = "" if data.get("end", false) else ("好感" + _affinity_hearts(dialogue_affinity))
+	modal_status.text = "" if data.get("end", false) else ("好感" + _affinity_hearts(dialogue_affinity))
 
 func dialog_apprentice() -> void:
 	if busy or dialogue_id == 0:

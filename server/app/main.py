@@ -1,3 +1,5 @@
+import asyncio
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -5,6 +7,7 @@ from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .config import settings
@@ -190,15 +193,39 @@ class GiftReq(BaseModel):
     item_id: int
 
 
+def _sse(event: str, data: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
 @app.post("/api/npc/{npc_id}/talk")
-async def npc_talk(npc_id: int, req: TalkReq) -> dict[str, Any]:
+async def npc_talk(npc_id: int, req: TalkReq):
+    """SSE dialogue: start -> token* -> done, with reset on retry/fallback.
+
+    404/400 are checked before the stream starts so ordinary callers still get
+    a normal JSON error; once streaming, failures arrive as an ``error`` event.
+    """
     await _player_or_409()
-    try:
-        return await dialogue_mod.talk(db, mem_store, npc_id, req.message)
-    except LookupError:
+    message = (req.message or "").strip()
+    if not message:
+        raise HTTPException(400, "空话一句，开不了口。")
+    if await npc_mod.by_id(db, npc_id) is None:
         raise HTTPException(404, "查无此人")
-    except ValueError as e:
-        raise HTTPException(400, str(e))
+
+    async def event_stream() -> AsyncIterator[str]:
+        try:
+            async for event, data in dialogue_mod.talk_stream(db, mem_store, npc_id, message):
+                yield _sse(event, data)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("talk stream failed npc=%d", npc_id)
+            yield _sse("error", {"detail": "话到嘴边却断了，稍后再叙。"})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/npc/{npc_id}/greet")

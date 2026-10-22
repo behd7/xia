@@ -327,7 +327,7 @@ func _run() -> void:
 	var scratch: String = OS.get_environment("XIA_SMOKE_ROOT")
 	var address: String = OS.get_environment("XIA_API_URL")
 	# Fail closed when launched manually without the isolating runner.
-	if scratch.is_empty() or not ProjectSettings.globalize_path("user://").begins_with(scratch + "/") or not address.begins_with("http://127.0.0.1:") or address.ends_with(":8000"):
+	if scratch.is_empty() or not ProjectSettings.globalize_path("user://").begins_with(scratch + "/") or not address.begins_with("http://127.0.0.1:") or address.ends_with(":8080"):
 		printerr("SMOKE FAIL: run smoke_test.py; disposable userdata/backend required")
 		quit(1)
 		return

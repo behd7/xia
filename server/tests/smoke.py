@@ -42,6 +42,27 @@ def check(label: str, cond: bool) -> None:
         FAIL += 1
 
 
+async def talk(client, npc_id: int, message: str):
+    """Consume the SSE dialogue route into (status, events, done payload)."""
+    events: list[tuple[str, dict]] = []
+    name: str | None = None
+    data_lines: list[str] = []
+    async with client.stream("POST", f"/api/npc/{npc_id}/talk",
+                             json={"message": message}) as r:
+        status = r.status_code
+        async for line in r.aiter_lines():
+            if line.startswith("event:"):
+                name = line[len("event:"):].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[len("data:"):].strip())
+            elif line == "":
+                if name is not None:
+                    events.append((name, json.loads("\n".join(data_lines) or "{}")))
+                name, data_lines = None, []
+    done = next((data for event, data in reversed(events) if event == "done"), None)
+    return status, events, done
+
+
 async def main() -> int:
     from app.main import app, ollama
     from app.config import settings
@@ -78,13 +99,21 @@ async def main() -> int:
             text = "{}"
         return type("R", (), {"text": text, "in_tokens": 10, "out_tokens": 8})()
 
+    async def fake_chat_stream(purpose, messages, *, json_format=False, temperature=0.7,
+                               metadata=None, priority=None):
+        result = await fake_chat(purpose, messages, json_format=json_format,
+                                 temperature=temperature, metadata=metadata, priority=priority)
+        for i in range(0, len(result.text), 7):
+            yield result.text[i:i + 7]
+
     async def fake_embed(texts):
         return [[1.0] + [0.0] * 1023 for _ in texts]  # 1024 维单位向量
 
     async def fake_tags():
         return ["qwen3:4b-instruct", "qwen3-embedding:0.6b"]
 
-    ollama.chat, ollama.embed, ollama.tags = fake_chat, fake_embed, fake_tags
+    ollama.chat, ollama.chat_stream, ollama.embed, ollama.tags = (
+        fake_chat, fake_chat_stream, fake_embed, fake_tags)
 
     async with app.router.lifespan_context(app):
         import app.main as main_mod  # lifespan 之后才能取到真实 db/mem_store
@@ -149,14 +178,18 @@ async def main() -> int:
             r = await c.post("/api/npc/5/gift", json={"item_id": potion["id"]})
             check("gift smith", r.status_code == 200 and r.json()["affinity"] > 25)
 
-            print("\n== dialogue (stubbed LLM) ==")
-            r = await c.post("/api/npc/1/talk", json={"message": "先生安好？"})
-            check("talk returns reply", r.status_code == 200 and len(r.json()["reply"]) > 0)
-            check("affinity clamped to [0,100]", 0 <= r.json()["affinity"] <= 100)
+            print("\n== dialogue (stubbed LLM, SSE) ==")
+            status, events, done = await talk(c, 1, "先生安好？")
+            check("talk returns reply", status == 200 and done is not None
+                  and len(done["reply"]) > 0)
+            check("reply streams as tokens",
+                  "".join(d.get("text", "") for e, d in events if e == "token") == done["reply"])
+            check("affinity clamped to [0,100]", 0 <= done["affinity"] <= 100)
             d1 = (await c.get("/api/debug/npc/1")).json()
             check("dialogue pauses NPC", d1["reflection"]["paused_until"] is not None)
-            r = await c.post("/api/npc/1/talk", json={"message": "告辞"})
-            check("farewell ends dialogue", r.status_code == 200 and r.json()["end"] is True)
+            status, _, done = await talk(c, 1, "告辞")
+            check("farewell ends dialogue", status == 200 and done is not None
+                  and done["end"] is True)
             d1 = (await c.get("/api/debug/npc/1")).json()
             check("farewell clears pause", d1["reflection"]["paused_until"] is None)
 
@@ -231,9 +264,10 @@ async def main() -> int:
             check("debug exposes speech examples", len(d5b["speech_examples"]) >= 2)
 
             before_aff = d5b["affinity"]
-            r = await c.post("/api/npc/5/talk", json={"message": "近来生意如何？"})
+            status, _, done = await talk(c, 5, "近来生意如何？")
             check("mooded talk still applies only LLM delta",
-                  r.status_code == 200 and r.json()["affinity"] == min(100, before_aff + 2))
+                  status == 200 and done is not None
+                  and done["affinity"] == min(100, before_aff + 2))
             dialogue_prompts = [m for purpose, m in PROMPTS if purpose == "dialogue"]
             system = dialogue_prompts[-1][0]["content"] if dialogue_prompts else ""
             check("dialogue prompt carries agenda", "你此刻的盘算" in system)
@@ -243,16 +277,16 @@ async def main() -> int:
             check("debug exposes agenda and mood",
                   bool(d5b["agenda"]) and d5b["mood"]["mood"] == "pleased")
 
-            r = await c.post("/api/npc/1/talk", json={"message": "后山可有消息？"})
+            await talk(c, 1, "后山可有消息？")
             a1 = (await c.get("/api/debug/npc/1")).json()["agenda"]["id"]
-            r = await c.post("/api/npc/1/talk", json={"message": "后山可有消息？"})
+            await talk(c, 1, "后山可有消息？")
             a2 = (await c.get("/api/debug/npc/1")).json()["agenda"]["id"]
             check("agenda is stable within one conversation", a1 == a2)
-            r = await c.post("/api/npc/1/talk", json={"message": "告辞"})
+            status, _, done = await talk(c, 1, "告辞")
             check("end clears current agenda",
-                  r.json()["end"] is True
+                  status == 200 and done is not None and done["end"] is True
                   and (await c.get("/api/debug/npc/1")).json()["agenda"] is None)
-            r = await c.post("/api/npc/1/talk", json={"message": "再说说后山"})
+            await talk(c, 1, "再说说后山")
             a3 = (await c.get("/api/debug/npc/1")).json()["agenda"]["id"]
             check("next conversation picks a different agenda", a3 != a1)
             check("B adds no LLM purpose",
@@ -336,7 +370,7 @@ async def main() -> int:
             events_mod.record(
                 main_mod.mem_store, "battle_win",
                 f"{token}：在{gu_poi}有动静", gu_poi, ["冒烟侠"])
-            r = await c.post("/api/npc/1/talk", json={"message": "方才那边怎么了？"})
+            await talk(c, 1, "方才那边怎么了？")
             dialogue_prompts = [m for purpose, m in PROMPTS if purpose == "dialogue"]
             system = dialogue_prompts[-1][0]["content"] if dialogue_prompts else ""
             check("nearby event injected into dialogue prompt", token in system)
