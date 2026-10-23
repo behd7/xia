@@ -270,9 +270,9 @@
 
 **事件入忆规则（"与我有关"的判定）**：
 
-1. **直接交互**：送礼、切磋、购买 → 各自即时入忆一条；对话不逐轮入忆，只在对话
-   （或连同其他互动）累计的 `interacts_since_summary` 达到 `event_summary_threshold`
-   时，按 §6.6 把未蒸馏对话窗口批总结为 event 落库；
+1. **直接交互**：送礼、切磋、购买 → 各自即时入忆一条；对话不逐轮入忆，每轮只进
+   `conversation` 短期窗口；该 NPC 的窗口条数超过 `CONVERSATION_WINDOW_CAPACITY`
+   （默认 10）时，按 §6.6 把最早一批（默认 10 轮）批总结为一条 event 落库；
 2. **同场目击**：玩家战斗、大额消费（≥100两）等显著事件 → 发生时处于同一 POI 的 NPC 各自入忆一条（importance 按事件类型定值）；
 3. **八卦传播**：见 §6.9，NPC 间扩散玩家事迹。
 
@@ -349,16 +349,16 @@ recency: 半衰期 = 3 游戏日
 
 **流式输出（SSE）**：`POST /api/npc/{id}/talk` 返回 `text/event-stream`，事件序列 `start` → `token`* → `done`；重试或模板兜底前发 `reset`，客户端据此清空已显示的文字。模型仍只输出一个 JSON 对象，服务端边收边解码 `reply` 值（转义、代理对、UTF-8 分片都安全），`affinity_delta`/`end` 在流结束后解析，`done` 携带 `{reply, affinity, end, player, fallback}`。**不新增 LLM 调用**（M5 预算不变）。Godot 的 `HTTPRequest` 会缓冲整包，客户端改用 `HTTPClient` 手动轮询读取（`api.gd::stream_request`）。
 
-**事件入忆（互动判断值 + 窗口批总结，不逐轮）**：闲聊每轮只进短期窗口
-（`conversation` 表），不写 event 记忆。每个 NPC 维护 `interacts_since_summary`
-判断值，**每次日常互动**（对话、送礼、切磋、购买）都 +1；当它 ≥
-`event_summary_threshold`（默认 5）或某次对话 `end=true` 提前收尾时，触发一次**批总结**：
-把 `last_summary_conv_id` 水位线以来、尚未蒸馏的对话轮原始文本一次 LLM 归纳成
-1~3 条第三人称事件摘要（各带 importance），以 `kind=event` 落库，然后清零判断值、
-推进水位线。礼物/切磋/大额消费的规则事件仍各自即时入忆（§6.3），只累加判断值、
-不额外产出素材。总结走「校验→重试一次→兜底（取最后一条玩家消息作单条
-importance 3）」链路，同样永不阻塞。event 作为 RAG 检索补充，即每一轮回复的首要
-即时上下文是短期窗口原始对话。
+**事件入忆（固定窗口批总结，不逐轮）**：闲聊每轮由
+`MemoryStore.add_conversation_turn` 写入短期窗口（`conversation` 表），不写 event
+记忆。每次写入后按 **NPC 独立**统计窗口条数；超过
+`CONVERSATION_WINDOW_CAPACITY`（默认 10）时，取最早的 N 轮原始对话一次 LLM 归纳成
+**1 条**第三人称事件摘要（带 importance），以 `kind=event` 落库，再按 `npc_id`
+向量化写入 Chroma，最后删除这 10 轮窗口记录（未满窗的新轮次保留）。只有
+`memory` 表的 event 会向量化，`conversation` 原始轮次不嵌入。礼物/切磋/大额消费的
+规则事件仍各自即时入忆（§6.3），不参与窗口计数。总结走「校验→重试一次→兜底
+（取最后一条玩家消息作单条 importance 3）」链路，同样永不阻塞。event 作为 RAG 检索
+补充，即每一轮回复的首要即时上下文仍是短期窗口原始对话。
 
 **[打听消息]** 是记忆系统的展示窗：NPC 会用自己检索到的记忆（含八卦）回答，答非所问或以讹传讹正是实验观察点。
 
@@ -529,7 +529,7 @@ player_skill(player_id, skill_id, level, equipped)  -- equipped: 主动技是否
 npc(id, name, sect_id NULL, role, init_affinity, home_poi, work_poi)
 npc_state(npc_id, affinity, last_reflection_at, mem_since_reflection,
           paused_until, last_greet_real,
-          interacts_since_summary, last_summary_conv_id)
+          interacts_since_summary, last_summary_conv_id)  -- 旧批总结计数/水位，保留兼容
 npc_mood(npc_id PK, mood, reason, until_real)  -- 轻情绪，只进 prompt；until_real 为现实时间
 npc_plan(npc_id, game_day, heart, reason, deviation_json, created_at_real,
          PRIMARY KEY(npc_id, game_day))  -- 每日心事+安全偏离，每 NPC 每天最多一行
@@ -537,7 +537,7 @@ npc_plan(npc_id, game_day, heart, reason, deviation_json, created_at_real,
 > `npc` 表只存身份/职分/地点锚点与稳定主键；**人格、说话风格等静态性格定义只
 > 在 `agent/npc.py` 的 `NPC_ROSTER`（代码）中**，对话/调取按枚举使用，不再入库
 > （原 `persona_json / speech_style / waypoints_json` 列死数据，已随迁移 DROP）。
-> 动态运行态（好感、互动计数、蒸馏水位、反思计时）一律在 `npc_state` 持久化。
+> 动态运行态（好感、反思计时、搭话冷却等）一律在 `npc_state` 持久化。
 
 memory(id, npc_id, ts_game,           -- 游戏时钟
        kind,                           -- event|reflection|gossip
@@ -548,6 +548,7 @@ relationship(npc_id, target_kind,     -- player|npc
              target_id, summary, updated_at)  -- updated_at 为现实时间
 
 conversation(id, npc_id, ts_game, turns_json, affinity_delta_total)
+             -- 短期窗口；超过窗口容量（默认 10）即批总结并删除最早一批
 battle(id, player_id, target_kind, target_id, state_json, active, created_at)
 llm_log(id, purpose, model, in_tokens, out_tokens, ms, ok, created_at)
 kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=游戏日 等
@@ -718,7 +719,7 @@ Xia/
 | PLAN_DEVIATION_SHIFT_SEC | 1200 | 偏离阶段平移上限（游戏秒）= 20 游戏分钟 |
 | PLAN_HEART_MAX_CHARS | 60 | 心事字数上限 |
 | DIALOGUE_WINDOW_SIZE | 6 | 每轮回复平铺的最近对话轮数 |
-| EVENT_SUMMARY_THRESHOLD | 5 | 互动判断值达 N 即批总结成 event |
+| CONVERSATION_WINDOW_CAPACITY | 10 | conversation 超过 N 条即把最早 N 轮总结为一条 event |
 | RECENCY_HALF_LIFE | 3 游戏日 | 记忆新鲜度衰减 |
 | RAG_TOP_K | 6 | 检索条数 |
 | W_REL / W_REC / W_IMP | 1.0 / 0.8 / 0.5 | 检索权重 |

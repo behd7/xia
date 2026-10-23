@@ -14,7 +14,9 @@ import time
 import chromadb
 from chromadb.config import Settings
 
+from ..config import settings
 from ..db import Database
+from . import summary as summary_mod
 
 
 class MemoryStore:
@@ -30,6 +32,7 @@ class MemoryStore:
             "memories", embedding_function=None, metadata={"hnsw:space": "cosine"}
         )
         self._lock = asyncio.Lock()
+        self._window_locks: dict[int, asyncio.Lock] = {}
         # Phase C：附近显著事件的进程内环形缓冲，不落库。
         self.recent_events: list[dict] = []
 
@@ -71,6 +74,61 @@ class MemoryStore:
                 (npc_id,),
             )
         return mid
+
+    async def add_conversation_turn(
+        self,
+        db: Database,
+        npc_id: int,
+        *,
+        user: str,
+        npc: str,
+        player_name: str,
+        place: str,
+        affinity_delta: int = 0,
+    ) -> int | None:
+        """Append one turn; overflow the per-NPC window => distill the oldest batch into one event."""
+        lock = self._window_locks.setdefault(npc_id, asyncio.Lock())
+        async with lock:
+            await db.execute(
+                "INSERT INTO conversation(npc_id, ts_game, turns_json, affinity_delta_total)"
+                " VALUES(?,?,?,?)",
+                (npc_id, self.clock.now(),
+                 json.dumps({"user": user, "npc": npc}, ensure_ascii=False),
+                 affinity_delta),
+            )
+            row = await db.fetch_one(
+                "SELECT COUNT(*) AS n FROM conversation WHERE npc_id = ?", (npc_id,))
+            capacity = max(1, settings.conversation_window_capacity)
+            if int(row["n"]) <= capacity:
+                return None
+
+            rows = await db.fetch_all(
+                "SELECT id, turns_json FROM conversation WHERE npc_id = ?"
+                " ORDER BY id LIMIT ?",
+                (npc_id, capacity),
+            )
+            ids: list[int] = []
+            turns: list[dict] = []
+            for item in rows:
+                ids.append(item["id"])
+                try:
+                    data = json.loads(item["turns_json"])
+                except (TypeError, ValueError):
+                    continue
+                turns.append({"user": data.get("user", ""), "npc": data.get("npc", "")})
+
+            event = await summary_mod.summarize_dialogue_window(
+                self, npc_id, player_name, place, turns)
+            memory_id = await self.add_memory(
+                db, npc_id, content=event["content"], kind="event",
+                participants=[player_name], poi=place,
+                importance=event["importance"],
+            )
+            if ids:
+                marks = ",".join("?" for _ in ids)
+                await db.execute(
+                    f"DELETE FROM conversation WHERE id IN ({marks})", ids)
+            return memory_id
 
     def query(self, npc_id: int, query_vec: list[float], n_results: int = 20) -> dict:
         """ANN search over this NPC's memories (vector similarity only)."""

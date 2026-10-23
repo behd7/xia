@@ -20,7 +20,6 @@ class BattleError(Exception):
 # 跨层受控注入：main lifespan 装配时赋值。避免 game -> agent 的模块级 import 环，
 # 仅此两处；None 表示 LLM/反思层未装配（正常开发恒装配，测试可不配）。
 mem_store = None     # injected: 切磋写该 NPC 记忆
-summary_bump = None  # injected: summary.bump（互动判断值+1, 达阈值蒸馏窗口）
 
 SPAR_EXP_BASE = 50        # 切磋经验基数，结算后 ×0.3（DESIGN §5.6）
 SPAR_END_PCT = 0.30       # 任一方气血降至 30% 即结束
@@ -356,13 +355,11 @@ async def _finalize(db: Database, p: dict, state: dict, add, result: str) -> dic
                                "与你切磋", 30)
         except Exception:
             logger.exception("mood update failed for spar npc=%d", npc_id)
-        if mem_store is not None:  # 本场切磋写入该 NPC 记忆（importance 6）+ 互动判断值
+        if mem_store is not None:  # 本场切磋写入该 NPC 记忆（importance 6）
             await mem_store.add_memory(
                 db, npc_id, content=f"在练武场与你切磋，{verdict}。",
                 kind="event", participants=[p["name"]], poi="练武场", importance=6,
             )
-            if summary_bump is not None:
-                await summary_bump(db, mem_store, npc_id, p["name"], "练武场")
         return {"exp": exp, "gold": 0, "cultivation": 0, "drops": [], "level_ups": ups,
                 "world_announced": False}
 

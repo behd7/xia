@@ -79,7 +79,8 @@ async def main() -> int:
             text = json.dumps({"reply": "阁下所问，某自有计较。",
                                "affinity_delta": 2, "end": end}, ensure_ascii=False)
         elif purpose == "dialogue_summary":
-            text = '{"events":[{"content":"与玩家交谈甚欢。","importance":3}]}'
+            text = json.dumps({"content": "十轮闲谈已归档。", "importance": 4},
+                              ensure_ascii=False)
         elif purpose == "reflection":
             text = ('{"insights":[{"content":"冒烟侠屡次来问剑，心性倒是坚定。"}],'
                     '"affinity_delta":1}')
@@ -470,6 +471,52 @@ async def main() -> int:
                   await main_mod.db.kv_get("mob_kills") is None
                   and all(m["alive"] for m in st["mobs"]))
             check("W adds no LLM purpose", "world" not in CALLED)
+
+            print("\n== conversation window (10 turns -> one event) ==")
+            npc_window = 7
+            conv_before = (await main_mod.db.fetch_one(
+                "SELECT COUNT(*) AS n FROM conversation WHERE npc_id = ?",
+                (npc_window,)))["n"]
+            chroma_before = main_mod.mem_store._coll.count()
+            summary_calls = CALLED.count("dialogue_summary")
+            for i in range(1, 12):
+                status, _, done = await talk(c, npc_window, f"闲谈第{i}轮")
+                check(f"window talk {i} ok", status == 200 and done is not None)
+            conv_after = (await main_mod.db.fetch_one(
+                "SELECT COUNT(*) AS n FROM conversation WHERE npc_id = ?",
+                (npc_window,)))["n"]
+            check("window keeps only the newest turn",
+                  conv_before == 0 and conv_after == 1)
+            check("one LLM summary for the overflowing window",
+                  CALLED.count("dialogue_summary") == summary_calls + 1)
+            summary_rows = await main_mod.db.fetch_all(
+                "SELECT id, npc_id, kind, content, importance FROM memory"
+                " WHERE npc_id = ? AND content = ?",
+                (npc_window, "十轮闲谈已归档。"))
+            check("summary writes exactly one event memory",
+                  len(summary_rows) == 1
+                  and summary_rows[0]["npc_id"] == npc_window
+                  and summary_rows[0]["kind"] == "event"
+                  and summary_rows[0]["importance"] == 4)
+            check("only the event is vectorized",
+                  main_mod.mem_store._coll.count() == chroma_before + 1)
+            if summary_rows:
+                hit = main_mod.mem_store._coll.get(
+                    ids=[str(summary_rows[0]["id"])])
+                check("event carries npc_id in Chroma metadata",
+                      hit["ids"] == [str(summary_rows[0]["id"])]
+                      and hit["metadatas"][0]["npc_id"] == str(npc_window))
+            raw_hit = await main_mod.db.fetch_one(
+                "SELECT COUNT(*) AS n FROM memory WHERE content LIKE ?",
+                ("%闲谈第1轮%",))
+            check("raw conversation turns are not memorized", raw_hit["n"] == 0)
+            summary_prompts = [m for purpose, m in PROMPTS
+                               if purpose == "dialogue_summary"]
+            prompt_text = ("\n".join(m["content"] for m in summary_prompts[-1])
+                           if summary_prompts else "")
+            check("summary prompt contains oldest ten, not the newest",
+                  "闲谈第1轮" in prompt_text and "闲谈第10轮" in prompt_text
+                  and "闲谈第11轮" not in prompt_text)
 
     shutil.rmtree(_tmp, ignore_errors=True)
     return FAIL

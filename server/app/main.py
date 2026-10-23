@@ -32,7 +32,6 @@ from .agent import memory as memory_mod
 from .agent import mood as mood_mod
 from .agent import npc as npc_mod
 from .agent import scheduler as scheduler_mod
-from .agent import summary as summary_mod
 from .agent import trace as trace_mod
 
 LOG_PATH = setup_logging()
@@ -83,8 +82,6 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
                 "rebuilt from SQLite" if reconciled else "already in sync")
     battle_mod.mem_store = mem_store  # 切磋写入 NPC 记忆的注入点
     shop_mod.mem_store = mem_store  # 大额消费写入店主记忆的注入点
-    battle_mod.summary_bump = summary_mod.bump  # 切磋累加互动判断值
-    shop_mod.summary_bump = summary_mod.bump  # 购买累加互动判断值
     scheduler_tasks = await scheduler_mod.start(db, mem_store)
     logger.info("startup: scheduler_enabled=%s plan_enabled=%s tasks=%d",
                 settings.scheduler_enabled, settings.plan_enabled, len(scheduler_tasks))
@@ -331,8 +328,8 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
         raise HTTPException(404, "查无此人")
     aff = await npc_mod.affinity(db, npc_id)
     ns = await db.fetch_one(
-        "SELECT last_reflection_at, mem_since_reflection, interacts_since_summary,"
-        " last_summary_conv_id, paused_until, last_greet_real FROM npc_state WHERE npc_id = ?",
+        "SELECT last_reflection_at, mem_since_reflection, paused_until, last_greet_real"
+        " FROM npc_state WHERE npc_id = ?",
         (npc_id,),
     )
     memories = await db.fetch_all(

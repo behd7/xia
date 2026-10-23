@@ -69,8 +69,8 @@ class Settings(BaseSettings):
     plan_heart_max_chars: int = 60          # 心事字数上限
 
     # Dialogue memory batching (docs/DESIGN.md §6.6)
-    dialogue_window_size: int = 6      # 每轮回复平铺的最近对话轮数
-    event_summary_threshold: int = 5   # 对话满 N 轮即批总结成 event
+    dialogue_window_size: int = 6          # 每轮回复平铺的最近对话轮数
+    conversation_window_capacity: int = 10  # conversation 超过此数即总结最早一批
 
     # RAG (docs/DESIGN.md §6.4)
     recency_half_life: float = 3.0

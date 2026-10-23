@@ -27,7 +27,6 @@ from . import mood as mood_mod
 from . import npc as npc_mod
 from . import rag as rag_mod
 from . import relationship as relationship_mod
-from . import summary as summary_mod
 from . import trace as trace_mod
 
 logger = logging.getLogger(__name__)
@@ -282,7 +281,7 @@ async def talk_stream(db, mem_store, npc_id: int, message: str) -> AsyncIterator
     new_affinity = await npc_mod.apply_delta(db, npc_id, delta)
 
     if result["end"]:
-        # 先恢复再批总结：总结失败也不能让 NPC 一直处于暂停。
+        # 先恢复暂停：窗口批总结失败也不能让 NPC 一直处于暂停。
         await db.execute(
             "UPDATE npc_state SET paused_until = NULL WHERE npc_id = ?", (npc_id,)
         )
@@ -293,18 +292,13 @@ async def talk_stream(db, mem_store, npc_id: int, message: str) -> AsyncIterator
             except Exception:
                 logger.exception("mood update failed for talk npc=%d", npc_id)
 
-    # 本轮流进对话表（短期窗口）；不改逐轮入忆。计数+1，达阈值或 end=true 时
-    # 把该批未总结轮批总结成 event 落库（DESIGN §6.6 窗口批总结）。
-    await db.execute(
-        "INSERT INTO conversation(npc_id, ts_game, turns_json, affinity_delta_total)"
-        " VALUES(?,?,?,?)",
-        (npc_id, mem_store.clock.now(),
-         json.dumps({"user": message, "npc": result["reply"]}, ensure_ascii=False), delta),
+    summary_id = await mem_store.add_conversation_turn(
+        db, npc_id,
+        user=message, npc=result["reply"],
+        player_name=p["name"], place=place,
+        affinity_delta=delta,
     )
-    # 互动判断值+1；对话 end 即使未满阈值也提前蒸馏。蒸馏逻辑在 summary.py
-    # （DESIGN §6.6：闲聊只进短期窗口，达阈值才批总结成 event 入忆）。
-    summarized = await summary_mod.bump(db, mem_store, npc_id, p["name"], place,
-                                        force=result["end"], trace=trace)
+    summarized = summary_id is not None
     if trace is not None:
         await trace_mod.span(trace, "outcome",
                              metadata={"affinity_after": new_affinity, "fallback_used": fallback_used,

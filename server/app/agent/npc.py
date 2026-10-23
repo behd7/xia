@@ -16,7 +16,6 @@ from ..game import schedule as schedule_mod
 from ..game import skills as skills_mod
 from . import events as events_mod
 from . import mood as mood_mod
-from . import summary as summary_mod
 from . import trace as trace_mod
 
 logger = logging.getLogger(__name__)
@@ -273,7 +272,6 @@ async def gift(db: Database, mem_store, npc_id: int, item_id: int) -> dict:
         events_mod.record(
             mem_store, "gift", f"向{n['name']}送了{inv['name']}", poi,
             [p["name"], n["name"]])
-        await summary_mod.bump(db, mem_store, npc_id, p["name"], poi)
     try:
         await mood_mod.set(db, npc_id, "pleased", f"收到{inv['name']}", 30)
     except Exception:

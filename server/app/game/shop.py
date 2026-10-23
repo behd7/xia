@@ -14,7 +14,6 @@ SHOP_OWNER_ROLE = {"clinic": "clinic", "smith": "smith"}
 # 跨层受控注入：main lifespan 装配时赋值。避免 game -> agent 的模块级 import 环，
 # 仅此两处；None 表示 LLM/反思层未装配（正常开发恒装配，测试可不配）。
 mem_store = None    # injected: 大额消费写店主记忆
-summary_bump = None  # injected: summary.bump（互动判断值+1, 达阈值蒸馏窗口）
 
 
 async def _owner(db: Database, shop_id: str) -> dict | None:
@@ -72,19 +71,15 @@ async def buy(db: Database, p: dict, shop_id: str, item_id: int, qty: int, pos: 
     await inventory.add(db, p["id"], item_id, qty)
     if pos:
         p["pos_x"], p["pos_y"] = pos["x"], pos["y"]
-    # 记忆控制噪声：大额消费（≥100 两）才写店主记忆（AGENTS.md #6.9 记忆控制噪声）;
-    # 与 NPC 店主的任何购买都累计互动判断值（不逐轮入忆，见 §6.6）。
+    # 记忆控制噪声：大额消费（≥100 两）才写店主记忆（AGENTS.md #6.9 记忆控制噪声）。
     if mem_store is not None:
         owner = await _owner(db, shop_id)
-        if owner:
-            if cost >= 100:
-                await mem_store.add_memory(
-                    db, owner["npc_id"],
-                    content=f"你在本店花{cost}两买下{row['name']}，出手阔绰。",
-                    kind="event", participants=[p["name"]], poi=s["name"], importance=3,
-                )
-            if summary_bump is not None:
-                await summary_bump(db, mem_store, owner["npc_id"], p["name"], s["name"])
+        if owner and cost >= 100:
+            await mem_store.add_memory(
+                db, owner["npc_id"],
+                content=f"你在本店花{cost}两买下{row['name']}，出手阔绰。",
+                kind="event", participants=[p["name"]], poi=s["name"], importance=3,
+            )
         if cost >= 100:
             events_mod.record(
                 mem_store, "spend", f"在{s['name']}一掷{cost}两", s["name"], [p["name"]])
