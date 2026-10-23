@@ -81,6 +81,12 @@ async def main() -> int:
         elif purpose == "dialogue_summary":
             text = json.dumps({"content": "十轮闲谈已归档。", "importance": 4},
                               ensure_ascii=False)
+        elif purpose == "gift":
+            text = json.dumps({"reply": "这份心意，我收下了。", "affinity_delta": 2},
+                              ensure_ascii=False)
+        elif purpose == "spar":
+            text = json.dumps({"reply": "你的身手，我记下了。", "affinity_delta": 2},
+                              ensure_ascii=False)
         elif purpose == "reflection":
             text = ('{"insights":[{"content":"冒烟侠屡次来问剑，心性倒是坚定。"}],'
                     '"affinity_delta":1}')
@@ -175,9 +181,14 @@ async def main() -> int:
             check("no battle active after resolve",
                   (await c.get("/api/battle/state")).json()["battle"] is None)
 
-            print("\n== gift writes memory (npc 5 = 王大柱/smith) ==")
+            print("\n== gift is an LLM conversation turn (npc 5 = 王大柱/smith) ==")
+            gift_day = int(main_mod.mem_store.clock.now() // 86400)
             r = await c.post("/api/npc/5/gift", json={"item_id": potion["id"]})
-            check("gift smith", r.status_code == 200 and r.json()["affinity"] > 25)
+            body = r.json()
+            check("gift uses LLM affinity delta",
+                  r.status_code == 200 and body["affinity"] == 27)
+            check("gift returns LLM reaction",
+                  body.get("reply") == "这份心意，我收下了。")
 
             print("\n== dialogue (stubbed LLM, SSE) ==")
             status, events, done = await talk(c, 1, "先生安好？")
@@ -194,9 +205,49 @@ async def main() -> int:
             d1 = (await c.get("/api/debug/npc/1")).json()
             check("farewell clears pause", d1["reflection"]["paused_until"] is None)
 
-            print("\n== debug/npc includes memory ==")
+            print("\n== gift enters conversation window, not memory ==")
+            conv = await main_mod.db.fetch_one(
+                "SELECT turns_json FROM conversation WHERE npc_id = 5"
+                " ORDER BY id DESC LIMIT 1")
+            check("gift stored as conversation turn",
+                  conv is not None and potion["name"] in conv["turns_json"]
+                  and "这份心意，我收下了。" in conv["turns_json"])
+            check("gift count stored in kv",
+                  await main_mod.db.kv_get(f"gift_count:5:{gift_day}") == "1")
             d = (await c.get("/api/debug/npc/5")).json()
-            check("debug shows gift memory", any("送礼" in m["content"] for m in d["memories"]))
+            check("gift does not write memory directly",
+                  not any("送礼" in m["content"] for m in d["memories"]))
+
+            print("\n== spar is an LLM conversation turn ==")
+            conv_before = (await main_mod.db.fetch_one(
+                "SELECT COUNT(*) AS n FROM conversation WHERE npc_id = 5"))["n"]
+            r = await c.post("/api/npc/5/challenge", json={"x": 0, "y": 0})
+            check("spar starts", r.status_code == 200 and r.json().get("battle") is not None)
+            outcome = None
+            spar_log: list[dict] = []
+            for _ in range(60):
+                r = await c.post("/api/battle/action", json={"action": "attack"})
+                body = r.json()
+                outcome = body.get("result")
+                spar_log.extend(body.get("log", []))
+                if outcome:
+                    break
+            check("spar resolves", outcome in ("win", "lose"))
+            check("spar reaction logged",
+                  any(e.get("kind") == "npc_reaction" for e in spar_log))
+            conv_after = (await main_mod.db.fetch_one(
+                "SELECT COUNT(*) AS n FROM conversation WHERE npc_id = 5"))["n"]
+            conv = await main_mod.db.fetch_one(
+                "SELECT turns_json FROM conversation WHERE npc_id = 5"
+                " ORDER BY id DESC LIMIT 1")
+            check("spar stored as conversation turn",
+                  conv_after == conv_before + 1 and conv is not None
+                  and "切磋" in conv["turns_json"])
+            d = (await c.get("/api/debug/npc/5")).json()
+            check("spar uses LLM affinity delta", d["affinity"] == 29)
+            check("spar does not write memory directly",
+                  not any("切磋" in m["content"] for m in d["memories"]))
+            check("spar LLM purpose called", "spar" in CALLED)
 
             print("\n== reflection ==")
             for i in range(8):
@@ -259,6 +310,11 @@ async def main() -> int:
             await inventory_mod.add(main_mod.db, p["id"], potion["id"])
             r = await c.post("/api/npc/5/gift", json={"item_id": potion["id"]})
             check("second gift succeeds", r.status_code == 200)
+            check("second gift increments day counter",
+                  await main_mod.db.kv_get(f"gift_count:5:{gift_day}") == "2")
+            gift_prompts = [m for purpose, m in PROMPTS if purpose == "gift"]
+            gift_system = gift_prompts[-1][0]["content"] if gift_prompts else ""
+            check("gift prompt sees repeat count", "今日第2次" in gift_system)
             d5b = (await c.get("/api/debug/npc/5")).json()
             check("gift sets pleased mood",
                   d5b["mood"] is not None and d5b["mood"]["mood"] == "pleased")

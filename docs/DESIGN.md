@@ -217,7 +217,7 @@
 4. 逃走成功率 = `clamp(0.3 + (自身速度−对方速度)×0.05, 0.1, 0.9)`，失败则白白挨打一回合；
 5. Buff 按回合倒计时，战斗结束清空。
 
-**切磋规则**：任一方 HP<30% 即结束，无死亡，双方获少量经验（×0.3），NPC 记忆写入切磋事件（importance 6）。
+**切磋规则**：任一方 HP<30% 即结束，无死亡，双方获少量经验（×0.3）。结束后调用一次 LLM 生成 NPC 的当场感受与好感变化（clamp ±3），把「玩家切磋 + NPC 感受」作为一条特殊对话写入该 NPC 的 `conversation` 窗口；不即时写记忆，等窗口满批总结时入忆。
 
 **敌方 AI（规则型，不耗 LLM）**：
 1. HP<35% 且有药剂 → 喝药（NPC 药剂数按类型配置，掌门 2 瓶）；
@@ -239,7 +239,7 @@
 
 ### 6.1 总览
 
-对 Generative Agents 的裁剪版：保留**记忆流 + 检索 + 反思 + 关系演化**，砍掉自由规划（V1 用固定日程 + 午间聚集 + 每日一次安全偏离）、砍掉 NPC 自由行动决策（移动按日程走）。所有 LLM 调用集中在：对话、主动搭话、反思、关系摘要、每日心事、少量八卦改写；议程/情绪/附近事件不调 LLM。
+对 Generative Agents 的裁剪版：保留**记忆流 + 检索 + 反思 + 关系演化**，砍掉自由规划（V1 用固定日程 + 午间聚集 + 每日一次安全偏离）、砍掉 NPC 自由行动决策（移动按日程走）。所有 LLM 调用集中在：对话、送礼/切磋感受、主动搭话、反思、关系摘要、每日心事、少量八卦改写；议程/情绪/附近事件不调 LLM。
 
 ### 6.2 NPC 花名册（7 人）
 
@@ -270,16 +270,18 @@
 
 **事件入忆规则（"与我有关"的判定）**：
 
-1. **直接交互**：送礼、切磋、购买 → 各自即时入忆一条；对话不逐轮入忆，每轮只进
-   `conversation` 短期窗口；该 NPC 的窗口条数超过 `CONVERSATION_WINDOW_CAPACITY`
-   （默认 10）时，按 §6.6 把最早一批（默认 10 轮）批总结为一条 event 落库；
+1. **直接交互**：送礼、切磋 → 先由 `agent/reaction.py` 生成 NPC 感受与好感变化，
+   再把「玩家动作 + NPC 感受」作为一条特殊对话写入 `conversation` 窗口，**不即时
+   入忆**；购买（≥100 两）仍即时入忆一条。普通对话每轮也只进同一窗口；该 NPC 的窗口
+   条数超过 `CONVERSATION_WINDOW_CAPACITY`（默认 10）时，按 §6.6 把最早一批
+   （默认 10 轮）批总结为一条 event 落库；
 2. **同场目击**：玩家战斗、大额消费（≥100两）等显著事件 → 发生时处于同一 POI 的 NPC 各自入忆一条（importance 按事件类型定值）；
 3. **八卦传播**：见 §6.9，NPC 间扩散玩家事迹。
 
-记忆内容示例（对话 event 由 §6.6 批总结触发生成，非交互事件用模板生成）：
+记忆内容示例（对话/送礼/切磋 event 由 §6.6 批总结触发生成，购买等非交互事件用模板生成）：
 
 - event: `[酉时·铁匠铺] 秦侠客一掷二百两买下精钢剑，这小子手头真宽裕。`（importance 3）
-- event: `[辰时·练武场] 与秦侠客切磋，他硬接了我三刀才退。`（importance 6）
+- event: `[辰时·练武场] 与秦侠客切磋，他硬接了我三刀才退。`（importance 由批总结模型给出）
 - gossip: `[午时·镇口] 王大柱跟我说，秦侠客在后山崖把黑旋风给办了。`（importance 5）
 - reflection: `这秦侠客一月来寻我三次，回回问剑，习剑之心比传闻里坚定，资质也不差。`（importance 8）
 
@@ -298,7 +300,8 @@ recency: 半衰期 = 3 游戏日
 ### 6.5 好感度系统
 
 - 范围 0~100，初始值按 NPC 设定（掌门们 20~30，柳小蝶 40，张馒头 50）；
-- **增益**：送礼（按价值 5/10/15 两档 +5/+8/+12，每人每日衰减：同日第 2 次起减半）、切磋（表现 +3~+5 规则值）、对话每回合 LLM 判定 −2~+3（见 §6.6）；
+- **增益**：对话、送礼、切磋都由 LLM 判定单次好感变化，统一 clamp ±3（`MAX_DIALOGUE_DELTA`，prompt 要求 −2~+3）；送礼价值/同日第 N 次、切磋胜负只作为 prompt 上下文，不再叠加固定规则增益；
+- **送礼/切磋感受**：`agent/reaction.py` 用人设、交情、关系摘要、最近记忆、最近对话与本次事件生成一句回应和好感变化；失败走重试→模板兜底（delta=0），不阻塞玩法；
 - 无衰减（V1 不做时间衰减，反思可小幅修正）。
 
 **分段效果**：
@@ -317,7 +320,7 @@ recency: 半衰期 = 3 游戏日
 
 玩家按 E 进入对话 → 输入框 + 快捷项：**[打招呼] [打听消息] [门派拜师] [切磋] [送礼]**（送礼弹背包选择）。
 
-单次 LLM 调用（qwen3:4b-instruct，`format:"json"`，禁思考），响应以 SSE 流式返回（服务端仍只调用一次模型，不新增前台调用）：
+对话回复单次 LLM 调用（qwen3:4b-instruct，`format:"json"`，禁思考），响应以 SSE 流式返回（服务端为回复只调用一次模型；送礼/切磋另有一次感受调用，见 §6.5）：
 
 **输入 prompt 结构**（第一人称身份句，不用"玩家/游戏/好感度 X"等机械设定词；交情以档位自然带出，不强制口头禅，让 NPC 自由发挥措辞）：
 ```
@@ -342,23 +345,25 @@ recency: 半衰期 = 3 游戏日
 
 **议程（`agent/agenda.py`）**：每人有预置议程池与权重（试探神器、套张馒头的话、怂恿/劝阻上山、炫耀消息、避谈、拉人、闲聊），**不调 LLM**。每次新对话用 `random.Random(npc_id*1000003 + day*1009 + seq)` 确定性加权抽取，排除最近 3 个议程（池中无可选时允许重复）；`agenda_seq:{id}:{day}` 每场 +1，`agenda_recent:{id}` 保留最近 3 个，`agenda_current:{id}` 存当前议程。同一场对话 5 现实分钟内复用当前议程，`end=true` 清除。
 
-**轻情绪（`agent/mood.py` + `npc_mood` 表）**：只把一句语气描述注入 prompt，**不改好感、不参与任何结算**。送礼成功 → `pleased` 30 现实分；玩家切磋获胜 → NPC `respectful` 30 分；玩家落败 → NPC `pleased` 30 分；对话 `end=true` 且好感 <30 → `impatient` 20 分。所有写入 best-effort，失败只打印。
+**轻情绪（`agent/mood.py` + `npc_mood` 表）**：只把一句语气描述注入 prompt，**不改好感、不参与任何结算**。送礼/切磋按 LLM 好感变化设情绪：delta<0 → `impatient`；delta>0 时送礼 `pleased`、玩家切磋获胜 `respectful`、玩家落败 `pleased`；delta=0 不改。对话 `end=true` 且好感 <30 → `impatient` 20 分。所有写入 best-effort，失败只打印。
 
 **输出处理**：reply 显示；好感 clamp 后更新；end=true 则对话结束并清当前议程。
 **失败策略**：JSON 解析失败→重试一次(temperature 0.3)→再失败用模板回复（"{NPC}沉吟片刻，不置可否。"，delta=0），永不阻塞游戏。
 
-**流式输出（SSE）**：`POST /api/npc/{id}/talk` 返回 `text/event-stream`，事件序列 `start` → `token`* → `done`；重试或模板兜底前发 `reset`，客户端据此清空已显示的文字。模型仍只输出一个 JSON 对象，服务端边收边解码 `reply` 值（转义、代理对、UTF-8 分片都安全），`affinity_delta`/`end` 在流结束后解析，`done` 携带 `{reply, affinity, end, player, fallback}`。**不新增 LLM 调用**（M5 预算不变）。Godot 的 `HTTPRequest` 会缓冲整包，客户端改用 `HTTPClient` 手动轮询读取（`api.gd::stream_request`）。
+**流式输出（SSE）**：`POST /api/npc/{id}/talk` 返回 `text/event-stream`，事件序列 `start` → `token`* → `done`；重试或模板兜底前发 `reset`，客户端据此清空已显示的文字。模型仍只输出一个 JSON 对象，服务端边收边解码 `reply` 值（转义、代理对、UTF-8 分片都安全），`affinity_delta`/`end` 在流结束后解析，`done` 携带 `{reply, affinity, end, player, fallback}`。**流式路径不新增 LLM 调用**（M5 预算不变；送礼/切磋各一次感受生成见 §6.5）。Godot 的 `HTTPRequest` 会缓冲整包，客户端改用 `HTTPClient` 手动轮询读取（`api.gd::stream_request`）。
 
-**事件入忆（固定窗口批总结，不逐轮）**：闲聊每轮由
+**事件入忆（固定窗口批总结，不逐轮）**：普通对话每轮由
 `MemoryStore.add_conversation_turn` 写入短期窗口（`conversation` 表），不写 event
-记忆。每次写入后按 **NPC 独立**统计窗口条数；超过
+记忆。送礼/切磋也走同一方法：`user` 是玩家动作（送礼/切磋），`npc` 是
+`agent/reaction.py` 调 LLM 生成的当场感受；好感变化先 clamp 后写回 `npc_state`，
+再和这条特殊对话一起进入窗口。每次写入后按 **NPC 独立**统计窗口条数；超过
 `CONVERSATION_WINDOW_CAPACITY`（默认 10）时，取最早的 N 轮原始对话一次 LLM 归纳成
 **1 条**第三人称事件摘要（带 importance），以 `kind=event` 落库，再按 `npc_id`
-向量化写入 Chroma，最后删除这 10 轮窗口记录（未满窗的新轮次保留）。只有
-`memory` 表的 event 会向量化，`conversation` 原始轮次不嵌入。礼物/切磋/大额消费的
-规则事件仍各自即时入忆（§6.3），不参与窗口计数。总结走「校验→重试一次→兜底
-（取最后一条玩家消息作单条 importance 3）」链路，同样永不阻塞。event 作为 RAG 检索
-补充，即每一轮回复的首要即时上下文仍是短期窗口原始对话。
+向量化写入 Chroma，最后删除这批窗口记录（未满窗的新轮次保留）。只有 `memory` 表的
+event 会向量化，`conversation` 原始轮次不嵌入。大额消费等规则事件仍即时入忆
+（§6.3），不参与窗口计数。总结走「校验→重试一次→兜底（取最后一条玩家消息作单条
+importance 3）」链路，同样永不阻塞。event 作为 RAG 检索补充，即每一轮回复的首要
+即时上下文仍是短期窗口原始对话。
 
 **[打听消息]** 是记忆系统的展示窗：NPC 会用自己检索到的记忆（含八卦）回答，答非所问或以讹传讹正是实验观察点。
 
@@ -431,7 +436,7 @@ recency: 半衰期 = 3 游戏日
 
 进程内环形缓冲（`agent/events.py`，挂在 `MemoryStore.recent_events`），**不落库、重启丢失可接受**；最多 20 条，TTL 30 游戏分钟。
 
-- 只记显著事件：战斗胜利`在{POI}击败了{敌人}`、战斗失败`在{POI}被打倒`、单次消费 ≥100 两`在{店}一掷{N}两`、送礼`向{NPC}送了{物品}`、拜师`拜入{门派}`；POI 按敌方类型取 `MOB_POI`（狼→东山林地，山贼/黑旋风→后山崖）。
+- 只记显著事件：战斗胜利`在{POI}击败了{敌人}`、战斗失败`在{POI}被打倒`、单次消费 ≥100 两`在{店}一掷{N}两`、送礼`向{NPC}送了{物品}`、切磋`与{NPC}切磋，{胜负}`、拜师`拜入{门派}`；POI 按敌方类型取 `MOB_POI`（狼→东山林地，山贼/黑旋风→后山崖）。
 - 对话/搭话时按 NPC 当前 POI 取最近 3 条，拼进 prompt 的“近年附近发生的事”；**不写记忆流、不新增 LLM 调用**，阶段 2 的全镇通告仍只来自世界简报。
 - 客户端可见反应气泡不在本阶段实现，避免新增轮询与刷屏。
 
@@ -478,6 +483,7 @@ LLM_API_TIMEOUT=8         # 外接 API 单次超时（秒），失败后仍走�
 | 场景 | 频率 | 输入/输出 tok | 说明 |
 |---|---|---|---|
 | 对话回合 | 玩家驱动 | ~600 / ~120 | 同步，前端显示"…" |
+| 送礼/切磋感受 | 玩家驱动 | ~500 / ~80 | 同步；每次送礼/切磋各一次，含人设/交情/关系/最近对话/记忆 |
 | 主动搭话 | 进入半径+达标 | ~300 / ~60 | 同步、带缓存 |
 | 反思 | 后台低频 | ~1200 / ~200 | 异步 |
 | 关系摘要 | 后台低频 | ~800 / ~150 | 异步 |
@@ -503,7 +509,7 @@ embedding：`POST /api/embed {"model": ..., "input": [...]}`，向量 L2 归一�
 
 ### 7.5 并发控制
 
-`PriorityLimiter`（堆式异步优先级队列，并发上限 `LLM_CONCURRENCY=2`）全局限流；优先级：对话/批总结/embedding（0）> 搭话（1）> 关系摘要（2）> 反思/每日心事与默认（3）> 八卦（4）。等待者按优先级与入队顺序取槽，取消安全；后台反思/心事/八卦不会挤占玩家对话。
+`PriorityLimiter`（堆式异步优先级队列，并发上限 `LLM_CONCURRENCY=2`）全局限流；优先级：对话/送礼/切磋/批总结/embedding（0）> 搭话（1）> 关系摘要（2）> 反思/每日心事与默认（3）> 八卦（4）。等待者按优先级与入队顺序取槽，取消安全；后台反思/心事/八卦不会挤占玩家对话。
 
 ### 7.6 本地运行日志
 
@@ -551,7 +557,7 @@ conversation(id, npc_id, ts_game, turns_json, affinity_delta_total)
              -- 短期窗口；超过窗口容量（默认 10）即批总结并删除最早一批
 battle(id, player_id, target_kind, target_id, state_json, active, created_at)
 llm_log(id, purpose, model, in_tokens, out_tokens, ms, ok, created_at)
-kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=游戏日 等
+kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=游戏日、gift_count:{npc_id}:{game_day} 等
 ```
 
 **Chroma 集合 `memories`**（PersistentClient 本地目录，`hnsw:space=cosine`）：
@@ -667,8 +673,8 @@ Xia/
 │  │  ├─ main.py  config.py  db.py
 │  │  ├─ game/                 # player, inventory, shop, battle(规则AI), clock, schedule(确定性日程),
 │  │  │                        # world(公设/立场), world_state, plan(当日偏离读取), data
-│  │  ├─ agent/                # npc, memory(RAG·Chroma), rag, dialogue, summary(批总结),
-│  │  │                        # reflection, relationship, gossip, greet, scheduler,
+│  │  ├─ agent/                # npc, memory(对话窗口·RAG·Chroma), rag, dialogue, reaction(送礼/切磋感受),
+│  │  │                        # summary(固定窗口批总结), reflection, relationship, gossip, greet, scheduler,
 │  │  │                        # agenda, mood, heart(心事/偏离), events(附近事件)
 │  │  └─ llm.py                # ollama 客户端 + PriorityLimiter + llm_log
 │  ├─ data/                    # xia.db + chroma/（向量库），均 gitignore
@@ -726,7 +732,7 @@ Xia/
 | CHROMA_DIR | server/data/chroma | Chroma 向量库目录（可删重建） |
 | RESET_ON_START | false | true 时每次启动后端清空全部数据，完全重新开一局 |
 | LLM_CONCURRENCY | 2 | PriorityLimiter 并发上限 |
-| MAX_DIALOGUE_DELTA | ±3 | 对话单回合好感变化上限 |
+| MAX_DIALOGUE_DELTA | ±3 | 单次 LLM 交互（对话/送礼/切磋）好感变化上限 |
 | LLM_API_KEY / LLM_API_BASE_URL | 空 | 同时设置则对话走该 OpenAI 兼容 API |
 | LLM_API_MODEL | 空 | API 对话模型名；缺省回退 CHAT_MODEL |
 | LLM_API_EMBED_MODEL | 空 | API 侧嵌入模型名；缺省回退 EMBED_MODEL |
@@ -741,7 +747,7 @@ Xia/
 - 4B 模型 JSON 输出不稳 → format:json + 重试 + 模板兜底，永不阻塞玩法（§7.3）；
 - 对话延迟 2~5s（4B Q4 本地推理）→ 前端"…"指示 + 记忆检索与 prompt 组装并行；
 - 长对话上下文膨胀 → 只平铺最近 `dialogue_window_size` 轮，长程信息靠记忆流+关系摘要承载；
-- 好感被 LLM 漂移 → 单回合 clamp ±3，规则类增益（送礼/切磋）优先；
+- 好感被 LLM 漂移 → 对话/送礼/切磋统一 clamp ±3；送礼价值与切磋胜负只作 prompt 上下文；
 - SQLite 写并发（对话 vs 后台反思）→ WAL + 单写队列；
 - 记忆噪声（同场目击过多）→ 目击仅限战斗/大额消费两类显著事件；
 - ChromaDB 三坑：默认 embedding function 会静默下载 onnx MiniLM（英文向，检索必错）→ 建集合 `embedding_function=None`、恒显式传 embeddings；默认相似度空间是 l2 → 建集合加 `metadata={"hnsw:space": "cosine"}`；离线遥测报错噪声 → `Settings(anonymized_telemetry=False)`。

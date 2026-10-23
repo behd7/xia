@@ -17,10 +17,10 @@ from .agent import trace as trace_mod
 logger = logging.getLogger(__name__)
 
 
-# LLM 调用优先级（AGENTS #7：对话 > 搭话 > 关系摘要 > 反思 > 八卦）。
+# LLM 调用优先级（AGENTS #7：对话/送礼/切磋 > 搭话 > 关系摘要 > 反思 > 八卦）。
 # dialogue_summary 发生在一次前台对话请求内，必须与对话同优先级。
 PRIORITY = {
-    "dialogue": 0, "dialogue_summary": 0, "embed": 0,
+    "dialogue": 0, "dialogue_summary": 0, "embed": 0, "gift": 0, "spar": 0,
     "greet": 1, "relationship": 2, "reflection": 3, "heart": 3, "gossip": 4,
 }
 DEFAULT_PRIORITY = 3

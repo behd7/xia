@@ -5,11 +5,13 @@ import random
 import time
 
 from ..db import Database
-from . import data, inventory, mobs, player as player_mod, skills as skills_mod
+from . import data, inventory, mobs, plan as plan_mod, player as player_mod
+from . import schedule as schedule_mod, skills as skills_mod
 from . import world as world_mod, world_state as world_state_mod
 from ..agent import events as events_mod
 from ..agent import mood as mood_mod
 from ..agent import npc as npc_mod
+from ..agent import reaction as reaction_mod
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +25,6 @@ mem_store = None     # injected: 切磋写该 NPC 记忆
 
 SPAR_EXP_BASE = 50        # 切磋经验基数，结算后 ×0.3（DESIGN §5.6）
 SPAR_END_PCT = 0.30       # 任一方气血降至 30% 即结束
-SPAR_AFFINITY_WIN = 5     # 切磋表现 → 好感（DESIGN §6.5）
-SPAR_AFFINITY_LOSE = 3
 
 
 async def active_row(db: Database) -> dict | None:
@@ -343,23 +343,55 @@ async def _finalize(db: Database, p: dict, state: dict, add, result: str) -> dic
         npc_id = int(state["npc_id"])
         exp = round(SPAR_EXP_BASE * 0.3)
         ups = player_mod.gain_exp(p, exp)
-        gain = SPAR_AFFINITY_WIN if result == "win" else SPAR_AFFINITY_LOSE
-        await db.execute(
-            "UPDATE npc_state SET affinity = MAX(0, MIN(100, affinity + ?)) WHERE npc_id = ?",
-            (gain, npc_id),
-        )
+        n = await npc_mod.by_id(db, npc_id)
+        npc_name = n["name"] if n else "对方"
         verdict = {"win": "你技高一筹", "lose": "你略逊半招"}[result]
         add(result, f"切磋结束——{verdict}，获经验 {exp}。")
+
+        place = "练武场"
+        if n is not None and mem_store is not None:
+            now_game = mem_store.clock.now()
+            dev = await plan_mod.deviation_for(db, npc_id, now_game)
+            place = schedule_mod.poi_label_for(n, now_game, dev)
+        event_text = (
+            f"{p['name']}与你切磋，"
+            f"{'你落了下风' if result == 'win' else '你占了上风'}。"
+        )
+        conversation_user = (
+            f"你我切磋一场，{'我胜了半招' if result == 'win' else '我输了一招'}。"
+        )
+        if n is not None:
+            reaction = await reaction_mod.generate(
+                db, mem_store, n, p, event_text=event_text, purpose="spar",
+                fallback_reply=f"{npc_name}朝你略一颔首。",
+            )
+        else:
+            reaction = {"reply": f"{npc_name}朝你略一颔首。", "affinity_delta": 0}
+        delta = int(reaction["affinity_delta"])
+        await npc_mod.apply_delta(db, npc_id, delta)
+        add("npc_reaction", f"{npc_name}：{reaction['reply']}")
+
+        if mem_store is not None:
+            await mem_store.add_conversation_turn(
+                db, npc_id, user=conversation_user, npc=reaction["reply"],
+                player_name=p["name"], place=place, affinity_delta=delta,
+            )
+            events_mod.record(
+                mem_store, "spar",
+                f"{p['name']}与{npc_name}切磋，"
+                f"{'胜了半招' if result == 'win' else '输了一招'}",
+                place, [p["name"], npc_name])
         try:
-            await mood_mod.set(db, npc_id, "respectful" if result == "win" else "pleased",
-                               "与你切磋", 30)
+            if delta < 0:
+                mood = "impatient"
+            elif delta > 0:
+                mood = "respectful" if result == "win" else "pleased"
+            else:
+                mood = None
+            if mood is not None:
+                await mood_mod.set(db, npc_id, mood, "与你切磋", 30)
         except Exception:
             logger.exception("mood update failed for spar npc=%d", npc_id)
-        if mem_store is not None:  # 本场切磋写入该 NPC 记忆（importance 6）
-            await mem_store.add_memory(
-                db, npc_id, content=f"在练武场与你切磋，{verdict}。",
-                kind="event", participants=[p["name"]], poi="练武场", importance=6,
-            )
         return {"exp": exp, "gold": 0, "cultivation": 0, "drops": [], "level_ups": ups,
                 "world_announced": False}
 
