@@ -270,10 +270,11 @@
 
 **事件入忆规则（"与我有关"的判定）**：
 
-1. **直接交互**：送礼、切磋 → 先由 `agent/reaction.py` 生成 NPC 感受与好感变化，
-   再把「玩家动作 + NPC 感受」作为一条特殊对话写入 `conversation` 窗口，**不即时
-   入忆**；购买（≥100 两）仍即时入忆一条。普通对话每轮也只进同一窗口；该 NPC 的窗口
-   条数超过 `CONVERSATION_WINDOW_CAPACITY`（默认 10）时，按 §6.6 把最早一批
+1. **直接交互**：送礼、切磋 → 把玩家动作合成为一条消息，复用 `dialogue.talk`
+   （`purpose="gift"/"spar"`、`pause=False`）生成 NPC 感受与好感变化，并把这条
+   特殊对话写入 `conversation` 窗口，**不即时入忆**；购买（≥100 两）仍即时入忆
+   一条。普通对话每轮也只进同一窗口；该 NPC 的窗口条数超过
+   `CONVERSATION_WINDOW_CAPACITY`（默认 10）时，按 §6.6 把最早一批
    （默认 10 轮）批总结为一条 event 落库；
 2. **同场目击**：玩家战斗、大额消费（≥100两）等显著事件 → 发生时处于同一 POI 的 NPC 各自入忆一条（importance 按事件类型定值）；
 3. **八卦传播**：见 §6.9，NPC 间扩散玩家事迹。
@@ -301,7 +302,7 @@ recency: 半衰期 = 3 游戏日
 
 - 范围 0~100，初始值按 NPC 设定（掌门们 20~30，柳小蝶 40，张馒头 50）；
 - **增益**：对话、送礼、切磋都由 LLM 判定单次好感变化，统一 clamp ±3（`MAX_DIALOGUE_DELTA`，prompt 要求 −2~+3）；送礼价值/同日第 N 次、切磋胜负只作为 prompt 上下文，不再叠加固定规则增益；
-- **送礼/切磋感受**：`agent/reaction.py` 用人设、交情、关系摘要、最近记忆、最近对话与本次事件生成一句回应和好感变化；失败走重试→模板兜底（delta=0），不阻塞玩法；
+- **送礼/切磋感受**：把礼物/胜负合成为一条玩家消息，用 `dialogue.talk(..., purpose="gift"/"spar", pause=False)` 复用对话 prompt/RAG/解析/重试链路；`pause=False` 只跳过 5 分钟对话暂停，议程/情绪/end 仍按对话逻辑处理；好感同样 clamp ±3，失败走模板兜底，不阻塞玩法；
 - 无衰减（V1 不做时间衰减，反思可小幅修正）。
 
 **分段效果**：
@@ -320,7 +321,7 @@ recency: 半衰期 = 3 游戏日
 
 玩家按 E 进入对话 → 输入框 + 快捷项：**[打招呼] [打听消息] [门派拜师] [切磋] [送礼]**（送礼弹背包选择）。
 
-对话回复单次 LLM 调用（qwen3:4b-instruct，`format:"json"`，禁思考），响应以 SSE 流式返回（服务端为回复只调用一次模型；送礼/切磋另有一次感受调用，见 §6.5）：
+对话回复单次 LLM 调用（qwen3:4b-instruct，`format:"json"`，禁思考），响应以 SSE 流式返回（服务端为回复只调用一次模型；送礼/切磋复用同一对话链路，见 §6.5）：
 
 **输入 prompt 结构**（第一人称身份句，不用"玩家/游戏/好感度 X"等机械设定词；交情以档位自然带出，不强制口头禅，让 NPC 自由发挥措辞）：
 ```
@@ -350,12 +351,12 @@ recency: 半衰期 = 3 游戏日
 **输出处理**：reply 显示；好感 clamp 后更新；end=true 则对话结束并清当前议程。
 **失败策略**：JSON 解析失败→重试一次(temperature 0.3)→再失败用模板回复（"{NPC}沉吟片刻，不置可否。"，delta=0），永不阻塞游戏。
 
-**流式输出（SSE）**：`POST /api/npc/{id}/talk` 返回 `text/event-stream`，事件序列 `start` → `token`* → `done`；重试或模板兜底前发 `reset`，客户端据此清空已显示的文字。模型仍只输出一个 JSON 对象，服务端边收边解码 `reply` 值（转义、代理对、UTF-8 分片都安全），`affinity_delta`/`end` 在流结束后解析，`done` 携带 `{reply, affinity, end, player, fallback}`。**流式路径不新增 LLM 调用**（M5 预算不变；送礼/切磋各一次感受生成见 §6.5）。Godot 的 `HTTPRequest` 会缓冲整包，客户端改用 `HTTPClient` 手动轮询读取（`api.gd::stream_request`）。
+**流式输出（SSE）**：`POST /api/npc/{id}/talk` 返回 `text/event-stream`，事件序列 `start` → `token`* → `done`；重试或模板兜底前发 `reset`，客户端据此清空已显示的文字。模型仍只输出一个 JSON 对象，服务端边收边解码 `reply` 值（转义、代理对、UTF-8 分片都安全），`affinity_delta`/`end` 在流结束后解析，`done` 携带 `{reply, affinity, end, player, fallback, place}`。**流式路径不新增 LLM 调用**（M5 预算不变；送礼/切磋复用同一对话链路，见 §6.5）。Godot 的 `HTTPRequest` 会缓冲整包，客户端改用 `HTTPClient` 手动轮询读取（`api.gd::stream_request`）。
 
 **事件入忆（固定窗口批总结，不逐轮）**：普通对话每轮由
 `MemoryStore.add_conversation_turn` 写入短期窗口（`conversation` 表），不写 event
-记忆。送礼/切磋也走同一方法：`user` 是玩家动作（送礼/切磋），`npc` 是
-`agent/reaction.py` 调 LLM 生成的当场感受；好感变化先 clamp 后写回 `npc_state`，
+记忆。送礼/切磋调用 `dialogue.talk` 复用同一链路：`user` 是合成的玩家动作（送礼/切磋），
+`npc` 是同一对话 prompt 生成的回复；好感变化由对话链路 clamp 后写回 `npc_state`，
 再和这条特殊对话一起进入窗口。每次写入后按 **NPC 独立**统计窗口条数；超过
 `CONVERSATION_WINDOW_CAPACITY`（默认 10）时，取最早的 N 轮原始对话一次 LLM 归纳成
 **1 条**第三人称事件摘要（带 importance），以 `kind=event` 落库，再按 `npc_id`
@@ -483,7 +484,7 @@ LLM_API_TIMEOUT=8         # 外接 API 单次超时（秒），失败后仍走�
 | 场景 | 频率 | 输入/输出 tok | 说明 |
 |---|---|---|---|
 | 对话回合 | 玩家驱动 | ~600 / ~120 | 同步，前端显示"…" |
-| 送礼/切磋感受 | 玩家驱动 | ~500 / ~80 | 同步；每次送礼/切磋各一次，含人设/交情/关系/最近对话/记忆 |
+| 送礼/切磋感受 | 玩家驱动 | ~600 / ~120 | 同步；复用对话 prompt/上下文，每次送礼/切磋各一次 |
 | 主动搭话 | 进入半径+达标 | ~300 / ~60 | 同步、带缓存 |
 | 反思 | 后台低频 | ~1200 / ~200 | 异步 |
 | 关系摘要 | 后台低频 | ~800 / ~150 | 异步 |
@@ -503,7 +504,7 @@ embedding：`POST /api/embed {"model": ..., "input": [...]}`，向量 L2 归一�
 
 可选旁路，`LANGFUSE_ENABLED`（默认 false，fail-closed：不可达/未配零副作用）。自托管 v2 栈：`server/deploy/langfuse/` docker-compose（Postgres+Redis，对外 3000，v1 Basic 用 public/secret key 鉴权）。集中装配在 `app/agent/trace.py`，钉定 SDK `langfuse==2.14.0`（v5 为 OTel 全重写、API 与下文形态不符）。
 
-- **父 trace**：对话 `dialogue.talk_stream()` 开 `dialogue` 根 trace（tags=npc/player、metadata=affinity_before/place/rag_top_k），包 `retrieve`/`recent_turns`/`add_memory`/`outcome` span；拜师/送礼各开 `apprentice`/`gift` 轻量 trace（好感前后）。流式生成在流结束时以完整文本补一条 generation。
+- **父 trace**：对话 `dialogue.talk_stream()` 开 `dialogue` 根 trace（tags=npc/player、metadata=affinity_before/place/rag_top_k），包 `retrieve`/`recent_turns`/`add_memory`/`outcome` span；拜师/送礼/切磋各开 `apprentice`/`gift`/`spar` 轻量 trace（好感前后）。流式生成在流结束时以完整文本补一条 generation。
 - **全局咽喉点**：`OllamaClient.chat/embed` 命中当前 trace 上下文时，chat 发 generation（model/温度/prompt/输出/usage/attempt）、embed 发 span；M4 反思/八卦/搭话无需各自埋点即被覆盖。
 - 打点全部 best-effort、后台缓冲发送，`flush/shutdown` 只在 lifespan shutdown；绝不放热路径（AGENTS #4/#6），也不动 `llm_log` 本地 SSOT。
 
@@ -579,7 +580,7 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=�
 | GET | `/api/game/state` | 玩家全量状态+游戏时钟+`npcs` 花名册（id/slug/name/role/好感/当前 poi/锚点/`paused_until`）+`world`（`stage/artifact_acquired/announced_at_game/announcement/premise`） |
 | GET | `/api/npcs/state` | 日程推算全量参数：`clock/sense_radius/greet_threshold/phases/pacing/gather_anchor` + 每人 `home_to_work/work_to_gather/pos/poi/affinity/paused_until/greet_ready/heart/deviation` |
 | POST | `/api/npc/{id}/greet` | 主动搭话：`{greet,reply,affinity}` 或 `{greet:false,reason:affinity|cooldown|paused}`；无存档 409、查无此人 404 |
-| POST | `/api/npc/{id}/talk` | SSE `text/event-stream`：`{message}` → `start`/`token`/`reset`/`done` 事件，`done` 含 `{reply, affinity, end, player, fallback}`（LLM 生成，RAG 检索记忆；仍为单次 LLM 调用） |
+| POST | `/api/npc/{id}/talk` | SSE `text/event-stream`：`{message}` → `start`/`token`/`reset`/`done` 事件，`done` 含 `{reply, affinity, end, player, fallback, place}`（LLM 生成，RAG 检索记忆；仍为单次 LLM 调用） |
 | POST | `/api/npc/{id}/gift` | `{item_id}` |
 | POST | `/api/npc/{id}/challenge` | 请求切磋 → 进入战斗 |
 | POST | `/api/npc/{id}/apprentice` | 请求拜师（条件校验+仪式台词） |
@@ -673,7 +674,7 @@ Xia/
 │  │  ├─ main.py  config.py  db.py
 │  │  ├─ game/                 # player, inventory, shop, battle(规则AI), clock, schedule(确定性日程),
 │  │  │                        # world(公设/立场), world_state, plan(当日偏离读取), data
-│  │  ├─ agent/                # npc, memory(对话窗口·RAG·Chroma), rag, dialogue, reaction(送礼/切磋感受),
+│  │  ├─ agent/                # npc, memory(对话窗口·RAG·Chroma), rag, dialogue(对话/送礼/切磋共用),
 │  │  │                        # summary(固定窗口批总结), reflection, relationship, gossip, greet, scheduler,
 │  │  │                        # agenda, mood, heart(心事/偏离), events(附近事件)
 │  │  └─ llm.py                # ollama 客户端 + PriorityLimiter + llm_log

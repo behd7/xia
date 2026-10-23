@@ -36,7 +36,7 @@
 8. **M5 只影响措辞**：世界阶段、心事、议程、口癖、轻情绪、附近事件都不改好感数值；好感仍只走 LLM `affinity_delta`（对话/送礼/切磋）与反思。
 9. **偏离零同步**：心事偏离只平移相位边界，不新增路径/坐标/轮询；服务端 `schedule._day_phases` 与客户端 `town_world._deviated_phases` 常量必须同步。
 10. **公设与事件不逐人入忆**：世界公设、全镇通告、附近事件只作常驻 prompt 上下文；只有具体互动/目击按原规则写记忆。
-11. **对话窗口按 NPC 独立滚动**：普通对话、送礼、切磋都经 `MemoryStore.add_conversation_turn` 进同一个 `conversation` 窗口；送礼/切磋的 `user` 是玩家动作，`npc` 是 `agent/reaction.py` 用 `gift`/`spar` purpose 生成的当场感受；好感变化单独 clamp ±3 后写回 `npc_state`，两者不即时入忆、不向量化。某 NPC 的窗口超过 `CONVERSATION_WINDOW_CAPACITY`（默认 10）时，把最早一批（默认 10 轮）总结成**一条 `kind=event` 记忆**，经 `add_memory` 先 SQLite 后 Chroma，再删除已总结的窗口记录。只有 `memory` 行进 Chroma；`conversation` 永不嵌入。总结复用既有 `dialogue_summary` purpose，不要为总结新增 purpose；它在本轮回复后、`done` 前执行，满窗轮会多一次模型等待。
+11. **对话窗口按 NPC 独立滚动**：普通对话、送礼、切磋共用同一个 `conversation` 窗口；送礼/切磋把玩家动作合成为一条 `user` 消息，用 `dialogue.talk(..., purpose="gift"/"spar", pause=False)` 复用对话 prompt/RAG/解析/重试链路，`npc` 回复即当场感受，好感由对话链路 clamp ±3 后写回 `npc_state`；`pause=False` 只关闭对话暂停，议程/情绪/end 仍沿用对话逻辑；两者不即时入忆、不向量化。某 NPC 的窗口超过 `CONVERSATION_WINDOW_CAPACITY`（默认 10）时，把最早一批（默认 10 轮）总结成**一条 `kind=event` 记忆**，经 `add_memory` 先 SQLite 后 Chroma，再删除已总结的窗口记录。只有 `memory` 行进 Chroma；`conversation` 永不嵌入。总结复用既有 `dialogue_summary` purpose，不要为总结新增 purpose；它在本轮回复后、`done` 前执行，满窗轮会多一次模型等待。
 
 ## 环境与配置
 
@@ -72,7 +72,7 @@ cd server && uv venv .venv && uv pip install -r requirements.txt
 
 - **qwen3 思考模式**：对话/结构化输出必须禁用思考——请求体加 `"think": false`；旧版 Ollama 不支持该字段时退化为 system 附加 `/no_think`。
 - **4B 模型 JSON 不稳**：靠 `/api/chat` + `format: "json"` 提高成功率，但兜底链路（见上）是必需品，不是可选项。
-- **本地推理延迟 2~5s**：对话/送礼/切磋请求都是同步的，前端必须显示等待指示；记忆检索与 prompt 组装并行做。送礼/切磋各多一次 LLM 感受生成，满窗时还可能叠加批总结。
+- **本地推理延迟 2~5s**：对话/送礼/切磋请求都是同步的，前端必须显示等待指示；记忆检索与 prompt 组装并行做。送礼/切磋复用同一对话链路（同样做 RAG 与一次对话 LLM），满窗时还可能叠加批总结。
 - **游戏时钟**：1 现实秒 = 1 游戏分（可配），一个游戏日 ≈ 24 现实分钟。记忆 `ts_game`、NPC 日程、recency 衰减（半衰期 3 游戏日）全部基于游戏时间；但 M4 的 `paused_until`、`last_greet_real`、关系摘要水位 `relationship.updated_at` 和 `memory.created_at_real` 用现实时间（`time.time()`），两套时间不要混用。时钟 anchor 存 kv（`clock_anchor_real/game`），**服务器停机期间游戏时间照常流逝**（偏移语义，重启续走）；客户端（Godot）用同一 anchor 本地推算 HUD，不做轮询。气泡到期用本地 `Time.get_ticks_msec()`，不要与服务器 epoch 字段互比。
 - **ChromaDB 三坑**：① 建集合用 `embedding_function=None` 且 add/query 恒显式传 embeddings——否则 Chroma 会静默下载 onnx MiniLM（英文向），检索全错；② 集合默认相似度空间是 l2，须以 `metadata={"hnsw:space": "cosine"}` 建集合（向量入库前仍 L2 归一化）；③ `Settings(anonymized_telemetry=False)` 关遥测，免离线时 PostHog 报错刷日志。
 - **记忆双库分工**：记忆正文/元数据在 SQLite（反思按时间序、八卦按参与人过滤、调试查询都要用，Chroma 元数据不支持排序与列表值），Chroma 只做 ANN 向量检索；换 embedding 模型时删 Chroma 集合、从 SQLite 全量重嵌入重建。八卦的 `source_memory_id` 恒指向根记忆做祖源去重（配 `idx_memory_source`），不要改成指向直接来源，否则同一件事会沿传播链被反复转述。
@@ -87,7 +87,7 @@ cd server && uv venv .venv && uv pip install -r requirements.txt
 - **测试/冒烟必须 `SCHEDULER_ENABLED=false`**：否则 lifespan 启动的后台反思/八卦/心事会调用真实 Ollama，拖慢甚至污染断言；`server/tests/smoke.py` 在 import 前设置，Godot 冒烟在子进程 env 里设置。
 - **NPC 位置零同步**：服务端 `game/schedule.py` 与客户端 `town_world.gd` 各实现同一套相位/折线/LCG 踱步；改任一侧常量或算法必须同步另一侧，否则两端位置漂移。客户端不轮询 NPC 坐标，只随 10 秒状态同步取参数。
 - **M5 世界阶段与偏离**：`world.stage` 只有 0/2，推进条件是 `mob_kills` 存在 boss+三名山贼且已取得断岳刀；`POST /api/game/new` 必须调 `world_state.reset`，启动时幂等补算。日程偏离只平移相位，`plan_enabled=false` 会立即隐藏心事/偏离；`npc_plan`/`npc_mood` 是 SCHEMA 新表，无 ALTER 迁移。
-- **M5 prompt 预算**：世界公设、心事、议程、口癖、情绪、附近事件全部塞进原有单次对话/搭话调用；送礼/切磋各自新增一次 `gift`/`spar` 感受生成（优先级 0），除此之外不得再新增前台 LLM purpose；心事仍是唯一新增后台 purpose（优先级 3）。附近事件只存在 `MemoryStore.recent_events` 内存中（20 条、30 游戏分钟 TTL），重启即丢，不要落库或当长期记忆。
+- **M5 prompt 预算**：世界公设、心事、议程、口癖、情绪、附近事件全部塞进原有单次对话/搭话调用；送礼/切磋复用对话 prompt，各发起一次 `gift`/`spar` 调用（优先级 0），除此之外不得再新增前台 LLM purpose；心事仍是唯一新增后台 purpose（优先级 3）。附近事件只存在 `MemoryStore.recent_events` 内存中（20 条、30 游戏分钟 TTL），重启即丢，不要落库或当长期记忆。
 - **代理与外接 API**：外接 API 默认 `LLM_API_TRUST_ENV=false` 直连；若改 true 且 shell 的 `HTTP(S)_PROXY` 指向未启动的代理，每次 LLM 调用会等到 `LLM_API_TIMEOUT`（默认 8s）才失败。启动日志会检查代理端口并告警；本地 Ollama 仍靠 `NO_PROXY=localhost,127.0.0.1` 绕开代理。
 - **对话走 SSE，别用 HTTPRequest**：`POST /api/npc/{id}/talk` 返回 `text/event-stream`（`start` → `token`* → `done`，重试/兜底前发 `reset`）。Godot 的 `HTTPRequest` 会缓冲整包、拿不到增量，只能用 `api.gd::stream_request`（手轮询 `HTTPClient`）；流式回复本身仍是单次 LLM 调用（`format:"json"`），`reply` 由 `dialogue._ReplyExtractor` 边收边解码，**不要为流式再加一次 LLM 调用**；窗口满时的 `dialogue_summary` 是既有的记忆批总结，不属于流式追加调用。送礼/切磋不是 SSE，走普通 POST，各等待一次 `gift`/`spar` LLM；Godot 已用 busy + `modal_status` 覆盖等待。非流式工具/测试用 `dialogue.talk()` 或按 SSE 解析；`server/tests/smoke.py` 的 stub 必须同时提供 `chat_stream`。
 - **前端断连判定**：只有 `/api/game/state` 轮询失败才会把 UI 标成“连接中断”；对话/搭话/送礼/切磋等应用层超时只写 `[xia/main]` 日志，不再误标离线。排查连接问题先看 `server/data/xia.log` 的 `app.main | http` 与 `app.llm` 行，以及 Godot 输出面板的 `[xia/api]` / `[xia/main]`。
@@ -109,7 +109,7 @@ Xia/
 │  │  ├─ main.py config.py db.py llm.py logging_setup.py  # main 路由+lifespan装配；config 产 .env 配置；db 单写队列+WAL；llm 双后端封装+优先级限流；logging_setup 运行日志/代理告警
 │  │  ├─ game/             # data skills player inventory mobs battle shop clock schedule（确定性日程，纯函数）
 │  │  │                    # world（公设/立场）world_state plan（当日偏离读取）
-│  │  └─ agent/            # npc memory（对话窗口+双库+reconcile）rag dialogue reaction（送礼/切磋感受）summary（固定窗口批总结）reflection（反思入忆）relationship（滚动摘要）gossip（八卦）greet（前台搭话）scheduler（后台巡检）
+│  │  └─ agent/            # npc memory（对话窗口+双库+reconcile）rag dialogue summary（固定窗口批总结）reflection（反思入忆）relationship（滚动摘要）gossip（八卦）greet（前台搭话）scheduler（后台巡检）
 │  │                       # agenda（议程）mood（轻情绪）heart（每日心事/偏离）events（附近事件）
 │  ├─ data/               # xia.db + xia.log + chroma/（向量库），均 gitignore
 │  └─ requirements.txt

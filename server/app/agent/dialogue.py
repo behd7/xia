@@ -183,13 +183,16 @@ def _build_messages(p, n, affinity, memories, turns, impression, now_str, place,
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-async def talk_stream(db, mem_store, npc_id: int, message: str) -> AsyncIterator[tuple[str, dict]]:
+async def talk_stream(db, mem_store, npc_id: int, message: str, *,
+                      purpose: str = "dialogue",
+                      pause: bool = True) -> AsyncIterator[tuple[str, dict]]:
     """One turn as ``(event, payload)`` pairs for the SSE route.
 
     Events: ``start`` -> ``token``* -> ``done``; ``reset`` asks the client to
     drop the text streamed so far (the parse-failed attempt is being retried or
-    the template fallback takes over). The final payload matches the old
-    one-shot response: ``{reply, affinity, end, player, fallback}``.
+    the template fallback takes over). Gift/spar reuse this with
+    ``purpose="gift"/"spar"`` and ``pause=False``; the final payload includes
+    ``{reply, affinity, end, player, fallback, place}``.
     """
     n = await npc_mod.by_id(db, npc_id)
     if n is None:
@@ -217,13 +220,14 @@ async def talk_stream(db, mem_store, npc_id: int, message: str) -> AsyncIterator
     nearby = events_mod.recent(mem_store, now_game, poi=place, limit=3)
     events_text = "\n".join(f"- {event['text']}" for event in nearby)
     # 对话期间标记暂停：八卦扫描跳过、debug 可见；超时 5 现实分自动失效（DESIGN §6.10）。
-    await db.execute(
-        "UPDATE npc_state SET paused_until = ? WHERE npc_id = ?",
-        (time.time() + 300, npc_id),
-    )
+    if pause:
+        await db.execute(
+            "UPDATE npc_state SET paused_until = ? WHERE npc_id = ?",
+            (time.time() + 300, npc_id),
+        )
 
     trace = await trace_mod.trace_turn(
-        "dialogue", input_=message,
+        purpose, input_=message,
         tags=[f"npc:{n['name']}", f"npc_id:{npc_id}", f"player:{p['name']}"],
         metadata={"affinity_before": current_affinity, "place": place,
                   "rag_top_k": settings.rag_top_k, "agenda": agenda["id"],
@@ -260,7 +264,7 @@ async def talk_stream(db, mem_store, npc_id: int, message: str) -> AsyncIterator
                 events_text=events_text,
             )
             async for chunk in mem_store.llm.chat_stream(
-                    "dialogue", msgs, json_format=True, temperature=temperature,
+                    purpose, msgs, json_format=True, temperature=temperature,
                     metadata={"attempt": attempts, "temperature": temperature}):
                 raw.append(chunk)
                 delta = extractor.feed(chunk)
@@ -282,9 +286,10 @@ async def talk_stream(db, mem_store, npc_id: int, message: str) -> AsyncIterator
 
     if result["end"]:
         # 先恢复暂停：窗口批总结失败也不能让 NPC 一直处于暂停。
-        await db.execute(
-            "UPDATE npc_state SET paused_until = NULL WHERE npc_id = ?", (npc_id,)
-        )
+        if pause:
+            await db.execute(
+                "UPDATE npc_state SET paused_until = NULL WHERE npc_id = ?", (npc_id,)
+            )
         await agenda_mod.clear(db, npc_id)
         if new_affinity < 30:
             try:
@@ -308,14 +313,16 @@ async def talk_stream(db, mem_store, npc_id: int, message: str) -> AsyncIterator
     yield "done", {
         "reply": result["reply"], "affinity": new_affinity,
         "end": result["end"], "player": await player_mod.api_dict(db, p),
-        "fallback": fallback_used,
+        "fallback": fallback_used, "place": place,
     }
 
 
-async def talk(db, mem_store, npc_id: int, message: str) -> dict:
+async def talk(db, mem_store, npc_id: int, message: str, *,
+               purpose: str = "dialogue", pause: bool = True) -> dict:
     """Non-streaming wrapper (tools/tests): drain the stream, return the done payload."""
     payload: dict | None = None
-    async for event, data in talk_stream(db, mem_store, npc_id, message):
+    async for event, data in talk_stream(
+            db, mem_store, npc_id, message, purpose=purpose, pause=pause):
         if event == "done":
             payload = data
     if payload is None:

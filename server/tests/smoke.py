@@ -313,8 +313,11 @@ async def main() -> int:
             check("second gift increments day counter",
                   await main_mod.db.kv_get(f"gift_count:5:{gift_day}") == "2")
             gift_prompts = [m for purpose, m in PROMPTS if purpose == "gift"]
-            gift_system = gift_prompts[-1][0]["content"] if gift_prompts else ""
-            check("gift prompt sees repeat count", "今日第2次" in gift_system)
+            gift_prompt_text = (
+                "\n".join(m["content"] for m in gift_prompts[-1])
+                if gift_prompts else ""
+            )
+            check("gift prompt sees repeat count", "今日第2次" in gift_prompt_text)
             d5b = (await c.get("/api/debug/npc/5")).json()
             check("gift sets pleased mood",
                   d5b["mood"] is not None and d5b["mood"]["mood"] == "pleased")

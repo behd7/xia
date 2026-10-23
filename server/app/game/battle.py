@@ -5,13 +5,12 @@ import random
 import time
 
 from ..db import Database
-from . import data, inventory, mobs, plan as plan_mod, player as player_mod
-from . import schedule as schedule_mod, skills as skills_mod
+from . import data, inventory, mobs, player as player_mod, skills as skills_mod
 from . import world as world_mod, world_state as world_state_mod
+from ..agent import dialogue as dialogue_mod
 from ..agent import events as events_mod
 from ..agent import mood as mood_mod
 from ..agent import npc as npc_mod
-from ..agent import reaction as reaction_mod
 
 logger = logging.getLogger(__name__)
 
@@ -343,48 +342,27 @@ async def _finalize(db: Database, p: dict, state: dict, add, result: str) -> dic
         npc_id = int(state["npc_id"])
         exp = round(SPAR_EXP_BASE * 0.3)
         ups = player_mod.gain_exp(p, exp)
-        n = await npc_mod.by_id(db, npc_id)
-        npc_name = n["name"] if n else "对方"
+        npc_name = state["enemy"]["name"]
         verdict = {"win": "你技高一筹", "lose": "你略逊半招"}[result]
         add(result, f"切磋结束——{verdict}，获经验 {exp}。")
 
-        place = "练武场"
-        if n is not None and mem_store is not None:
-            now_game = mem_store.clock.now()
-            dev = await plan_mod.deviation_for(db, npc_id, now_game)
-            place = schedule_mod.poi_label_for(n, now_game, dev)
-        event_text = (
-            f"{p['name']}与你切磋，"
-            f"{'你落了下风' if result == 'win' else '你占了上风'}。"
-        )
-        conversation_user = (
+        aff_before = await npc_mod.affinity(db, npc_id)
+        message = (
             f"你我切磋一场，{'我胜了半招' if result == 'win' else '我输了一招'}。"
         )
-        if n is not None:
-            reaction = await reaction_mod.generate(
-                db, mem_store, n, p, event_text=event_text, purpose="spar",
-                fallback_reply=f"{npc_name}朝你略一颔首。",
-            )
-        else:
-            reaction = {"reply": f"{npc_name}朝你略一颔首。", "affinity_delta": 0}
-        delta = int(reaction["affinity_delta"])
-        await npc_mod.apply_delta(db, npc_id, delta)
-        add("npc_reaction", f"{npc_name}：{reaction['reply']}")
-
-        if mem_store is not None:
-            await mem_store.add_conversation_turn(
-                db, npc_id, user=conversation_user, npc=reaction["reply"],
-                player_name=p["name"], place=place, affinity_delta=delta,
-            )
-            events_mod.record(
-                mem_store, "spar",
-                f"{p['name']}与{npc_name}切磋，"
-                f"{'胜了半招' if result == 'win' else '输了一招'}",
-                place, [p["name"], npc_name])
+        payload = await dialogue_mod.talk(
+            db, mem_store, npc_id, message, purpose="spar", pause=False)
+        add("npc_reaction", f"{npc_name}：{payload['reply']}")
+        events_mod.record(
+            mem_store, "spar",
+            f"{p['name']}与{npc_name}切磋，"
+            f"{'胜了半招' if result == 'win' else '输了一招'}",
+            payload["place"], [p["name"], npc_name])
+        new_aff = int(payload["affinity"])
         try:
-            if delta < 0:
+            if new_aff < aff_before:
                 mood = "impatient"
-            elif delta > 0:
+            elif new_aff > aff_before:
                 mood = "respectful" if result == "win" else "pleased"
             else:
                 mood = None

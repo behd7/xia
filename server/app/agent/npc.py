@@ -16,7 +16,6 @@ from ..game import schedule as schedule_mod
 from ..game import skills as skills_mod
 from . import events as events_mod
 from . import mood as mood_mod
-from . import reaction as reaction_mod
 from . import trace as trace_mod
 
 logger = logging.getLogger(__name__)
@@ -232,7 +231,7 @@ async def apprentice(db: Database, mem_store, npc_id: int) -> dict:
 
 
 async def gift(db: Database, mem_store, npc_id: int, item_id: int) -> dict:
-    """送礼（DESIGN §6.5）：LLM 生成感受与好感变化，作为特殊对话轮进入窗口。"""
+    """送礼（DESIGN §6.5）：合成玩家消息，复用对话回复链路与短期窗口。"""
     n = await by_id(db, npc_id)
     if n is None:
         raise ValueError("查无此人")
@@ -245,55 +244,33 @@ async def gift(db: Database, mem_store, npc_id: int, item_id: int) -> dict:
     if inv is None or inv["qty"] < 1:
         raise ValueError("行囊里没有此物，无从相赠。")
     aff = await affinity(db, npc_id)
-    now_game = mem_store.clock.now() if mem_store is not None else 0.0
+    now_game = mem_store.clock.now()
     gift_day = int(now_game // 86400)
-    count = await gifts_today(db, npc_id, gift_day) if mem_store is not None else 0
-    event_text = (
-        f"{p['name']}送给你一份{inv['name']}"
-        f"（价值{inv['price']}两，今日第{count + 1}次送礼）。"
-    )
-    conversation_user = (
+    count = await gifts_today(db, npc_id, gift_day)
+    message = (
         f"我将一份{inv['name']}送给你"
         f"（价值{inv['price']}两，今日第{count + 1}次）。"
     )
-    poi = str(n.get("work") or "外头")
-    if mem_store is not None:
-        dev = await plan_mod.deviation_for(db, npc_id, now_game)
-        poi = schedule_mod.poi_label_for(n, now_game, dev)
-    tr = await trace_mod.trace_turn(
-        "gift", input_={"npc": n["name"], "player": p["name"], "item": inv["name"]},
-        tags=[f"npc:{n['name']}", f"npc_id:{npc_id}", f"player:{p['name']}"],
-        metadata={"affinity_before": aff, "place": poi},
-    )
-    reaction = await reaction_mod.generate(
-        db, mem_store, n, p, event_text=event_text, purpose="gift",
-        fallback_reply=f"{n['name']}收下{inv['name']}，神色缓和。",
-    )
+    # dialogue imports npc; import here to avoid a module-level cycle.
+    from . import dialogue as dialogue_mod
+    payload = await dialogue_mod.talk(
+        db, mem_store, npc_id, message, purpose="gift", pause=False)
     await inventory_mod.consume(db, p["id"], item_id)
-    delta = int(reaction["affinity_delta"])
-    new_aff = await apply_delta(db, npc_id, delta)
-    reply = reaction["reply"]
-    if mem_store is not None:
-        await _mark_gift(db, npc_id, gift_day)
-        await mem_store.add_conversation_turn(
-            db, npc_id, user=conversation_user, npc=reply,
-            player_name=p["name"], place=poi, affinity_delta=delta,
-        )
-        events_mod.record(
-            mem_store, "gift", f"向{n['name']}送了{inv['name']}", poi,
-            [p["name"], n["name"]])
+    await _mark_gift(db, npc_id, gift_day)
+    events_mod.record(
+        mem_store, "gift", f"向{n['name']}送了{inv['name']}",
+        payload["place"], [p["name"], n["name"]])
+    new_aff = int(payload["affinity"])
     try:
-        if delta > 0:
+        if new_aff > aff:
             await mood_mod.set(db, npc_id, "pleased", f"收到{inv['name']}", 30)
-        elif delta < 0:
+        elif new_aff < aff:
             await mood_mod.set(db, npc_id, "impatient", f"收到{inv['name']}", 20)
     except Exception:
         logger.exception("mood update failed for gift npc=%d", npc_id)
     await player_mod.save(db, p)
-    if tr is not None:
-        await _close_trace(tr, reply, {"affinity_after": new_aff})
     return {
-        "reply": reply,
+        "reply": payload["reply"],
         "affinity": new_aff, "item": inv["name"],
         "player": await player_mod.api_dict(db, p),
     }
