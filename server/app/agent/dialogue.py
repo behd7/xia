@@ -28,6 +28,7 @@ from . import npc as npc_mod
 from . import rag as rag_mod
 from . import relationship as relationship_mod
 from . import trace as trace_mod
+from .json_utils import strip_fence
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +42,7 @@ def shichen(clock) -> str:
 
 def _parse(result_text: str) -> dict:
     """解析 LLM 的 JSON 输出；失败抛异常由调用方走重试/兜底。"""
-    text = result_text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\n?", "", text, flags=re.S)
-        text = re.sub(r"\n?```$", "", text, flags=re.S).strip()
-    data = json.loads(text)
+    data = json.loads(strip_fence(result_text))
     if not isinstance(data, dict) or "reply" not in data:
         raise ValueError("missing reply")
     return {

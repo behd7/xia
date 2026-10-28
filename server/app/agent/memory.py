@@ -256,6 +256,8 @@ class MemoryStore:
                                npc_id, len(clues))
         if generation != self._generation:
             return False
+        if not clues:
+            logger.warning("midterm stored without clues npc=%d; not retrievable", npc_id)
         bucket = self._midterms.setdefault(npc_id, [])
         bucket.append(MidTerm(
             summary=result["summary"], clues=clues, vectors=vectors,
@@ -381,6 +383,7 @@ class MemoryStore:
         self._draining = True
 
     def reset_runtime(self) -> None:
+        """新局只清运行时；conversation 与 longterm_memory 是持久记忆，不在此清。"""
         self._midterms.clear()
         self._longterm_turns.clear()
         self.recent_events.clear()

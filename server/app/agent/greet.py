@@ -6,7 +6,6 @@ RAG 失败时按无记忆处理：搭话不能因为检索失败而不搭。
 
 import asyncio
 import json
-import re
 import time
 
 from ..config import settings
@@ -20,16 +19,13 @@ from . import events as events_mod
 from . import mood as mood_mod
 from . import npc as npc_mod
 from . import rag as rag_mod
+from .json_utils import strip_fence
 
 _locks: dict[int, asyncio.Lock] = {}
 
 
 def _parse(result_text: str) -> str:
-    text = result_text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\n?", "", text, flags=re.S)
-        text = re.sub(r"\n?```$", "", text, flags=re.S).strip()
-    data = json.loads(text)
+    data = json.loads(strip_fence(result_text))
     reply = str(data.get("reply", "")).strip() if isinstance(data, dict) else ""
     if not reply:
         raise ValueError("missing reply")

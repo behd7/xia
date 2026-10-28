@@ -8,7 +8,6 @@ importance≥7 才用 LLM 改写以省 token。传播链用 source_memory_id 恒
 
 import json
 import logging
-import re
 import time
 
 from ..config import settings
@@ -17,16 +16,13 @@ from ..game import plan as plan_mod
 from ..game import schedule as schedule_mod
 from . import npc as npc_mod
 from . import relationship as relationship_mod
+from .json_utils import strip_fence
 
 logger = logging.getLogger(__name__)
 
 
 def _parse_line(result_text: str) -> str:
-    text = result_text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\n?", "", text, flags=re.S)
-        text = re.sub(r"\n?```$", "", text, flags=re.S).strip()
-    data = json.loads(text)
+    data = json.loads(strip_fence(result_text))
     line = str(data.get("line", "")).strip() if isinstance(data, dict) else ""
     if not line:
         raise ValueError("missing line")

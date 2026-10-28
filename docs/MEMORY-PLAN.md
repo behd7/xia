@@ -4,6 +4,8 @@
 >
 > 实施修订（2026-10-28，P1 竞态修复）：长期任务从 fire-and-forget task 集合改为**单 worker 队列**（`LongTermJob` + `asyncio.Queue` + `_Barrier`/`_STOP`）；任务与对话回合都带 `generation`。`new_game`：`begin_reset()`（generation++/draining）→ `flush()`（barrier 等当前/排队任务收尾或丢弃）→ `reset_runtime()`；shutdown：`shutdown()` 丢弃排队任务、当前任务收尾后停 worker；测试：`wait_background()`。对话入口捕获 `mem_store.generation`，LLM 返回后局代已变则跳过好感/议程/情绪/记忆写入，`done.stale=true`；送礼/切磋看到 stale 不扣物品/不记事件。§6、§9 中旧的 `_bg_tasks`/`drain` 描述以本节为准。
 >
+> P2 加固（2026-10-28）：本地 Ollama 上下文窗口 `LLM_NUM_CTX`（默认 20480）；中期 clues 支持字符串解析（空线索视为失败重试）；共享 `json_utils.strip_fence`；新局只清运行时、保留 `conversation`/`longterm_memory`；冒烟增加 FIFO/无关消息/取消锁断言。
+>
 > 本计划取代现有“满窗（10 轮）即总结成一条 `kind=event` 落库 + Chroma”的单一链路。旧链路代码在 `server/app/agent/memory.py::add_conversation_turn` 与 `summary.py::summarize_dialogue_window`。
 
 ## 0. 目标与已拍板决策

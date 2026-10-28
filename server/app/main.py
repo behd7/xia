@@ -51,12 +51,13 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
                 LOG_PATH, settings.db_path_abs, settings.chroma_dir_abs,
                 settings.reset_on_start)
     logger.info("startup: chat_backend=%s model=%s api_base=%s api_trust_env=%s "
-                "api_timeout=%.1fs ollama=%s chat_model=%s llm_timeout=%.1fs",
+                "api_timeout=%.1fs ollama=%s chat_model=%s llm_timeout=%.1fs "
+                "llm_num_ctx=%d",
                 "openai-api" if use_api else "ollama",
                 (settings.llm_api_model or settings.chat_model) if use_api else settings.chat_model,
                 settings.llm_api_base_url or "-", settings.llm_api_trust_env,
                 settings.llm_api_timeout, settings.ollama_host, settings.chat_model,
-                settings.llm_timeout)
+                settings.llm_timeout, settings.llm_num_ctx)
     if bool(settings.llm_api_key) != bool(settings.llm_api_base_url):
         logger.warning("startup: LLM_API_KEY 与 LLM_API_BASE_URL 只配置了一个，将使用本地 Ollama")
     log_proxy_env(logger)
@@ -485,8 +486,8 @@ async def new_game(req: NewGameReq) -> dict[str, Any]:
     if mem_store is not None:
         await mem_store.flush()  # 等旧局在跑的长期总结收尾/丢弃
         mem_store.reset_runtime()
-    logger.info("new game: name=%s id=%s; world state reset, memory runtime cleared",
-                name, p["id"])
+    logger.info("new game: name=%s id=%s; world state reset, "
+                "midterm/longterm runtime cleared", name, p["id"])
     return {"player": await player_mod.api_dict(db, p)}
 
 

@@ -97,8 +97,9 @@ async def main() -> int:
             text = json.dumps({"reply": "阁下所问，某自有计较。",
                                "affinity_delta": 2, "end": end}, ensure_ascii=False)
         elif purpose == "dialogue_summary":
+            stage = (metadata or {}).get("stage")
             system = messages[0]["content"]
-            if "长期记忆" in system:
+            if stage == "longterm":
                 if "门禁长期测试" in system:
                     GATE_LT["reached"].set()
                     await GATE_LT["release"].wait()
@@ -582,6 +583,8 @@ async def main() -> int:
                 (npc_window,)))["n"]
             chroma_before = main_mod.mem_store._coll.count()
             summary_calls = CALLED.count("dialogue_summary")
+            check("llm context window covers longterm prompt",
+                  settings.llm_num_ctx >= 16384)
             for i in range(1, 12):
                 status, _, done = await talk(c, npc_window, f"闲谈第{i}轮")
                 check(f"window talk {i} ok", status == 200 and done is not None)
@@ -695,6 +698,20 @@ async def main() -> int:
             check("midterm score threshold filters weak matches",
                   main_mod.mem_store.match_midterms(999, below) == [])
 
+            print("\n== midterm parser accepts string clues ==")
+            from app.agent import summary as summary_mod
+            parsed_summary, parsed_clues = summary_mod._parse_midterm(
+                '{"summary":"后山有异动。","clues":"后山,剑法"}')
+            check("midterm parser accepts clue string",
+                  parsed_summary == "后山有异动。"
+                  and parsed_clues == ["后山", "剑法"])
+            try:
+                summary_mod._parse_midterm('{"summary":"没有线索。"}')
+                empty_ok = False
+            except ValueError:
+                empty_ok = True
+            check("midterm parser rejects empty clues", empty_ok)
+
             print("\n== new_game vs in-flight dialogue (generation barrier) ==")
             npc_race = 2
             GATE["reached"].clear()
@@ -721,6 +738,9 @@ async def main() -> int:
                       for m in main_mod.mem_store.debug_midterms(npc_race)))
             check("new game clears runtime events",
                   main_mod.mem_store.recent_events == [])
+            persisted = await main_mod.db.fetch_one(
+                "SELECT COUNT(*) AS n FROM longterm_memory WHERE npc_id = 7")
+            check("new game keeps persistent longterm rows", persisted["n"] == 1)
 
             print("\n== longterm worker drops stale generation ==")
             turns = [{"user": "门禁长期测试", "npc": "……", "place": "镇口",

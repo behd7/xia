@@ -283,7 +283,7 @@
    特殊对话写入 `conversation` 窗口，**不即时入忆**；购买（≥100 两）仍即时入忆
    一条。普通对话每轮也只进同一窗口；该 NPC 的窗口条数超过
    `CONVERSATION_WINDOW_CAPACITY`（默认 10）时，按 §6.6 把最早一批
-   （默认 10 轮）总结为一条**中期记忆**（纯内存），不再落 event；
+   （即 `CONVERSATION_WINDOW_CAPACITY` 轮）总结为一条**中期记忆**（纯内存），不再落 event；
 2. **同场目击**：玩家战斗、大额消费（≥100两）等显著事件 → 发生时处于同一 POI 的 NPC 各自入忆一条（importance 按事件类型定值）；
 3. **八卦传播**：见 §6.9，NPC 间扩散玩家事迹。
 
@@ -366,13 +366,13 @@ recency: 半衰期 = 3 游戏日
 
 **流式输出（SSE）**：`POST /api/npc/{id}/talk` 返回 `text/event-stream`，事件序列 `start` → `token`* → `done`；重试或模板兜底前发 `reset`，客户端据此清空已显示的文字。模型仍只输出一个 JSON 对象，服务端边收边解码 `reply` 值（转义、代理对、UTF-8 分片都安全），`affinity_delta`/`end` 在流结束后解析，`done` 携带 `{reply, affinity, end, player, fallback, place}`。**流式路径不新增 LLM 调用**（M5 预算不变；送礼/切磋复用同一对话链路，见 §6.5）。Godot 的 `HTTPRequest` 会缓冲整包，客户端改用 `HTTPClient` 手动轮询读取（`api.gd::stream_request`）。
 
-**三层记忆与批总结**：普通对话每轮由 `MemoryStore.add_conversation_turn` 写入短期窗口（`conversation` 表）；送礼/切磋调用 `dialogue.talk` 复用同一链路，`user` 是合成的玩家动作，`npc` 是同一对话 prompt 生成的回复。窗口按 **NPC 独立**统计，超过 `CONVERSATION_WINDOW_CAPACITY`（默认 10）时，取最早 10 轮一次 LLM 归纳成 **1 条中期记忆**：`summary`（≤120 字）+ 3~6 条可检索线索；只存 `MemoryStore._midterms` 进程内存（每 NPC 最多 `MIDTERM_CAPACITY=10` 条，FIFO），线索向量也只存内存，**不写 `memory`、不写 Chroma**，随后删除这批 `conversation` 记录。
+**三层记忆与批总结**：普通对话每轮由 `MemoryStore.add_conversation_turn` 写入短期窗口（`conversation` 表）；送礼/切磋调用 `dialogue.talk` 复用同一链路，`user` 是合成的玩家动作，`npc` 是同一对话 prompt 生成的回复。窗口按 **NPC 独立**统计，超过 `CONVERSATION_WINDOW_CAPACITY`（默认 10）时，取最早一批（默认 `CONVERSATION_WINDOW_CAPACITY=10` 轮）一次 LLM 归纳成 **1 条中期记忆**：`summary`（≤120 字）+ 3~6 条可检索线索；只存 `MemoryStore._midterms` 进程内存（每 NPC 最多 `MIDTERM_CAPACITY=10` 条，FIFO），线索向量也只存内存，**不写 `memory`、不写 Chroma**，随后删除这批 `conversation` 记录。
 
 对话每轮把当前消息 embed 一次，同时用于 Chroma RAG 与中期线索匹配；命中线索时把该条目的完整 summary 放进 prompt 的「你想起一些旧事」独立板块（见 §6.4），不塞进「你们最近的往来」。
 
 长期：`MemoryStore` 另维护每 NPC 的原始轮缓冲（含送礼/切磋，重启清零）；累计 `LONGTERM_TURN_INTERVAL`（默认 36）轮时，取最早 36 轮投入单 worker 队列，用同一条 `dialogue_summary` purpose（显式 `priority=3`）串行总结成 1 条长期记忆，写入独立的 `longterm_memory` 表。每个任务带 `generation`；`new_game` 先 `begin_reset()` 递增局代，再 `flush()` 等旧任务收尾/丢弃，`reset_runtime()` 清中期/缓冲；shutdown 用 `shutdown()` 丢弃排队任务并让当前任务收尾。长期记忆**不写 `memory`/Chroma**，也不参与对话/RAG/反思/关系摘要/八卦；本期只生成与入库。
 
-对话入口在开始时捕获 `mem_store.generation`；LLM 返回后若局代已变，跳过好感/议程/情绪/记忆写入，`done` 带 `stale=true`（Godot 忽略该字段）。送礼/切磋看到 `stale` 时也不扣物品/不记事件。新局与在途对话、长期 worker 的这类竞态由 generation 屏障兜底，不要用裸 `drain()` 或 fire-and-forget task 集合替代。
+对话入口在开始时捕获 `mem_store.generation`；LLM 返回后若局代已变，跳过好感/议程/情绪/记忆写入，`done` 带 `stale=true`（Godot 忽略该字段）。送礼/切磋看到 `stale` 时也不扣物品/不记事件。新局与在途对话、长期 worker 的这类竞态由 generation 屏障兜底，不要用裸 `drain()` 或 fire-and-forget task 集合替代。长期 prompt 由 `LLM_NUM_CTX`（默认 20480）覆盖，避免 36 轮原文被 Ollama 默认上下文截断。
 
 两条总结都走「校验→重试一次(temperature 0.3)→模板兜底」链路，失败不阻塞玩法；中期兜底 `clues=[]`（该条暂不可检索），长期兜底用首尾玩家原话拼一句。中期与长期缓冲都在进程内，服务重启清零；短期窗口与 `longterm_memory` 持久化。大额消费等规则事件仍即时入忆（§6.3），不参与窗口计数。
 
@@ -466,6 +466,7 @@ CHAT_MODEL=qwen3:4b-instruct        # 4bit 量化 tag
 EMBED_MODEL=qwen3-embedding:0.6b    # 8bit 量化 tag
 LLM_TIMEOUT=20
 LLM_CONCURRENCY=2
+LLM_NUM_CTX=20480   # 本地 Ollama 上下文窗口；36 轮长期总结需要 ≥16k
 ```
 
 **可选 OpenAI 兼容后端**：本地 Ollama 是默认后端；若同时配置了
@@ -576,7 +577,7 @@ llm_log(id, purpose, model, in_tokens, out_tokens, ms, ok, created_at)
 kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=游戏日、gift_count:{npc_id}:{game_day} 等
 ```
 
-**中期记忆不落库**：`MemoryStore._midterms`（summary+线索+线索向量）与 `_longterm_turns`（36 轮原始轮缓冲）都是进程内结构，服务重启清零；短期窗口与 `longterm_memory` 持久化。
+**中期记忆不落库**：`MemoryStore._midterms`（summary+线索+线索向量）与 `_longterm_turns`（36 轮原始轮缓冲）都是进程内结构，服务重启清零；短期窗口与 `longterm_memory` 持久化。`new_game` 同样只清中期/缓冲/附近事件，不清 `conversation`/`longterm_memory`。
 
 **Chroma 集合 `memories`**（PersistentClient 本地目录，`hnsw:space=cosine`）：
 
@@ -692,8 +693,8 @@ Xia/
 │  │  ├─ main.py  config.py  db.py
 │  │  ├─ game/                 # player, inventory, shop, battle(规则AI), clock, schedule(确定性日程),
 │  │  │                        # world(公设/立场), world_state, plan(当日偏离读取), data
-│  │  ├─ agent/                # npc, memory(对话窗口·RAG·Chroma), rag, dialogue(对话/送礼/切磋共用),
-│  │  │                        # summary(固定窗口批总结), reflection, relationship, gossip, greet, scheduler,
+│  │  ├─ agent/                # npc, memory(对话窗口/中期内存/长期表), rag, dialogue(对话/送礼/切磋共用),
+│  │  │                        # summary(中期/长期总结), json_utils(JSON 围栏), reflection, relationship, gossip, greet, scheduler,
 │  │  │                        # agenda, mood, heart(心事/偏离), events(附近事件)
 │  │  └─ llm.py                # ollama 客户端 + PriorityLimiter + llm_log
 │  ├─ data/                    # xia.db + chroma/（向量库），均 gitignore
@@ -755,6 +756,7 @@ Xia/
 | CHROMA_DIR | server/data/chroma | Chroma 向量库目录（可删重建） |
 | RESET_ON_START | false | true 时每次启动后端清空全部数据，完全重新开一局 |
 | LLM_CONCURRENCY | 2 | PriorityLimiter 并发上限 |
+| LLM_NUM_CTX | 20480 | 本地 Ollama 上下文窗口；长期总结 36 轮 prompt 需要 ≥16k |
 | MAX_DIALOGUE_DELTA | ±3 | 单次 LLM 交互（对话/送礼/切磋）好感变化上限 |
 | LLM_API_KEY / LLM_API_BASE_URL | 空 | 同时设置则对话走该 OpenAI 兼容 API |
 | LLM_API_MODEL | 空 | API 对话模型名；缺省回退 CHAT_MODEL |

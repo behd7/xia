@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     embed_model: str = "qwen3-embedding:0.6b"
     llm_timeout: float = 20.0
     llm_concurrency: int = 2
+    # 本地 Ollama 上下文窗口；36 轮长期总结 prompt 需要 ≥16k，默认留余量。
+    llm_num_ctx: int = 20480
     max_dialogue_delta: int = 3  # 单次 LLM 交互（对话/送礼/切磋）好感变化上限
 
     # Optional OpenAI-compatible chat backend (docs/DESIGN.md §7.1): when llm_api_key

@@ -6,7 +6,6 @@
 """
 
 import json
-import re
 import time
 
 from ..config import settings
@@ -16,14 +15,11 @@ from ..game import player as player_mod
 from ..game import schedule as schedule_mod
 from . import npc as npc_mod
 from . import relationship as relationship_mod
+from .json_utils import strip_fence
 
 
 def _parse(result_text: str) -> tuple[list[str], int]:
-    text = result_text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\n?", "", text, flags=re.S)
-        text = re.sub(r"\n?```$", "", text, flags=re.S).strip()
-    data = json.loads(text)
+    data = json.loads(strip_fence(result_text))
     raw = data.get("insights") if isinstance(data, dict) else None
     if not isinstance(raw, list) or not raw:
         raise ValueError("missing insights")

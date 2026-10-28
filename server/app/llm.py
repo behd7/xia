@@ -251,7 +251,7 @@ class OllamaClient:
             "messages": messages,
             "stream": True,
             "think": False,
-            "options": {"temperature": temperature},
+            "options": {"temperature": temperature, "num_ctx": settings.llm_num_ctx},
         }
         if json_format:
             body["format"] = "json"
@@ -322,7 +322,7 @@ class OllamaClient:
             "messages": messages,
             "stream": False,
             "think": False,
-            "options": {"temperature": temperature},
+            "options": {"temperature": temperature, "num_ctx": settings.llm_num_ctx},
         }
         if json_format:
             body["format"] = "json"

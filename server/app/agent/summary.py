@@ -1,7 +1,7 @@
 """三层记忆的摘要器（docs/DESIGN.md §6.6）。
 
-中期：窗口溢出时把最早 10 轮归纳成 1 条 summary + 3~6 条检索线索，
-只存 MemoryStore 内存，不落库。
+中期：窗口溢出时把最早一批（默认 `CONVERSATION_WINDOW_CAPACITY` 轮）归纳成
+1 条 summary + 3~6 条检索线索，只存 MemoryStore 内存，不落库。
 长期：每 36 轮原始对话在后台归纳成 1 条长期记忆，由 MemoryStore 写入
 longterm_memory 表；不写 memory/Chroma。
 失败链路统一：校验 -> 重试一次(0.3) -> 模板兜底，绝不阻塞玩法。
@@ -10,6 +10,9 @@ longterm_memory 表；不写 memory/Chroma。
 import json
 import logging
 import re
+from typing import Any, Callable
+
+from .json_utils import strip_fence
 
 logger = logging.getLogger(__name__)
 
@@ -20,26 +23,20 @@ LONGTERM_SUMMARY_MAX = 200
 TURN_TEXT_MAX = 200
 
 
-def _strip_fence(text: str) -> str:
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\n?", "", text, flags=re.S)
-        text = re.sub(r"\n?```$", "", text, flags=re.S).strip()
-    return text
-
-
 def _clip(value, limit: int) -> str:
     return str(value or "").strip()[:limit]
 
 
 def _parse_midterm(result_text: str) -> tuple[str, list[str]]:
-    data = json.loads(_strip_fence(result_text))
+    data = json.loads(strip_fence(result_text))
     if not isinstance(data, dict):
         raise ValueError("not an object")
     summary = _clip(data.get("summary", ""), MIDTERM_SUMMARY_MAX)
     if not summary:
         raise ValueError("missing summary")
     raw = data.get("clues")
+    if isinstance(raw, str):
+        raw = re.split(r"[,，、;；\s]+", raw)
     clues: list[str] = []
     if isinstance(raw, list):
         for item in raw:
@@ -48,6 +45,8 @@ def _parse_midterm(result_text: str) -> tuple[str, list[str]]:
                 clues.append(clue)
             if len(clues) >= MIDTERM_CLUES_MAX:
                 break
+    if not clues:
+        raise ValueError("missing clues")
     return summary, clues
 
 
@@ -78,43 +77,6 @@ def _midterm_messages(npc_name: str, player_name: str, turns: list[dict]) -> lis
             {"role": "user", "content": "请开始归纳。"}]
 
 
-async def summarize_midterm(store, npc_id: int, npc_name: str, player_name: str,
-                            place: str, turns: list[dict]) -> dict:
-    """窗口溢出 -> 1 条 summary + 线索；永不抛异常。"""
-    last_error: Exception | None = None
-    for temperature in (0.7, 0.3):
-        try:
-            cr = await store.llm.chat(
-                "dialogue_summary", _midterm_messages(npc_name, player_name, turns),
-                json_format=True, temperature=temperature,
-                metadata={"npc_id": npc_id, "stage": "midterm", "window": len(turns)},
-            )
-            summary, clues = _parse_midterm(cr.text)
-            logger.info("midterm_summary npc=%d window=%d clues=%d",
-                        npc_id, len(turns), len(clues))
-            return {"summary": summary, "clues": clues, "turn_count": len(turns)}
-        except Exception as exc:
-            last_error = exc
-            continue
-    last_user = _clip(turns[-1].get("user", ""), MIDTERM_SUMMARY_MAX) if turns else ""
-    summary = (f"与{player_name}在{place}闲谈：{last_user}"
-               if last_user else "与玩家闲谈了几句。")
-    logger.warning("midterm_summary npc=%d fallback after retry: %s: %s",
-                   npc_id, type(last_error).__name__ if last_error else "unknown",
-                   last_error)
-    return {"summary": summary[:MIDTERM_SUMMARY_MAX], "clues": [],
-            "turn_count": len(turns)}
-
-
-def _parse_longterm(result_text: str) -> str:
-    data = json.loads(_strip_fence(result_text))
-    summary = (_clip(data.get("summary", ""), LONGTERM_SUMMARY_MAX)
-               if isinstance(data, dict) else "")
-    if not summary:
-        raise ValueError("missing summary")
-    return summary
-
-
 def _longterm_messages(npc_name: str, player_name: str, turns: list[dict]) -> list[dict]:
     system = (
         f"你是{npc_name}。下面是你与玩家{player_name}从早前到最近的一段往来，"
@@ -128,24 +90,64 @@ def _longterm_messages(npc_name: str, player_name: str, turns: list[dict]) -> li
             {"role": "user", "content": "请开始归纳。"}]
 
 
-async def summarize_longterm(store, npc_id: int, npc_name: str, player_name: str,
-                             turns: list[dict]) -> dict:
-    """36 轮原始对话 -> 1 条长期记忆；后台调用，永不抛异常。"""
+async def _structured_chat(store, messages: list[dict],
+                           parse: Callable[[str], Any], *,
+                           priority: int | None = None,
+                           metadata: dict | None = None) -> tuple[Any, Exception | None]:
+    """一次结构化总结：0.7 -> 0.3 重试，返回 (解析结果, 最后异常)。"""
     last_error: Exception | None = None
     for temperature in (0.7, 0.3):
         try:
             cr = await store.llm.chat(
-                "dialogue_summary", _longterm_messages(npc_name, player_name, turns),
-                json_format=True, temperature=temperature, priority=3,
-                metadata={"npc_id": npc_id, "stage": "longterm", "turns": len(turns)},
-            )
-            summary = _parse_longterm(cr.text)
-            logger.info("longterm_summary npc=%d turns=%d chars=%d",
-                        npc_id, len(turns), len(summary))
-            return {"summary": summary}
+                "dialogue_summary", messages, json_format=True,
+                temperature=temperature, priority=priority, metadata=metadata)
+            return parse(cr.text), last_error
         except Exception as exc:
             last_error = exc
-            continue
+    return None, last_error
+
+
+async def summarize_midterm(store, npc_id: int, npc_name: str, player_name: str,
+                            place: str, turns: list[dict]) -> dict:
+    """窗口溢出 -> 1 条 summary + 线索；永不抛异常。"""
+    parsed, last_error = await _structured_chat(
+        store, _midterm_messages(npc_name, player_name, turns), _parse_midterm,
+        metadata={"npc_id": npc_id, "stage": "midterm", "window": len(turns)})
+    if parsed is not None:
+        summary, clues = parsed
+        logger.info("midterm_summary npc=%d window=%d clues=%d",
+                    npc_id, len(turns), len(clues))
+        return {"summary": summary, "clues": clues, "turn_count": len(turns)}
+    last_user = _clip(turns[-1].get("user", ""), MIDTERM_SUMMARY_MAX) if turns else ""
+    summary = (f"与{player_name}在{place}闲谈：{last_user}"
+               if last_user else "与玩家闲谈了几句。")
+    logger.warning("midterm_summary npc=%d fallback after retry: %s: %s",
+                   npc_id, type(last_error).__name__ if last_error else "unknown",
+                   last_error)
+    return {"summary": summary[:MIDTERM_SUMMARY_MAX], "clues": [],
+            "turn_count": len(turns)}
+
+
+def _parse_longterm(result_text: str) -> str:
+    data = json.loads(strip_fence(result_text))
+    summary = (_clip(data.get("summary", ""), LONGTERM_SUMMARY_MAX)
+               if isinstance(data, dict) else "")
+    if not summary:
+        raise ValueError("missing summary")
+    return summary
+
+
+async def summarize_longterm(store, npc_id: int, npc_name: str, player_name: str,
+                             turns: list[dict]) -> dict:
+    """36 轮原始对话 -> 1 条长期记忆；后台调用，永不抛异常。"""
+    parsed, last_error = await _structured_chat(
+        store, _longterm_messages(npc_name, player_name, turns), _parse_longterm,
+        priority=3,
+        metadata={"npc_id": npc_id, "stage": "longterm", "turns": len(turns)})
+    if parsed is not None:
+        logger.info("longterm_summary npc=%d turns=%d chars=%d",
+                    npc_id, len(turns), len(parsed))
+        return {"summary": parsed}
     first_user = _clip(turns[0].get("user", ""), 60) if turns else ""
     last_user = _clip(turns[-1].get("user", ""), 60) if turns else ""
     if first_user or last_user:

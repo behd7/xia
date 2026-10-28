@@ -7,12 +7,12 @@ NPC 名），与 participants_json 里的值同口径。
 """
 
 import json
-import re
 import time
 
 from ..config import settings
 from ..db import Database
 from . import npc as npc_mod
+from .json_utils import strip_fence
 
 
 async def summary_for(db: Database, npc_id: int, target_kind: str, target_id: str) -> str:
@@ -24,11 +24,7 @@ async def summary_for(db: Database, npc_id: int, target_kind: str, target_id: st
 
 
 def _parse_summary(result_text: str) -> str:
-    text = result_text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\n?", "", text, flags=re.S)
-        text = re.sub(r"\n?```$", "", text, flags=re.S).strip()
-    data = json.loads(text)
+    data = json.loads(strip_fence(result_text))
     summary = str(data.get("summary", "")).strip() if isinstance(data, dict) else ""
     if not summary:
         raise ValueError("missing summary")
