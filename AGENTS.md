@@ -76,7 +76,7 @@ cd server && uv venv .venv && uv pip install -r requirements.txt
 - **游戏时钟**：1 现实秒 = 1 游戏分（可配），一个游戏日 ≈ 24 现实分钟。记忆 `ts_game`、NPC 日程、recency 衰减（半衰期 3 游戏日）全部基于游戏时间；但 M4 的 `paused_until`、`last_greet_real`、关系摘要水位 `relationship.updated_at` 和 `memory.created_at_real` 用现实时间（`time.time()`），两套时间不要混用。时钟 anchor 存 kv（`clock_anchor_real/game`），**服务器停机期间游戏时间照常流逝**（偏移语义，重启续走）；客户端（Godot）用同一 anchor 本地推算 HUD，不做轮询。气泡到期用本地 `Time.get_ticks_msec()`，不要与服务器 epoch 字段互比。
 - **ChromaDB 三坑**：① 建集合用 `embedding_function=None` 且 add/query 恒显式传 embeddings——否则 Chroma 会静默下载 onnx MiniLM（英文向），检索全错；② 集合默认相似度空间是 l2，须以 `metadata={"hnsw:space": "cosine"}` 建集合（向量入库前仍 L2 归一化）；③ `Settings(anonymized_telemetry=False)` 关遥测，免离线时 PostHog 报错刷日志。
 - **记忆双库分工**：`memory` 正文/元数据在 SQLite（反思按时间序、八卦按参与人过滤、调试查询都要用，Chroma 元数据不支持排序与列表值），Chroma 只做 `memory` 表的 ANN 向量检索；中期线索向量只在 `MemoryStore` 内存，`longterm_memory` 不进 Chroma。换 embedding 模型时删 Chroma 集合、从 SQLite 全量重嵌入重建。八卦的 `source_memory_id` 恒指向根记忆做祖源去重（配 `idx_memory_source`），不要改成指向直接来源，否则同一件事会沿传播链被反复转述。
-- **记忆分层：中期内存 / 长期独立表**：`npc_state.interacts_since_summary` / `last_summary_conv_id` 仅为旧库兼容保留，代码不再读写；送礼/切磋/购物不再累加互动判断值。满窗只生成一条中期内存条目（summary+线索，`_midterms`，每 NPC 上限 10），**不要恢复 `kind=event` 每 10 轮入库**；长期只写独立的 `longterm_memory` 表，**不要写 `memory`/Chroma**，也不要把长期记忆塞进反思/关系/八卦/RAG。对话不再直接产生 `memory` 行，反思/关系素材只剩规则事件/已有反思/八卦，更新频率变稀是分层后的预期，不要为了触发频率恢复每 10 轮 event。中期与 36 轮原始轮缓冲（`_longterm_turns`）重启清零；`conversation` 原文永不入 Chroma。同日送礼次数存 kv `gift_count:{npc_id}:{game_day}`，不要恢复按 memory 内容前缀计数。
+- **记忆分层：中期内存 / 长期独立表**：`npc_state.interacts_since_summary` / `last_summary_conv_id` 仅为旧库兼容保留，代码不再读写；送礼/切磋/购物不再累加互动判断值。满窗只生成一条中期内存条目（summary+线索，`_midterms`，每 NPC 上限 10），**不要恢复 `kind=event` 每 10 轮入库**；长期只写独立的 `longterm_memory` 表，**不要写 `memory`/Chroma**，也不要把长期记忆塞进反思/关系/八卦/RAG。对话不再直接产生 `memory` 行，反思/关系素材只剩规则事件/已有反思/八卦，更新频率变稀是分层后的预期，不要为了触发频率恢复每 10 轮 event。中期与 36 轮原始轮缓冲（`_longterm_turns`）重启清零；`conversation` 原文永不入 Chroma。查询向量每轮只算一次（`rag.embed_query`），Chroma RAG 与中期线索匹配共用；后台长期任务在 shutdown/new game 走 `MemoryStore.drain()`（测试用 `wait_background()` 等完成），不要绕过。同日送礼次数存 kv `gift_count:{npc_id}:{game_day}`，不要恢复按 memory 内容前缀计数。
 - **增量迁移顺序**：`db._open()` 先 `executescript(SCHEMA)`、后跑 ALTER 补列。给旧库加列时，SCHEMA 里不能出现引用新列的索引/触发器——旧表尚无该列会直接 `no such column` 打断启动；这类索引要放在补列之后创建，新库也会走同一段迁移。
 - **记忆控制噪声**：同场目击入忆仅限战斗与大额消费（≥100 两）两类显著事件，不要扩大范围。
 - **地图交互与出生点约定**：建筑是实心瓦片、玩家站不进去，商店等 E 交互判定用建筑外扩 2 格的门口区；怪物出生点放野外土路行（ROAD），避免与确定性随机树/崖重叠导致不可达。
@@ -120,7 +120,7 @@ Xia/
 
 ## 实施顺序
 
-按 DESIGN.md §13 里程碑推进：M0 脚手架、M1 战斗循环、M2 成长系统、M3 NPC 记忆+RAG+对话、M4 反思/关系摘要/八卦/主动搭话与确定性日程、M5 世界公设/议程/情绪/心事偏离/附近事件均已完成。每个里程碑交付可玩 build；调试观察主要靠 `GET /api/debug/npc/{id}`（好感、记忆流、反思、关系摘要、当前日程、议程、情绪、心事、偏离、世界立场）。
+按 DESIGN.md §13 里程碑推进：M0 脚手架、M1 战斗循环、M2 成长系统、M3 NPC 记忆+RAG+对话、M4 反思/关系摘要/八卦/主动搭话与确定性日程、M5 世界公设/议程/情绪/心事偏离/附近事件均已完成。每个里程碑交付可玩 build；调试观察主要靠 `GET /api/debug/npc/{id}`（好感、记忆流、中期/长期记忆、反思、关系摘要、当前日程、议程、情绪、心事、偏离、世界立场）。
 
 **里程碑的执行前必读**：M2 有专属拆解文档 [`docs/M2-PLAN.md`](docs/M2-PLAN.md)，M4 有 [`docs/M4-PLAN.md`](docs/M4-PLAN.md)，M5 有 [`docs/M5-PLAN.md`](docs/M5-PLAN.md)——数值、API 形状、文件落点、schema 迁移、验证步骤全部内联，关键决策已在文档里拍板，**实施对应里程碑时以计划文档为准、不要重新翻 DESIGN 与旧代码做考古**；仅当实现中发现设计需要变更时才回改 DESIGN.md 并同步该计划文档。后续里程碑建议沿用 `docs/M?-PLAN.md` 模式。
 
