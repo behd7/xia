@@ -148,8 +148,14 @@ def _warmth(affinity: int, name: str) -> str:
 def _build_messages(p, n, affinity, memories, turns, impression, now_str, place, message,
                     world_brief: str = "", agenda: dict | None = None,
                     mood_text: str = "", speech_examples: list[str] | None = None,
-                    heart: str = "", events_text: str = "") -> list[dict]:
+                    heart: str = "", events_text: str = "",
+                    midterm_summaries: list[str] | None = None) -> list[dict]:
     mem_lines = "\n".join(m["content"] for m in memories[: settings.rag_top_k]) or "（暂无）"
+    midterm_lines = "\n".join(f"- {s}" for s in (midterm_summaries or []))
+    midterm_block = (
+        f"你想起一些旧事（只作参考，不要逐字复述）：\n{midterm_lines}\n"
+        if midterm_lines else ""
+    )
     turn_lines = "\n".join(f"{p['name']}：{t['user']}\n你：{t['npc']}" for t in turns) or "（尚无可聊）"
     events_line = f"近年附近发生的事：\n{events_text}\n" if events_text else ""
     heart_line = f"你眼下挂心的事：{heart}\n" if heart else ""
@@ -169,6 +175,7 @@ def _build_messages(p, n, affinity, memories, turns, impression, now_str, place,
         f"{_warmth(affinity, p['name'])}\n"
         + (f"你对{p['name']}的印象：{impression}\n" if impression else "")
         + f"你记得的一些事：\n{mem_lines}\n"
+        f"{midterm_block}"
         f"{events_line}"
         f"你们最近的往来：\n{turn_lines}\n"
         f"{heart_line}{agenda_line}{examples_line}{mood_line}"
@@ -234,18 +241,25 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
                   "mood": mood["mood"] if mood else None},
     )
 
-    # 记忆检索 / 最近对话 / 关系印象 并行做（DESIGN §7.2 前台等待 2~5s）
-    memories, turns, impression = await asyncio.gather(
-        rag_mod.retrieve(db, mem_store, npc_id, message, settings=settings),
+    # 查询向量只算一次：Chroma RAG 与中期线索匹配共用（DESIGN §7.2 前台等待 2~5s）
+    qvec, turns, impression = await asyncio.gather(
+        rag_mod.embed_query(mem_store, message),
         rag_mod.recent_turns(db, npc_id, n=settings.dialogue_window_size),
         relationship_mod.summary_for(db, npc_id, "player", p["name"]),
     )
+    memories = await rag_mod.retrieve(
+        db, mem_store, npc_id, message, settings=settings, qvec=qvec)
+    midterms = mem_store.match_midterms(npc_id, qvec)
+    midterm_summaries = [m.summary for m in midterms]
     if trace is not None:
         await trace_mod.span(trace, "retrieve", input_=message,
                              output=[{k: m.get(k) for k in
                                       ("memory_id", "content", "score", "importance", "poi", "kind")}
                                      for m in memories],
                              metadata={"top_k": settings.rag_top_k, "rerank": "w_rel/w_rec/w_imp"})
+        await trace_mod.span(trace, "midterm", output=[
+            {"summary": m.summary, "clues": m.clues, "turn_count": m.turn_count}
+            for m in midterms])
         await trace_mod.span(trace, "recent_turns", output=turns)
         await trace_mod.span(trace, "relationship", output={"summary": impression})
 
@@ -261,7 +275,7 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
                 shichen(mem_store.clock), place, message, world_brief,
                 agenda=agenda, mood_text=mood_text,
                 speech_examples=n.get("speech_examples", []), heart=heart,
-                events_text=events_text,
+                events_text=events_text, midterm_summaries=midterm_summaries,
             )
             async for chunk in mem_store.llm.chat_stream(
                     purpose, msgs, json_format=True, temperature=temperature,
@@ -297,18 +311,19 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
             except Exception:
                 logger.exception("mood update failed for talk npc=%d", npc_id)
 
-    summary_id = await mem_store.add_conversation_turn(
+    outcome = await mem_store.add_conversation_turn(
         db, npc_id,
-        user=message, npc=result["reply"],
+        user=message, npc=result["reply"], npc_name=n["name"],
         player_name=p["name"], place=place,
         affinity_delta=delta,
     )
-    summarized = summary_id is not None
+    summarized = outcome.midterm_created
     if trace is not None:
         await trace_mod.span(trace, "outcome",
                              metadata={"affinity_after": new_affinity, "fallback_used": fallback_used,
                                        "attempts": attempts, "end": result["end"],
-                                       "summarized": summarized})
+                                       "summarized": summarized,
+                                       "longterm_scheduled": outcome.longterm_scheduled})
 
     yield "done", {
         "reply": result["reply"], "affinity": new_affinity,

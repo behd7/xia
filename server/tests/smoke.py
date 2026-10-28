@@ -25,6 +25,8 @@ _tmp = tempfile.mkdtemp(prefix="xia_smoke_")
 os.environ["DB_PATH"] = str(Path(_tmp) / "xia.db")
 os.environ["CHROMA_DIR"] = str(Path(_tmp) / "chroma")
 os.environ["SCHEDULER_ENABLED"] = "false"
+# 用较小的中期上限在 36 轮内验证 FIFO，不必跑到 110 轮。
+os.environ["MIDTERM_CAPACITY"] = "2"
 
 # 把 server 根（含 `app` 包）放进 path，保证从任意 cwd 都能跑。
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -79,8 +81,15 @@ async def main() -> int:
             text = json.dumps({"reply": "阁下所问，某自有计较。",
                                "affinity_delta": 2, "end": end}, ensure_ascii=False)
         elif purpose == "dialogue_summary":
-            text = json.dumps({"content": "十轮闲谈已归档。", "importance": 4},
-                              ensure_ascii=False)
+            system = messages[0]["content"]
+            if "长期记忆" in system:
+                text = json.dumps({"summary": "三十六轮往来已归档。"},
+                                  ensure_ascii=False)
+            else:
+                text = json.dumps(
+                    {"summary": "十轮闲谈已归档。", "clues": ["后山", "剑法"]},
+                    ensure_ascii=False,
+                )
         elif purpose == "gift":
             text = json.dumps({"reply": "这份心意，我收下了。", "affinity_delta": 2},
                               ensure_ascii=False)
@@ -531,7 +540,7 @@ async def main() -> int:
                   and all(m["alive"] for m in st["mobs"]))
             check("W adds no LLM purpose", "world" not in CALLED)
 
-            print("\n== conversation window (10 turns -> one event) ==")
+            print("\n== memory tiers: window -> midterm (memory only) ==")
             npc_window = 7
             conv_before = (await main_mod.db.fetch_one(
                 "SELECT COUNT(*) AS n FROM conversation WHERE npc_id = ?",
@@ -548,23 +557,18 @@ async def main() -> int:
                   conv_before == 0 and conv_after == 1)
             check("one LLM summary for the overflowing window",
                   CALLED.count("dialogue_summary") == summary_calls + 1)
-            summary_rows = await main_mod.db.fetch_all(
-                "SELECT id, npc_id, kind, content, importance FROM memory"
-                " WHERE npc_id = ? AND content = ?",
+            midterms = main_mod.mem_store.debug_midterms(npc_window)
+            check("midterm kept in memory",
+                  len(midterms) == 1
+                  and midterms[0]["summary"] == "十轮闲谈已归档。"
+                  and midterms[0]["clues"] == ["后山", "剑法"]
+                  and midterms[0]["turn_count"] == 10)
+            midterm_rows = await main_mod.db.fetch_one(
+                "SELECT COUNT(*) AS n FROM memory WHERE npc_id = ? AND content = ?",
                 (npc_window, "十轮闲谈已归档。"))
-            check("summary writes exactly one event memory",
-                  len(summary_rows) == 1
-                  and summary_rows[0]["npc_id"] == npc_window
-                  and summary_rows[0]["kind"] == "event"
-                  and summary_rows[0]["importance"] == 4)
-            check("only the event is vectorized",
-                  main_mod.mem_store._coll.count() == chroma_before + 1)
-            if summary_rows:
-                hit = main_mod.mem_store._coll.get(
-                    ids=[str(summary_rows[0]["id"])])
-                check("event carries npc_id in Chroma metadata",
-                      hit["ids"] == [str(summary_rows[0]["id"])]
-                      and hit["metadatas"][0]["npc_id"] == str(npc_window))
+            check("midterm does not write memory", midterm_rows["n"] == 0)
+            check("midterm does not write chroma",
+                  main_mod.mem_store._coll.count() == chroma_before)
             raw_hit = await main_mod.db.fetch_one(
                 "SELECT COUNT(*) AS n FROM memory WHERE content LIKE ?",
                 ("%闲谈第1轮%",))
@@ -573,9 +577,77 @@ async def main() -> int:
                                if purpose == "dialogue_summary"]
             prompt_text = ("\n".join(m["content"] for m in summary_prompts[-1])
                            if summary_prompts else "")
-            check("summary prompt contains oldest ten, not the newest",
+            check("midterm prompt contains oldest ten, not the newest",
                   "闲谈第1轮" in prompt_text and "闲谈第10轮" in prompt_text
                   and "闲谈第11轮" not in prompt_text)
+
+            print("\n== midterm clue retrieval -> separate prompt block ==")
+            status, _, done = await talk(c, npc_window, "再说说后山的事")
+            check("clue-matched talk ok", status == 200 and done is not None)
+            dialogue_prompts = [m for purpose, m in PROMPTS if purpose == "dialogue"]
+            last_system = dialogue_prompts[-1][0]["content"] if dialogue_prompts else ""
+            check("midterm block injected",
+                  "你想起一些旧事（只作参考，不要逐字复述）" in last_system
+                  and "十轮闲谈已归档。" in last_system)
+            check("midterm block sits outside recent turns",
+                  last_system.find("你想起一些旧事")
+                  < last_system.find("你们最近的往来"))
+
+            print("\n== 36 turns -> one longterm memory (async, isolated) ==")
+            for i in range(13, 37):
+                status, _, done = await talk(c, npc_window, f"闲谈第{i}轮")
+                check(f"longterm talk {i} ok", status == 200 and done is not None)
+            await main_mod.mem_store.wait_background()
+            long_rows = await main_mod.db.fetch_all(
+                "SELECT npc_id, content, turn_count FROM longterm_memory"
+                " WHERE npc_id = ?", (npc_window,))
+            check("one longterm memory for 36 turns",
+                  len(long_rows) == 1 and long_rows[0]["turn_count"] == 36
+                  and long_rows[0]["content"] == "三十六轮往来已归档。")
+            check("three midterm + one longterm summary calls",
+                  CALLED.count("dialogue_summary") == summary_calls + 4)
+            long_mem_hit = await main_mod.db.fetch_one(
+                "SELECT COUNT(*) AS n FROM memory WHERE npc_id = ? AND content = ?",
+                (npc_window, "三十六轮往来已归档。"))
+            check("longterm does not write memory", long_mem_hit["n"] == 0)
+            check("longterm does not write chroma",
+                  main_mod.mem_store._coll.count() == chroma_before)
+            conv_final = (await main_mod.db.fetch_one(
+                "SELECT COUNT(*) AS n FROM conversation WHERE npc_id = ?",
+                (npc_window,)))["n"]
+            check("window keeps turns 31-36", conv_final == 6)
+            check("midterm capacity FIFO",
+                  len(main_mod.mem_store.debug_midterms(npc_window)) == 2)
+            check("longterm buffer drained",
+                  main_mod.mem_store.pending_longterm_turns(npc_window) == 0)
+            long_prompts = [
+                m for purpose, m in PROMPTS
+                if purpose == "dialogue_summary" and "长期记忆" in m[0]["content"]]
+            long_prompt_text = ("\n".join(m["content"] for m in long_prompts[-1])
+                                if long_prompts else "")
+            check("longterm prompt contains turns 1..36",
+                  "闲谈第1轮" in long_prompt_text
+                  and "闲谈第36轮" in long_prompt_text)
+            debug = (await c.get(f"/api/debug/npc/{npc_window}")).json()
+            check("debug exposes midterm and longterm",
+                  len(debug.get("midterm", [])) == 2
+                  and len(debug.get("longterm", [])) == 1
+                  and debug.get("longterm_pending_turns") == 0)
+
+            print("\n== midterm clue matcher (pure function) ==")
+            from app.agent.memory import MidTerm
+            vec_a = [1.0] + [0.0] * 1023
+            vec_b = [0.0, 1.0] + [0.0] * 1022
+            main_mod.mem_store._midterms[999] = [
+                MidTerm("甲", ["甲"], [vec_a], 0.0, 1),
+                MidTerm("乙", ["乙"], [vec_b], 0.0, 1),
+            ]
+            matched = main_mod.mem_store.match_midterms(999, vec_a)
+            check("midterm clue matcher picks nearest",
+                  [m.summary for m in matched] == ["甲"])
+            below = [0.3, 0.3] + [0.0] * 1022
+            check("midterm score threshold filters weak matches",
+                  main_mod.mem_store.match_midterms(999, below) == [])
 
     shutil.rmtree(_tmp, ignore_errors=True)
     return FAIL

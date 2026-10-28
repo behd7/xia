@@ -88,6 +88,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
     logger.info("shutdown: stopping scheduler")
     await scheduler_mod.stop(scheduler_tasks)  # 必须先于 close mem_store/llm/db
+    if mem_store is not None:
+        await mem_store.drain()  # 取消并等待后台长期总结
     await trace_mod.close()
     if mem_store is not None:
         mem_store.close()
@@ -337,6 +339,11 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
         " WHERE npc_id = ? ORDER BY ts_game DESC LIMIT 50",
         (npc_id,),
     )
+    longterm = await db.fetch_all(
+        "SELECT id, ts_game, content, turn_count, created_at_real FROM longterm_memory"
+        " WHERE npc_id = ? ORDER BY ts_game DESC LIMIT 20",
+        (npc_id,),
+    )
     rel = await db.fetch_all("SELECT * FROM relationship WHERE npc_id = ?", (npc_id,))
     now_game = clock.now()
     now_real = time.time()
@@ -366,6 +373,10 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
         "heart": plan.get("heart", "") if plan else "",
         "deviation": deviation or {},
         "memories": memories,
+        "midterm": mem_store.debug_midterms(npc_id) if mem_store else [],
+        "longterm": longterm,
+        "longterm_pending_turns": (
+            mem_store.pending_longterm_turns(npc_id) if mem_store else 0),
         "relationship": rel,
         "agenda": await agenda_mod.current(db, npc_id),
         "mood": await mood_mod.current(db, npc_id, now_real),
@@ -468,7 +479,11 @@ async def new_game(req: NewGameReq) -> dict[str, Any]:
     p = await player_mod.create(db, name)
     # 新档不能继承上个存档的世界阶段，否则 NPC 会对着新角色讲旧角色的事。
     await world_state_mod.reset(db)
-    logger.info("new game: name=%s id=%s; world state reset", name, p["id"])
+    if mem_store is not None:
+        await mem_store.drain()
+        mem_store.reset_runtime()
+    logger.info("new game: name=%s id=%s; world state reset, memory runtime cleared",
+                name, p["id"])
     return {"player": await player_mod.api_dict(db, p)}
 
 

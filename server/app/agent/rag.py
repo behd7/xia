@@ -29,9 +29,15 @@ async def recent_turns(db: Database, npc_id: int, n: int = 3) -> list[dict]:
     return turns
 
 
-async def retrieve(db: Database, store, npc_id: int, query: str, *, settings) -> list[dict]:
+async def embed_query(store, query: str) -> list[float]:
+    """查询向量只算一次，供 Chroma RAG 与中期线索匹配共用。"""
+    return (await store.llm.embed([query]))[0]
+
+
+async def retrieve(db: Database, store, npc_id: int, query: str, *, settings,
+                   qvec: list[float] | None = None) -> list[dict]:
     """Chroma ANN + 三因子重排，返回按综合分降序的 TOP_K 条记忆。"""
-    qvec = (await store.llm.embed([query]))[0]
+    qvec = qvec if qvec is not None else await embed_query(store, query)
     res = store.query(npc_id, qvec, n_results=20)
     ids = res.get("ids", [[]])[0]
     docs = res.get("documents", [[]])[0]

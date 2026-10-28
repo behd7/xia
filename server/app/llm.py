@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 
 
 # LLM 调用优先级（AGENTS #7：对话/送礼/切磋 > 搭话 > 关系摘要 > 反思 > 八卦）。
-# dialogue_summary 发生在一次前台对话请求内，必须与对话同优先级。
+# dialogue_summary 前台中期总结发生在一次对话请求内，优先级 0；
+# 36 轮长期总结在后台任务里复用同一 purpose，调用时显式传 priority=3。
 PRIORITY = {
     "dialogue": 0, "dialogue_summary": 0, "embed": 0, "gift": 0, "spar": 0,
     "greet": 1, "relationship": 2, "reflection": 3, "heart": 3, "gossip": 4,

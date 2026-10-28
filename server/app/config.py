@@ -68,9 +68,13 @@ class Settings(BaseSettings):
     plan_deviation_shift_sec: int = 1200    # 阶段平移上限（游戏秒）= 20 游戏分钟
     plan_heart_max_chars: int = 60          # 心事字数上限
 
-    # Dialogue memory batching (docs/DESIGN.md §6.6)
-    dialogue_window_size: int = 6          # 每轮回复平铺的最近对话轮数
+    # Memory tiers (docs/DESIGN.md §6.6)
+    dialogue_window_size: int = 6           # 每轮回复平铺的最近对话轮数
     conversation_window_capacity: int = 10  # conversation 超过此数即总结最早一批
+    midterm_capacity: int = 10              # 每 NPC 最多保留的中期条目数（FIFO）
+    midterm_top_k: int = 3                  # 每轮最多注入的中期 summary 条数
+    midterm_min_score: float = 0.45         # 线索余弦相似度阈值
+    longterm_turn_interval: int = 36        # 每累计 N 轮原始对话触发一次长期总结
 
     # RAG (docs/DESIGN.md §6.4)
     recency_half_life: float = 3.0

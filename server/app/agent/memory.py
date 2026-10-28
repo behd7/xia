@@ -5,11 +5,18 @@
 删 Chroma 集合从 SQLite 全量重建即可——向量不进 SQLite 正是为留这条退路。
 Chroma 集合恒建为 embedding_function=None + hnsw:space=cosine，add/query
 恒定传 embeddings（AGENTS.md ChromaDB 三坑）。
+
+三层记忆：短期 conversation 窗口仍走 SQLite；中期 summary+线索只存
+`_midterms` 进程内存；长期每 36 轮原始对话在后台总结，写独立的
+`longterm_memory` 表（不写 memory、不写 Chroma，也不参与反思/关系/八卦）。
 """
 
 import asyncio
+import contextvars
 import json
+import logging
 import time
+from dataclasses import dataclass
 
 import chromadb
 from chromadb.config import Settings
@@ -17,6 +24,25 @@ from chromadb.config import Settings
 from ..config import settings
 from ..db import Database
 from . import summary as summary_mod
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class MidTerm:
+    """进程内中期记忆：单条 summary + 线索向量，不入库。"""
+
+    summary: str
+    clues: list[str]
+    vectors: list[list[float]]
+    ts_game: float
+    turn_count: int
+
+
+@dataclass
+class TurnOutcome:
+    midterm_created: bool = False
+    longterm_scheduled: bool = False
 
 
 class MemoryStore:
@@ -33,6 +59,10 @@ class MemoryStore:
         )
         self._lock = asyncio.Lock()
         self._window_locks: dict[int, asyncio.Lock] = {}
+        # 中期记忆与长期原始轮缓冲都只在进程内，重启清零。
+        self._midterms: dict[int, list[MidTerm]] = {}
+        self._longterm_turns: dict[int, list[dict]] = {}
+        self._bg_tasks: set[asyncio.Task] = set()
         # Phase C：附近显著事件的进程内环形缓冲，不落库。
         self.recent_events: list[dict] = []
 
@@ -82,53 +112,160 @@ class MemoryStore:
         *,
         user: str,
         npc: str,
+        npc_name: str,
         player_name: str,
         place: str,
         affinity_delta: int = 0,
-    ) -> int | None:
-        """Append one turn; overflow the per-NPC window => distill the oldest batch into one event."""
+    ) -> TurnOutcome:
+        """写入短期窗口；满窗生成中期内存摘要，攒满 36 轮调度长期总结。"""
         lock = self._window_locks.setdefault(npc_id, asyncio.Lock())
         async with lock:
+            now_game = self.clock.now()
             await db.execute(
                 "INSERT INTO conversation(npc_id, ts_game, turns_json, affinity_delta_total)"
                 " VALUES(?,?,?,?)",
-                (npc_id, self.clock.now(),
-                 json.dumps({"user": user, "npc": npc}, ensure_ascii=False),
+                (npc_id, now_game,
+                 json.dumps({"user": user, "npc": npc, "place": place},
+                            ensure_ascii=False),
                  affinity_delta),
             )
+            self._longterm_turns.setdefault(npc_id, []).append({
+                "user": user, "npc": npc, "place": place, "ts_game": now_game,
+            })
+
+            outcome = TurnOutcome()
             row = await db.fetch_one(
                 "SELECT COUNT(*) AS n FROM conversation WHERE npc_id = ?", (npc_id,))
             capacity = max(1, settings.conversation_window_capacity)
-            if int(row["n"]) <= capacity:
-                return None
+            if int(row["n"]) > capacity:
+                rows = await db.fetch_all(
+                    "SELECT id, turns_json FROM conversation WHERE npc_id = ?"
+                    " ORDER BY id LIMIT ?",
+                    (npc_id, capacity),
+                )
+                ids: list[int] = []
+                turns: list[dict] = []
+                for item in rows:
+                    ids.append(item["id"])
+                    try:
+                        data = json.loads(item["turns_json"])
+                    except (TypeError, ValueError):
+                        continue
+                    turns.append({
+                        "user": data.get("user", ""),
+                        "npc": data.get("npc", ""),
+                        "place": data.get("place", place),
+                    })
+                result = await summary_mod.summarize_midterm(
+                    self, npc_id, npc_name, player_name, place, turns)
+                await self._store_midterm(npc_id, result, ts_game=now_game)
+                if ids:
+                    marks = ",".join("?" for _ in ids)
+                    await db.execute(
+                        f"DELETE FROM conversation WHERE id IN ({marks})", ids)
+                outcome.midterm_created = True
 
-            rows = await db.fetch_all(
-                "SELECT id, turns_json FROM conversation WHERE npc_id = ?"
-                " ORDER BY id LIMIT ?",
-                (npc_id, capacity),
-            )
-            ids: list[int] = []
-            turns: list[dict] = []
-            for item in rows:
-                ids.append(item["id"])
-                try:
-                    data = json.loads(item["turns_json"])
-                except (TypeError, ValueError):
-                    continue
-                turns.append({"user": data.get("user", ""), "npc": data.get("npc", "")})
+            interval = max(1, settings.longterm_turn_interval)
+            buffer = self._longterm_turns.get(npc_id, [])
+            if len(buffer) >= interval:
+                batch = buffer[:interval]
+                del buffer[:interval]
+                self._schedule_longterm(
+                    db, npc_id, batch, ts_game=now_game,
+                    npc_name=npc_name, player_name=player_name)
+                outcome.longterm_scheduled = True
+            return outcome
 
-            event = await summary_mod.summarize_dialogue_window(
-                self, npc_id, player_name, place, turns)
-            memory_id = await self.add_memory(
-                db, npc_id, content=event["content"], kind="event",
-                participants=[player_name], poi=place,
-                importance=event["importance"],
+    async def _store_midterm(self, npc_id: int, result: dict, *, ts_game: float) -> None:
+        clues = result.get("clues") or []
+        vectors: list[list[float]] = []
+        if clues:
+            try:
+                vectors = await self.llm.embed(clues)
+            except Exception:
+                logger.warning("midterm clue embed failed npc=%d clues=%d",
+                               npc_id, len(clues))
+        bucket = self._midterms.setdefault(npc_id, [])
+        bucket.append(MidTerm(
+            summary=result["summary"], clues=clues, vectors=vectors,
+            ts_game=ts_game, turn_count=int(result.get("turn_count", 0)),
+        ))
+        cap = max(1, settings.midterm_capacity)
+        if len(bucket) > cap:
+            del bucket[:len(bucket) - cap]
+
+    def match_midterms(self, npc_id: int, query_vec: list[float]) -> list[MidTerm]:
+        """用当前消息向量匹配中期线索，返回命中的完整中期条目。"""
+        scored: list[tuple[float, MidTerm]] = []
+        for item in self._midterms.get(npc_id, []):
+            if not item.vectors:
+                continue
+            score = max(sum(a * b for a, b in zip(query_vec, v)) for v in item.vectors)
+            if score >= settings.midterm_min_score:
+                scored.append((score, item))
+        scored.sort(key=lambda pair: -pair[0])
+        return [item for _, item in scored[: max(1, settings.midterm_top_k)]]
+
+    def _schedule_longterm(self, db: Database, npc_id: int, turns: list[dict], *,
+                           ts_game: float, npc_name: str, player_name: str) -> None:
+        task = asyncio.create_task(
+            self._run_longterm(
+                db, npc_id, turns, ts_game=ts_game,
+                npc_name=npc_name, player_name=player_name),
+            context=contextvars.Context(),  # 不继承请求侧 Langfuse trace
+            name=f"longterm-summary-{npc_id}",
+        )
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
+    async def _run_longterm(self, db: Database, npc_id: int, turns: list[dict], *,
+                            ts_game: float, npc_name: str, player_name: str) -> None:
+        try:
+            result = await summary_mod.summarize_longterm(
+                self, npc_id, npc_name, player_name, turns)
+            await db.execute(
+                "INSERT INTO longterm_memory(npc_id, ts_game, content, turn_count,"
+                " created_at_real) VALUES(?,?,?,?,?)",
+                (npc_id, ts_game, result["summary"], len(turns), time.time()),
             )
-            if ids:
-                marks = ",".join("?" for _ in ids)
-                await db.execute(
-                    f"DELETE FROM conversation WHERE id IN ({marks})", ids)
-            return memory_id
+            logger.info("longterm memory stored npc=%d turns=%d chars=%d",
+                        npc_id, len(turns), len(result["summary"]))
+        except asyncio.CancelledError:
+            logger.info("longterm summary cancelled npc=%d turns=%d",
+                        npc_id, len(turns))
+            raise
+        except Exception:
+            logger.exception("longterm summary failed npc=%d turns=%d",
+                             npc_id, len(turns))
+
+    async def wait_background(self) -> None:
+        """测试/收尾用：等待已调度的长期总结完成，不取消。"""
+        tasks = list(self._bg_tasks)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def drain(self) -> None:
+        """取消并等待后台长期总结；shutdown/new game 前调用。"""
+        tasks = list(self._bg_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._bg_tasks.clear()
+
+    def reset_runtime(self) -> None:
+        self._midterms.clear()
+        self._longterm_turns.clear()
+
+    def debug_midterms(self, npc_id: int) -> list[dict]:
+        return [
+            {"summary": item.summary, "clues": item.clues,
+             "ts_game": item.ts_game, "turn_count": item.turn_count}
+            for item in self._midterms.get(npc_id, [])
+        ]
+
+    def pending_longterm_turns(self, npc_id: int) -> int:
+        return len(self._longterm_turns.get(npc_id, []))
 
     def query(self, npc_id: int, query_vec: list[float], n_results: int = 20) -> dict:
         """ANN search over this NPC's memories (vector similarity only)."""

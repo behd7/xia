@@ -259,7 +259,7 @@
 
 ### 6.3 记忆流（Memory Stream）
 
-每条记忆：
+`memory` 表每条记忆：
 
 ```
 { npc_id, 游戏时间戳, kind: event|reflection|gossip,
@@ -268,6 +268,14 @@
   importance: 1~10, embedding: float32[1024]（存 Chroma，不入 SQLite） }
 ```
 
+**三层分工**：
+
+- 短期：`conversation` 表，每 NPC 独立窗口（默认 10 轮），最近 `DIALOGUE_WINDOW_SIZE`（默认 6）轮直接平铺进 prompt；
+- 中期：`MemoryStore._midterms` 进程内列表，每 NPC 最多 10 条 `summary + 3~6 条线索`（不入库、不进 Chroma），窗口溢出时生成；
+- 长期：`longterm_memory` 表，每 36 轮原始对话后台总结成 1 条（不写 `memory`/Chroma，暂不参与对话/RAG/反思/关系/八卦）。
+
+`memory` 表本身继续只存 event（战斗/大额消费/拜师等即时事件）、reflection、gossip。
+
 **事件入忆规则（"与我有关"的判定）**：
 
 1. **直接交互**：送礼、切磋 → 把玩家动作合成为一条消息，复用 `dialogue.talk`
@@ -275,16 +283,17 @@
    特殊对话写入 `conversation` 窗口，**不即时入忆**；购买（≥100 两）仍即时入忆
    一条。普通对话每轮也只进同一窗口；该 NPC 的窗口条数超过
    `CONVERSATION_WINDOW_CAPACITY`（默认 10）时，按 §6.6 把最早一批
-   （默认 10 轮）批总结为一条 event 落库；
+   （默认 10 轮）总结为一条**中期记忆**（纯内存），不再落 event；
 2. **同场目击**：玩家战斗、大额消费（≥100两）等显著事件 → 发生时处于同一 POI 的 NPC 各自入忆一条（importance 按事件类型定值）；
 3. **八卦传播**：见 §6.9，NPC 间扩散玩家事迹。
 
-记忆内容示例（对话/送礼/切磋 event 由 §6.6 批总结触发生成，购买等非交互事件用模板生成）：
+记忆内容示例（`memory` 表只列 event/reflection/gossip；对话/送礼/切磋的归纳在中期内存/长期表，不在此列）：
 
-- event: `[酉时·铁匠铺] 秦侠客一掷二百两买下精钢剑，这小子手头真宽裕。`（importance 3）
-- event: `[辰时·练武场] 与秦侠客切磋，他硬接了我三刀才退。`（importance 由批总结模型给出）
+- event: `[酉时·铁匠铺] 秦侠客一掷二百两买下精钢剑，这小子手头真宽裕。`（importance 3，大额消费即时入忆）
 - gossip: `[午时·镇口] 王大柱跟我说，秦侠客在后山崖把黑旋风给办了。`（importance 5）
 - reflection: `这秦侠客一月来寻我三次，回回问剑，习剑之心比传闻里坚定，资质也不差。`（importance 8）
+- midterm（纯内存，不落库）: `与秦侠客聊过后山黑旋风，他似有除害之意。`（线索：后山、黑旋风）
+- longterm（`longterm_memory`，不进 Chroma）: `秦侠客近来常来问剑，先送药后切磋，性子倔，倒是个可教之才。`（每 36 轮后台总结）
 
 ### 6.4 RAG 检索
 
@@ -296,7 +305,9 @@ w_rel=1.0, w_rec=0.8, w_imp=0.5（可配）
 recency: 半衰期 = 3 游戏日
 ```
 
-检索分两步：Chroma 以输入 embedding 查询（`where {"npc_id": id}` 过滤）取**相似度 top20**，再在应用侧算三因子综合分重排取 **top 6** 送入 prompt——Chroma 只算向量相似度，recency/importance 加权必须自己排。历史对话最近 3 轮直接平铺进 prompt（不走检索）。
+检索分两步：Chroma 以输入 embedding 查询（`where {"npc_id": id}` 过滤）取**相似度 top20**，再在应用侧算三因子综合分重排取 **top 6** 送入 prompt——Chroma 只算向量相似度，recency/importance 加权必须自己排。历史对话最近 `DIALOGUE_WINDOW_SIZE`（默认 6）轮直接平铺进 prompt（不走检索）。Chroma 集合只索引 `memory` 表（event/reflection/gossip）。
+
+**中期线索检索**：当前消息的 embedding 同时用于 Chroma RAG 与中期线索匹配。每条中期记忆的 3~6 条线索各有一个向量；取该条目最高分线索，按分数降序取 top-k（默认 3）且 ≥ `MIDTERM_MIN_SCORE`（默认 0.45），命中后把**完整 summary** 放进 prompt 的独立「你想起一些旧事」板块。中期只存内存、不进 Chroma；长期记忆暂不参与检索。
 
 ### 6.5 好感度系统
 
@@ -331,6 +342,8 @@ recency: 半衰期 = 3 游戏日
 你对{玩家名}的印象：{关系摘要}
 你记得的一些事：
 {检索 top6 记忆的内容}
+你想起一些旧事（只作参考，不要逐字复述）：
+{中期命中的完整 summary}
 你们最近的往来：
 {最近 dialogue_window_size 轮}
 你眼下挂心的事：{当日心事，有则加}
@@ -353,24 +366,21 @@ recency: 半衰期 = 3 游戏日
 
 **流式输出（SSE）**：`POST /api/npc/{id}/talk` 返回 `text/event-stream`，事件序列 `start` → `token`* → `done`；重试或模板兜底前发 `reset`，客户端据此清空已显示的文字。模型仍只输出一个 JSON 对象，服务端边收边解码 `reply` 值（转义、代理对、UTF-8 分片都安全），`affinity_delta`/`end` 在流结束后解析，`done` 携带 `{reply, affinity, end, player, fallback, place}`。**流式路径不新增 LLM 调用**（M5 预算不变；送礼/切磋复用同一对话链路，见 §6.5）。Godot 的 `HTTPRequest` 会缓冲整包，客户端改用 `HTTPClient` 手动轮询读取（`api.gd::stream_request`）。
 
-**事件入忆（固定窗口批总结，不逐轮）**：普通对话每轮由
-`MemoryStore.add_conversation_turn` 写入短期窗口（`conversation` 表），不写 event
-记忆。送礼/切磋调用 `dialogue.talk` 复用同一链路：`user` 是合成的玩家动作（送礼/切磋），
-`npc` 是同一对话 prompt 生成的回复；好感变化由对话链路 clamp 后写回 `npc_state`，
-再和这条特殊对话一起进入窗口。每次写入后按 **NPC 独立**统计窗口条数；超过
-`CONVERSATION_WINDOW_CAPACITY`（默认 10）时，取最早的 N 轮原始对话一次 LLM 归纳成
-**1 条**第三人称事件摘要（带 importance），以 `kind=event` 落库，再按 `npc_id`
-向量化写入 Chroma，最后删除这批窗口记录（未满窗的新轮次保留）。只有 `memory` 表的
-event 会向量化，`conversation` 原始轮次不嵌入。大额消费等规则事件仍即时入忆
-（§6.3），不参与窗口计数。总结走「校验→重试一次→兜底（取最后一条玩家消息作单条
-importance 3）」链路，同样永不阻塞。event 作为 RAG 检索补充，即每一轮回复的首要
-即时上下文仍是短期窗口原始对话。
+**三层记忆与批总结**：普通对话每轮由 `MemoryStore.add_conversation_turn` 写入短期窗口（`conversation` 表）；送礼/切磋调用 `dialogue.talk` 复用同一链路，`user` 是合成的玩家动作，`npc` 是同一对话 prompt 生成的回复。窗口按 **NPC 独立**统计，超过 `CONVERSATION_WINDOW_CAPACITY`（默认 10）时，取最早 10 轮一次 LLM 归纳成 **1 条中期记忆**：`summary`（≤120 字）+ 3~6 条可检索线索；只存 `MemoryStore._midterms` 进程内存（每 NPC 最多 `MIDTERM_CAPACITY=10` 条，FIFO），线索向量也只存内存，**不写 `memory`、不写 Chroma**，随后删除这批 `conversation` 记录。
+
+对话每轮把当前消息 embed 一次，同时用于 Chroma RAG 与中期线索匹配；命中线索时把该条目的完整 summary 放进 prompt 的「你想起一些旧事」独立板块（见 §6.4），不塞进「你们最近的往来」。
+
+长期：`MemoryStore` 另维护每 NPC 的原始轮缓冲（含送礼/切磋，重启清零）；累计 `LONGTERM_TURN_INTERVAL`（默认 36）轮时，取最早 36 轮调度一个后台任务，用同一条 `dialogue_summary` purpose（显式 `priority=3`）总结成 1 条长期记忆，写入独立的 `longterm_memory` 表。长期记忆**不写 `memory`/Chroma**，也不参与对话/RAG/反思/关系摘要/八卦；本期只生成与入库。
+
+两条总结都走「校验→重试一次(temperature 0.3)→模板兜底」链路，失败不阻塞玩法；中期兜底 `clues=[]`（该条暂不可检索），长期兜底用首尾玩家原话拼一句。中期与长期缓冲都在进程内，服务重启清零；短期窗口与 `longterm_memory` 持久化。大额消费等规则事件仍即时入忆（§6.3），不参与窗口计数。
 
 **[打听消息]** 是记忆系统的展示窗：NPC 会用自己检索到的记忆（含八卦）回答，答非所问或以讹传讹正是实验观察点。
 
 ### 6.7 反思
 
 后台调度每 `scheduler_tick_real`（默认 60s）巡检，`scheduler_enabled=false` 可整体关闭：
+
+> 中期记忆不写 `memory`，长期记忆也完全隔离，因此对话本身不再直接增加反思素材；反思只由大额消费/战斗目击/已有反思/八卦触发。这是记忆分层后的预期，不要为恢复反思频率把每 10 轮对话写回 event。
 
 - 触发：某 NPC 自上次反思后新增记忆 ≥`reflect_mem_threshold`（8），或新增记忆 >0 且距上次反思 ≥`reflect_interval_real`（360s）；另设 `scheduler_tick_real × 0.75` 冷却兼失败退避，避免 60s 巡检抖动成每两拍才反思；
 - 素材：取该 NPC 最近 `reflection_take_n`（30）条记忆；少于 `reflection_min_memories`（3）条直接跳过；
@@ -383,6 +393,7 @@ importance 3）」链路，同样永不阻塞。event 作为 RAG 检索补充，
 ### 6.8 关系演化
 
 - `relationship(npc_id, target_kind, target_id)` 为每对 (NPC, 对象) 维护一段 LLM 滚动摘要（≤`relationship_max_chars`，默认 100 字）；`target_kind=player` 时 `target_id` 为玩家名，`target_kind=npc` 时为对方 NPC 名；
+- **素材边界**：对话/中期/长期都不进关系摘要，`relationship` 只统计 `memory` 的 event/gossip/reflection。分层后关系摘要更新会变稀疏，这是长期记忆完全隔离的预期结果；要恢复需单独设计（例如把 `longterm_memory` 计入素材），不要恢复每 10 轮 event；
 - 触发更新：`updated_at`（现实时间）以来，与该对象相关的 event/gossip 新增 ≥`relationship_update_events`（5），或提及该对象的 reflection ≥`relationship_mention_reflections`（3）；material 取 events[:20] + reflections[:10]；
 - 更新 = 旧摘要 + 新增事件列表 → LLM 压缩为新摘要；失败时用"旧摘要；最近两条事件"截断兜底；
 - 摘要进对话 prompt 的"你对{玩家}的印象"，是长程关系记忆的压缩载体——防止历史对话无限膨胀；
@@ -510,7 +521,7 @@ embedding：`POST /api/embed {"model": ..., "input": [...]}`，向量 L2 归一�
 
 ### 7.5 并发控制
 
-`PriorityLimiter`（堆式异步优先级队列，并发上限 `LLM_CONCURRENCY=2`）全局限流；优先级：对话/送礼/切磋/批总结/embedding（0）> 搭话（1）> 关系摘要（2）> 反思/每日心事与默认（3）> 八卦（4）。等待者按优先级与入队顺序取槽，取消安全；后台反思/心事/八卦不会挤占玩家对话。
+`PriorityLimiter`（堆式异步优先级队列，并发上限 `LLM_CONCURRENCY=2`）全局限流；优先级：对话/送礼/切磋/中期批总结/embedding（0）> 搭话（1）> 关系摘要（2）> 长期批总结/反思/每日心事与默认（3）> 八卦（4）。`dialogue_summary` 前台中期总结用 0；每 36 轮长期总结在后台任务中复用同一 purpose，显式传 `priority=3`。等待者按优先级与入队顺序取槽，取消安全；后台反思/心事/八卦不会挤占玩家对话。
 
 ### 7.6 本地运行日志
 
@@ -546,7 +557,7 @@ npc_plan(npc_id, game_day, heart, reason, deviation_json, created_at_real,
 > （原 `persona_json / speech_style / waypoints_json` 列死数据，已随迁移 DROP）。
 > 动态运行态（好感、反思计时、搭话冷却等）一律在 `npc_state` 持久化。
 
-memory(id, npc_id, ts_game,           -- 游戏时钟
+memory(id, npc_id, ts_game,           -- 游戏时钟；只存 event/reflection/gossip
        kind,                           -- event|reflection|gossip
        content, participants_json, poi, importance,
        created_at_real,                -- 现实时间：关系摘要水位线
@@ -555,15 +566,20 @@ relationship(npc_id, target_kind,     -- player|npc
              target_id, summary, updated_at)  -- updated_at 为现实时间
 
 conversation(id, npc_id, ts_game, turns_json, affinity_delta_total)
-             -- 短期窗口；超过窗口容量（默认 10）即批总结并删除最早一批
+             -- 短期窗口；turns_json={user,npc,place}；超过容量即总结为中期记忆（纯内存）并删最早一批
+longterm_memory(id, npc_id, ts_game, content, turn_count, created_at_real)
+             -- 每 36 轮原始对话后台总结；不写 memory/Chroma，不参与反思/关系/八卦/RAG
 battle(id, player_id, target_kind, target_id, state_json, active, created_at)
 llm_log(id, purpose, model, in_tokens, out_tokens, ms, ok, created_at)
 kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=游戏日、gift_count:{npc_id}:{game_day} 等
 ```
 
+**中期记忆不落库**：`MemoryStore._midterms`（summary+线索+线索向量）与 `_longterm_turns`（36 轮原始轮缓冲）都是进程内结构，服务重启清零；短期窗口与 `longterm_memory` 持久化。
+
 **Chroma 集合 `memories`**（PersistentClient 本地目录，`hnsw:space=cosine`）：
 
 - id = memory.id；document = content；embedding = Ollama 1024 维（L2 归一化）；metadata = {npc_id, kind, importance, ts_game, poi}；
+- **Chroma 只索引 `memory` 表**（event/reflection/gossip）；中期线索向量只在 `MemoryStore` 内存，`longterm_memory` 不进 Chroma；
 - 写入顺序：SQLite 落库分配 id → 同一写锁内 Chroma upsert（先 SQLite 后 Chroma）；
 - 索引是**派生数据**：换 embedding 模型或索引损坏时，删集合从 SQLite 全量重嵌入重建——SQLite 不存向量正是为了留这条退路；
 - Chroma 元数据不支持排序与列表值，反思（按时间取最近 30 条）、八卦/关系（按参与人过滤）等查询走 SQLite，Chroma 只做 ANN。
@@ -726,7 +742,11 @@ Xia/
 | PLAN_DEVIATION_SHIFT_SEC | 1200 | 偏离阶段平移上限（游戏秒）= 20 游戏分钟 |
 | PLAN_HEART_MAX_CHARS | 60 | 心事字数上限 |
 | DIALOGUE_WINDOW_SIZE | 6 | 每轮回复平铺的最近对话轮数 |
-| CONVERSATION_WINDOW_CAPACITY | 10 | conversation 超过 N 条即把最早 N 轮总结为一条 event |
+| CONVERSATION_WINDOW_CAPACITY | 10 | conversation 超过 N 条即把最早 N 轮总结为一条中期记忆（纯内存） |
+| MIDTERM_CAPACITY | 10 | 每 NPC 最多保留的中期条目数（FIFO） |
+| MIDTERM_TOP_K | 3 | 每轮最多注入的中期 summary 条数 |
+| MIDTERM_MIN_SCORE | 0.45 | 中期线索余弦相似度阈值 |
+| LONGTERM_TURN_INTERVAL | 36 | 每累计 N 轮原始对话触发一次长期总结 |
 | RECENCY_HALF_LIFE | 3 游戏日 | 记忆新鲜度衰减 |
 | RAG_TOP_K | 6 | 检索条数 |
 | W_REL / W_REC / W_IMP | 1.0 / 0.8 / 0.5 | 检索权重 |
@@ -746,8 +766,10 @@ Xia/
 
 **风险与对策**：
 - 4B 模型 JSON 输出不稳 → format:json + 重试 + 模板兜底，永不阻塞玩法（§7.3）；
-- 对话延迟 2~5s（4B Q4 本地推理）→ 前端"…"指示 + 记忆检索与 prompt 组装并行；
-- 长对话上下文膨胀 → 只平铺最近 `dialogue_window_size` 轮，长程信息靠记忆流+关系摘要承载；
+- 对话延迟 2~5s（4B Q4 本地推理）→ 前端"…"指示 + 记忆检索与 prompt 组装并行；每 10 轮多一次中期总结与线索嵌入，每 36 轮多一次后台长期总结（不占前台等待）；
+- 长对话上下文膨胀 → 只平铺最近 `dialogue_window_size` 轮，长程信息靠中期 summary+线索、长期记忆表与关系摘要承载；
+- 中期记忆/36 轮缓冲只在进程内存 → 重启丢失；短期窗口与 `longterm_memory` 持久化，接受该取舍。长期总结后台异步，进程退出时可能丢一批；
+- 线索匹配质量依赖 4B 模型 → `MIDTERM_MIN_SCORE`/`MIDTERM_TOP_K` 先给默认值，实测调；中期兜底 `clues=[]` 时该条暂不可检索；
 - 好感被 LLM 漂移 → 对话/送礼/切磋统一 clamp ±3；送礼价值与切磋胜负只作 prompt 上下文；
 - SQLite 写并发（对话 vs 后台反思）→ WAL + 单写队列；
 - 记忆噪声（同场目击过多）→ 目击仅限战斗/大额消费两类显著事件；
@@ -758,4 +780,5 @@ Xia/
 2. 对话语言风格浓度：目前定"古风白话 ≤80 字"，可调更白话或更文言；
 3. NPC 八卦频率与传播深度目前保守（每对每日 1 条），实验后调；
 4. 音效/音乐 V1 完全不做，是否接受；
-5. 后续版本方向：NPC 完整自主规划、隐世高人张馒头任务线、多存档。
+5. 后续版本方向：NPC 完整自主规划、隐世高人张馒头任务线、多存档；
+6. 长期记忆接入对话的检索方式（向量 RAG vs 常驻最近 N 条）待下一任务；当前只生成入库。

@@ -170,6 +170,18 @@ CREATE TABLE IF NOT EXISTS llm_log (
     ok INTEGER NOT NULL,
     created_at REAL NOT NULL
 );
+
+-- 长期记忆独立成表：不写 memory、不写 Chroma，因而与对话/RAG/反思/
+-- 关系摘要/八卦天然隔离；后续接入对话时再决定读取或重新嵌入。
+CREATE TABLE IF NOT EXISTS longterm_memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    npc_id INTEGER NOT NULL REFERENCES npc(id),
+    ts_game REAL NOT NULL,
+    content TEXT NOT NULL,
+    turn_count INTEGER NOT NULL DEFAULT 36,
+    created_at_real REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_longterm_npc_ts ON longterm_memory(npc_id, ts_game);
 """
 
 
