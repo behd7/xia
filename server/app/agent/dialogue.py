@@ -199,8 +199,9 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
     drop the text streamed so far (the parse-failed attempt is being retried or
     the template fallback takes over). Gift/spar reuse this with
     ``purpose="gift"/"spar"`` and ``pause=False``; the final payload includes
-    ``{reply, affinity, end, player, fallback, place}``.
+    ``{reply, affinity, end, player, fallback, place, stale}``.
     """
+    generation = mem_store.generation  # 对话开始时的局代；新局后旧回合作废
     n = await npc_mod.by_id(db, npc_id)
     if n is None:
         raise LookupError("查无此人")
@@ -295,40 +296,61 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
         result = _fallback(n)
         yield "token", {"text": result["reply"]}
 
-    delta = max(-settings.max_dialogue_delta, min(settings.max_dialogue_delta, result["affinity_delta"]))
-    new_affinity = await npc_mod.apply_delta(db, npc_id, delta)
-
-    if result["end"]:
-        # 先恢复暂停：窗口批总结失败也不能让 NPC 一直处于暂停。
+    stale = mem_store.generation != generation
+    outcome = None
+    if stale:
+        logger.info("discard stale turn npc=%d gen=%d current=%d",
+                    npc_id, generation, mem_store.generation)
+        new_affinity = current_affinity
         if pause:
             await db.execute(
                 "UPDATE npc_state SET paused_until = NULL WHERE npc_id = ?", (npc_id,)
             )
-        await agenda_mod.clear(db, npc_id)
-        if new_affinity < 30:
-            try:
-                await mood_mod.set(db, npc_id, "impatient", "话不投机", 20)
-            except Exception:
-                logger.exception("mood update failed for talk npc=%d", npc_id)
-
-    outcome = await mem_store.add_conversation_turn(
-        db, npc_id,
-        user=message, npc=result["reply"], npc_name=n["name"],
-        player_name=p["name"], place=place,
-        affinity_delta=delta,
-    )
-    summarized = outcome.midterm_created
+        end = False
+    else:
+        delta = max(-settings.max_dialogue_delta,
+                    min(settings.max_dialogue_delta, result["affinity_delta"]))
+        new_affinity = await npc_mod.apply_delta(db, npc_id, delta)
+        if result["end"]:
+            # 先恢复暂停：中期总结失败也不能让 NPC 一直处于暂停。
+            if pause:
+                await db.execute(
+                    "UPDATE npc_state SET paused_until = NULL WHERE npc_id = ?", (npc_id,)
+                )
+            await agenda_mod.clear(db, npc_id)
+            if new_affinity < 30:
+                try:
+                    await mood_mod.set(db, npc_id, "impatient", "话不投机", 20)
+                except Exception:
+                    logger.exception("mood update failed for talk npc=%d", npc_id)
+        outcome = await mem_store.add_conversation_turn(
+            db, npc_id,
+            user=message, npc=result["reply"], npc_name=n["name"],
+            player_name=p["name"], place=place,
+            affinity_delta=delta, generation=generation,
+        )
+        stale = outcome.stale
+        end = result["end"] if not stale else False
+    summarized = outcome.midterm_created if outcome else False
+    longterm_scheduled = outcome.longterm_scheduled if outcome else False
     if trace is not None:
         await trace_mod.span(trace, "outcome",
                              metadata={"affinity_after": new_affinity, "fallback_used": fallback_used,
-                                       "attempts": attempts, "end": result["end"],
+                                       "attempts": attempts, "end": end,
                                        "summarized": summarized,
-                                       "longterm_scheduled": outcome.longterm_scheduled})
+                                       "longterm_scheduled": longterm_scheduled,
+                                       "stale": stale})
+
+    player_payload = await player_mod.api_dict(db, p)
+    if stale:
+        current = await player_mod.get(db)
+        if current is not None:
+            player_payload = await player_mod.api_dict(db, current)
 
     yield "done", {
         "reply": result["reply"], "affinity": new_affinity,
-        "end": result["end"], "player": await player_mod.api_dict(db, p),
-        "fallback": fallback_used, "place": place,
+        "end": end, "player": player_payload,
+        "fallback": fallback_used, "place": place, "stale": stale,
     }
 
 

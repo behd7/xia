@@ -255,6 +255,12 @@ async def gift(db: Database, mem_store, npc_id: int, item_id: int) -> dict:
     from . import dialogue as dialogue_mod
     payload = await dialogue_mod.talk(
         db, mem_store, npc_id, message, purpose="gift", pause=False)
+    if payload.get("stale"):
+        # 对话期间重开了新档：礼物/次数/事件都不属于新局，直接返回回复。
+        return {
+            "reply": payload["reply"], "affinity": int(payload["affinity"]),
+            "item": inv["name"], "player": payload["player"],
+        }
     await inventory_mod.consume(db, p["id"], item_id)
     await _mark_gift(db, npc_id, gift_day)
     events_mod.record(

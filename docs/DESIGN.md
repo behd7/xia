@@ -370,7 +370,9 @@ recency: 半衰期 = 3 游戏日
 
 对话每轮把当前消息 embed 一次，同时用于 Chroma RAG 与中期线索匹配；命中线索时把该条目的完整 summary 放进 prompt 的「你想起一些旧事」独立板块（见 §6.4），不塞进「你们最近的往来」。
 
-长期：`MemoryStore` 另维护每 NPC 的原始轮缓冲（含送礼/切磋，重启清零）；累计 `LONGTERM_TURN_INTERVAL`（默认 36）轮时，取最早 36 轮调度一个后台任务，用同一条 `dialogue_summary` purpose（显式 `priority=3`）总结成 1 条长期记忆，写入独立的 `longterm_memory` 表。长期记忆**不写 `memory`/Chroma**，也不参与对话/RAG/反思/关系摘要/八卦；本期只生成与入库。
+长期：`MemoryStore` 另维护每 NPC 的原始轮缓冲（含送礼/切磋，重启清零）；累计 `LONGTERM_TURN_INTERVAL`（默认 36）轮时，取最早 36 轮投入单 worker 队列，用同一条 `dialogue_summary` purpose（显式 `priority=3`）串行总结成 1 条长期记忆，写入独立的 `longterm_memory` 表。每个任务带 `generation`；`new_game` 先 `begin_reset()` 递增局代，再 `flush()` 等旧任务收尾/丢弃，`reset_runtime()` 清中期/缓冲；shutdown 用 `shutdown()` 丢弃排队任务并让当前任务收尾。长期记忆**不写 `memory`/Chroma**，也不参与对话/RAG/反思/关系摘要/八卦；本期只生成与入库。
+
+对话入口在开始时捕获 `mem_store.generation`；LLM 返回后若局代已变，跳过好感/议程/情绪/记忆写入，`done` 带 `stale=true`（Godot 忽略该字段）。送礼/切磋看到 `stale` 时也不扣物品/不记事件。新局与在途对话、长期 worker 的这类竞态由 generation 屏障兜底，不要用裸 `drain()` 或 fire-and-forget task 集合替代。
 
 两条总结都走「校验→重试一次(temperature 0.3)→模板兜底」链路，失败不阻塞玩法；中期兜底 `clues=[]`（该条暂不可检索），长期兜底用首尾玩家原话拼一句。中期与长期缓冲都在进程内，服务重启清零；短期窗口与 `longterm_memory` 持久化。大额消费等规则事件仍即时入忆（§6.3），不参与窗口计数。
 

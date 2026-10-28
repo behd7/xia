@@ -352,6 +352,10 @@ async def _finalize(db: Database, p: dict, state: dict, add, result: str) -> dic
         )
         payload = await dialogue_mod.talk(
             db, mem_store, npc_id, message, purpose="spar", pause=False)
+        if payload.get("stale"):
+            # 对话期间重开了新档：切磋事件/情绪不属于新局。
+            return {"exp": exp, "gold": 0, "cultivation": 0, "drops": [],
+                    "level_ups": ups, "world_announced": False}
         add("npc_reaction", f"{npc_name}：{payload['reply']}")
         events_mod.record(
             mem_store, "spar",

@@ -2,6 +2,8 @@
 
 > 状态：已实施（2026-10-28）。§6.3/§6.4/§6.6/§6.7/§6.8/§7.5/§8/§14 已同步到 `docs/DESIGN.md`，`AGENTS.md` 已同步；本文件保留为设计决策记录。
 >
+> 实施修订（2026-10-28，P1 竞态修复）：长期任务从 fire-and-forget task 集合改为**单 worker 队列**（`LongTermJob` + `asyncio.Queue` + `_Barrier`/`_STOP`）；任务与对话回合都带 `generation`。`new_game`：`begin_reset()`（generation++/draining）→ `flush()`（barrier 等当前/排队任务收尾或丢弃）→ `reset_runtime()`；shutdown：`shutdown()` 丢弃排队任务、当前任务收尾后停 worker；测试：`wait_background()`。对话入口捕获 `mem_store.generation`，LLM 返回后局代已变则跳过好感/议程/情绪/记忆写入，`done.stale=true`；送礼/切磋看到 stale 不扣物品/不记事件。§6、§9 中旧的 `_bg_tasks`/`drain` 描述以本节为准。
+>
 > 本计划取代现有“满窗（10 轮）即总结成一条 `kind=event` 落库 + Chroma”的单一链路。旧链路代码在 `server/app/agent/memory.py::add_conversation_turn` 与 `summary.py::summarize_dialogue_window`。
 
 ## 0. 目标与已拍板决策
@@ -724,7 +726,7 @@ os.environ["MIDTERM_CAPACITY"] = "2"
 ## 14. 边界与已知取舍
 
 - **中期重启清零**：短期窗口（SQLite）与长期记忆（SQLite）保留；中期与 36 轮缓冲丢失，重启后从 0 累计。这是“中期不入库”的直接代价。
-- **长期总结异步**：进程在总结完成前退出会丢这一批长期记忆；36 轮原文本来就在内存，重启同样会丢，接受。
+- **长期总结异步**：单 worker 串行执行；shutdown 会丢弃排队任务，当前任务最多等 5 秒，超时取消——这一批可能丢，36 轮原文本来就在内存，接受。`new_game` 用 generation 让旧任务在 LLM 返回后自行丢弃，不阻塞新局。
 - **中期上限 10**：最旧的约 100 轮会从参考池淘汰；长期记忆尚未接入对话，因此更早的旧事在对话中不可见——这是本期“长期暂不接入”的预期状态。
 - **长期完全隔离**：不入 `memory`、不入 Chroma、不进反思/关系/八卦；后续要接入对话时，必须新开任务设计检索方式（从 `longterm_memory` 读 or 重新嵌入），不要直接把 `kind=long_term` 塞进 `memory`。
 - **反思/关系素材变稀**：对话不再写 `memory`，中期/长期也都不进反思/关系；反思与关系摘要只由规则事件/已有反思/八卦触发。这是分层与长期隔离的预期结果，不要为恢复频率把每 10 轮对话写回 event。

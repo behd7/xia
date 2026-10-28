@@ -78,6 +78,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await trace_mod.setup()
     mem_store = memory_mod.MemoryStore(settings.chroma_dir_abs, ollama, clock)
     reconciled = await mem_store.reconcile(db)
+    mem_store.start()  # 长期总结单 worker 队列
     logger.info("startup: chroma reconcile %s",
                 "rebuilt from SQLite" if reconciled else "already in sync")
     battle_mod.mem_store = mem_store  # 切磋写入 NPC 记忆的注入点
@@ -89,7 +90,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger.info("shutdown: stopping scheduler")
     await scheduler_mod.stop(scheduler_tasks)  # 必须先于 close mem_store/llm/db
     if mem_store is not None:
-        await mem_store.drain()  # 取消并等待后台长期总结
+        await mem_store.shutdown()  # 丢弃排队任务，当前任务收尾后停 worker
     await trace_mod.close()
     if mem_store is not None:
         mem_store.close()
@@ -476,11 +477,13 @@ async def new_game(req: NewGameReq) -> dict[str, Any]:
     name = req.name.strip()[:12]
     if not name:
         raise HTTPException(400, "请输入名号")
+    if mem_store is not None:
+        mem_store.begin_reset()  # 先作废旧局 generation，再 await 建档
     p = await player_mod.create(db, name)
     # 新档不能继承上个存档的世界阶段，否则 NPC 会对着新角色讲旧角色的事。
     await world_state_mod.reset(db)
     if mem_store is not None:
-        await mem_store.drain()
+        await mem_store.flush()  # 等旧局在跑的长期总结收尾/丢弃
         mem_store.reset_runtime()
     logger.info("new game: name=%s id=%s; world state reset, memory runtime cleared",
                 name, p["id"])

@@ -25,14 +25,20 @@ _tmp = tempfile.mkdtemp(prefix="xia_smoke_")
 os.environ["DB_PATH"] = str(Path(_tmp) / "xia.db")
 os.environ["CHROMA_DIR"] = str(Path(_tmp) / "chroma")
 os.environ["SCHEDULER_ENABLED"] = "false"
+# 记忆分层的断言依赖这些值：显式 pin，避免被 server/.env 覆盖。
+os.environ["CONVERSATION_WINDOW_CAPACITY"] = "10"
 # 用较小的中期上限在 36 轮内验证 FIFO，不必跑到 110 轮。
 os.environ["MIDTERM_CAPACITY"] = "2"
+os.environ["MIDTERM_TOP_K"] = "3"
+os.environ["MIDTERM_MIN_SCORE"] = "0.45"
+os.environ["LONGTERM_TURN_INTERVAL"] = "36"
 
 # 把 server 根（含 `app` 包）放进 path，保证从任意 cwd 都能跑。
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 FAIL = 0
 CALLED: list[str] = []
+CALLS: list[tuple[str, int | None]] = []
 PROMPTS: list[tuple[str, list[dict]]] = []
 HEART_MODE = {"value": "ok"}
 
@@ -71,18 +77,29 @@ async def main() -> int:
     from app.game import data
     from app.agent import gossip, npc as npc_mod, reflection, relationship
 
+    # 竞态测试门禁：让对话/长期总结停在 LLM 里，模拟新局穿插。
+    GATE = {"reached": asyncio.Event(), "release": asyncio.Event()}
+    GATE_LT = {"reached": asyncio.Event(), "release": asyncio.Event()}
+
     # -- stub LLM：chat 按 purpose 返回确定 JSON；embed 返回确定向量（仅测通路） --
     async def fake_chat(purpose, messages, *, json_format=False, temperature=0.7,
                         metadata=None, priority=None):
         CALLED.append(purpose)
+        CALLS.append((purpose, priority))
         PROMPTS.append((purpose, messages))
         if purpose == "dialogue":
+            if "慢速对话" in messages[-1]["content"]:
+                GATE["reached"].set()
+                await GATE["release"].wait()
             end = "告辞" in messages[-1]["content"]
             text = json.dumps({"reply": "阁下所问，某自有计较。",
                                "affinity_delta": 2, "end": end}, ensure_ascii=False)
         elif purpose == "dialogue_summary":
             system = messages[0]["content"]
             if "长期记忆" in system:
+                if "门禁长期测试" in system:
+                    GATE_LT["reached"].set()
+                    await GATE_LT["release"].wait()
                 text = json.dumps({"summary": "三十六轮往来已归档。"},
                                   ensure_ascii=False)
             else:
@@ -606,6 +623,9 @@ async def main() -> int:
                   and long_rows[0]["content"] == "三十六轮往来已归档。")
             check("three midterm + one longterm summary calls",
                   CALLED.count("dialogue_summary") == summary_calls + 4)
+            check("longterm summary uses priority 3",
+                  any(purpose == "dialogue_summary" and p == 3
+                      for purpose, p in CALLS))
             long_mem_hit = await main_mod.db.fetch_one(
                 "SELECT COUNT(*) AS n FROM memory WHERE npc_id = ? AND content = ?",
                 (npc_window, "三十六轮往来已归档。"))
@@ -648,6 +668,51 @@ async def main() -> int:
             below = [0.3, 0.3] + [0.0] * 1022
             check("midterm score threshold filters weak matches",
                   main_mod.mem_store.match_midterms(999, below) == [])
+
+            print("\n== new_game vs in-flight dialogue (generation barrier) ==")
+            npc_race = 2
+            GATE["reached"].clear()
+            GATE["release"].clear()
+            race_task = asyncio.create_task(talk(c, npc_race, "慢速对话"))
+            await asyncio.wait_for(GATE["reached"].wait(), timeout=5)
+            r = await c.post("/api/game/new",
+                             json={"name": "重开侠", "confirm": True})
+            check("new game during in-flight talk", r.status_code == 200)
+            GATE["release"].set()
+            status, _, done = await race_task
+            check("stale talk still returns",
+                  status == 200 and done is not None and done.get("stale") is True)
+            conv_race = await main_mod.db.fetch_one(
+                "SELECT COUNT(*) AS n FROM conversation"
+                " WHERE npc_id = ? AND turns_json LIKE ?",
+                (npc_race, "%慢速对话%"))
+            check("stale turn not written to conversation", conv_race["n"] == 0)
+            check("stale turn not buffered",
+                  all("慢速对话" not in t["user"]
+                      for t in main_mod.mem_store._longterm_turns.get(npc_race, [])))
+            check("stale turn not in midterm",
+                  all("慢速对话" not in m["summary"]
+                      for m in main_mod.mem_store.debug_midterms(npc_race)))
+            check("new game clears runtime events",
+                  main_mod.mem_store.recent_events == [])
+
+            print("\n== longterm worker drops stale generation ==")
+            turns = [{"user": "门禁长期测试", "npc": "……", "place": "镇口",
+                      "ts_game": 0.0} for _ in range(36)]
+            main_mod.mem_store._schedule_longterm(
+                main_mod.db, 2, turns, ts_game=main_mod.mem_store.clock.now(),
+                npc_name="张馒头", player_name="门禁测试",
+                generation=main_mod.mem_store.generation)
+            await asyncio.wait_for(GATE_LT["reached"].wait(), timeout=5)
+            main_mod.mem_store.begin_reset()
+            flush_task = asyncio.create_task(main_mod.mem_store.flush())
+            await asyncio.sleep(0)
+            GATE_LT["release"].set()
+            await asyncio.wait_for(flush_task, timeout=5)
+            main_mod.mem_store.reset_runtime()
+            stale_rows = await main_mod.db.fetch_one(
+                "SELECT COUNT(*) AS n FROM longterm_memory WHERE npc_id = 2")
+            check("stale longterm job dropped", stale_rows["n"] == 0)
 
     shutil.rmtree(_tmp, ignore_errors=True)
     return FAIL
