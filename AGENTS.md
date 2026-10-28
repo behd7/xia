@@ -19,7 +19,7 @@
 | 向量模型 | 本地 Ollama `qwen3-embedding:0.6b`（8bit 量化，1024 维，入库前 L2 归一化） |
 | 美术 | 16px 瓦片 + 32px 人物贴图（`assets/`），纸墨 UI 由 `ui_kit.gd` 程序绘制；如需新图片，先提供提示词和路径并等待用户生成 |
 | 渲染 | 原生分辨率（`stretch/mode=disabled`），世界整数倍 1×/2×/3× 缩放，HUD 不缩放；绝不用整帧拉伸 |
-| 玩家入门 | 无初始门派，靠与掌门 NPC 好感度达标后对话拜师；一生只入一派 |
+| 玩家入门 | 无初始门派；清溪镇三馆为武馆、可兼学，南风城正式门派同一时间只入一派（M6 目标，见 [DESIGN §5.2](docs/DESIGN.md) 与 [M6-PLAN](docs/M6-PLAN.md)，尚未实施） |
 | 战斗 | 1v1 回合制，敌方 AI 为规则型（**不调 LLM**） |
 
 ## 实现时必须遵守的架构约束
@@ -29,9 +29,9 @@
 1. **服务器权威**：属性、背包、战斗、好感度、记忆只在服务器结算；客户端只做渲染与输入。玩家移动本地推演，交互时上报位置。
 2. **NPC 位置零同步**：NPC 位置 = 日程表的确定性函数（按游戏时钟推算）。客户端与服务器各自用同一份数据推算，不做位置轮询。伪随机踱步以 NPC id + 游戏日为种子，保证两端可复现。
 3. **战斗为同步请求-响应**：`POST /api/battle/action` 一次返回双方结算结果。不用 WebSocket。
-4. **LLM 调用永不阻塞玩法**：所有 LLM 结构化输出必须走 校验 → 重试一次(temperature 0.3) → 模板兜底 的链路；JSON 解析失败时用模板回复，游戏可继续。
+4. **LLM 调用永不阻塞玩法**：所有 LLM 结构化输出必须走 校验 → 重试一次(temperature 0.3) → 模板兜底 的链路；JSON 解析失败时用模板回复，游戏可继续。所有 agent 的 JSON 围栏清理统一用 `agent/json_utils.strip_fence`，不要在各模块复制围栏正则；中期/长期总结统一走 `summary._structured_chat`（0.7→0.3 重试），不要重写重试循环。
 5. **好感度防漂移**：对话、送礼、切磋的 LLM 好感变化统一 clamp ±3；送礼价值/同日次数与切磋胜负只作为 prompt 上下文，送礼/切磋不再有固定规则增益（拜师等其它规则不变）。
-6. **SQLite 单写队列**：对话写入与后台反思/八卦任务并发写库，用 asyncio.Lock 串行化 + WAL，不要改成多连接并行写。`memory` 写入 = SQLite 落库 → 同一锁内 Chroma upsert（先 SQLite 后 Chroma）；中期/长期记忆不写 Chroma（见 #11）。取消/异常路径必须等 `to_thread` 的 SQL 完成再释放锁（`Database._call_locked`），不要在 cancel 时把仍在运行的线程丢在锁外。
+6. **SQLite 单写队列**：对话写入与后台反思/八卦任务并发写库，用 asyncio.Lock 串行化 + WAL，不要改成多连接并行写。`memory` 写入 = SQLite 落库 → 同一锁内 Chroma upsert（先 SQLite 后 Chroma）；中期/长期记忆不写 Chroma（见 #11）。取消/异常路径必须等 `to_thread` 的 SQL 完成再释放锁（`Database._call_locked`），不要在 cancel 时把仍在运行的线程丢在锁外。`execute/fetch_all/fetch_one/reset` 都走 `_call_locked`；新增 DB helper 必须复用它，不要直接 `asyncio.to_thread` 或另开连接。
 7. **LLM 全局优先级限流**（`PriorityLimiter`，并发默认 2）：`dialogue`/`dialogue_summary`/`embed`/`gift`/`spar`=0 > `greet`=1 > `relationship`=2 > `reflection`/`heart`=3（默认）> `gossip`=4。`dialogue_summary` 前台中期总结按 0；每 36 轮长期总结在后台调用时显式传 `priority=3`。`llm.chat` 按 purpose 自动取级，新增 purpose 要在 `PRIORITY` 里登记。所有调用写 `llm_log` 表供实验分析。
 8. **M5 只影响措辞**：世界阶段、心事、议程、口癖、轻情绪、附近事件都不改好感数值；好感仍只走 LLM `affinity_delta`（对话/送礼/切磋）与反思。
 9. **偏离零同步**：心事偏离只平移相位边界，不新增路径/坐标/轮询；服务端 `schedule._day_phases` 与客户端 `town_world._deviated_phases` 常量必须同步。
@@ -51,13 +51,13 @@ LLM_CONCURRENCY=2
 RESET_ON_START=false   # true=每次启动后端清空数据库（SQLite+Chroma 重建），完全重新开局
 ```
 
-可调参数集中在 server 端 config（`server/app/config.py`，pydantic-settings 读 `.env`，§14 清单已全量落入：时间流速、好感阈值 70、反思/八卦周期、RAG 权重与 top-k、ChromaDB 目录等）。server 依赖 chromadb（向量库），清单见 DESIGN.md §12。
+可调参数集中在 server 端 config（`server/app/config.py`，pydantic-settings 读 `.env`，§14 清单中已实施的参数已落入：时间流速、好感阈值 70、反思/八卦周期、RAG 权重与 top-k、ChromaDB 目录等）。M6 新增的 `MAX_LEVEL/ARTLESS_LEVEL_CAP/ELEMENT_ADVANTAGE/ELEMENT_DISADVANTAGE/SKILL_UPGRADE_EXP_RATE` 目前只是 DESIGN 设计值，代码尚未读取，实施 M6 时再落 `config.py`。server 依赖 chromadb（向量库），清单见 DESIGN.md §12。
 
-M5 新增 `PLAN_ENABLED`（默认 true）、`PLAN_DEVIATION_SHIFT_SEC`（默认 1200）、`PLAN_HEART_MAX_CHARS`（默认 60）；`PLAN_ENABLED=false` 会立即停用心事与日程偏离（已有 `npc_plan` 行保留）。对话短期窗口容量由 `CONVERSATION_WINDOW_CAPACITY`（默认 10）控制；记忆分层新增 `MIDTERM_CAPACITY`（默认 10）、`MIDTERM_TOP_K`（默认 3）、`MIDTERM_MIN_SCORE`（默认 0.45）、`LONGTERM_TURN_INTERVAL`（默认 36）；中期条目与 36 轮原始轮缓冲只在内存，重启清零，`longterm_memory` 表持久化。本地 Ollama 上下文窗口由 `LLM_NUM_CTX`（默认 20480）控制；36 轮长期总结 prompt 较大，不要降到 16k 以下。旧的 `EVENT_SUMMARY_THRESHOLD` 已废弃，代码不再读取。`MAX_DIALOGUE_DELTA`（默认 3）现在同时约束对话、送礼、切磋的 LLM 好感变化。可选后端/观测见 DESIGN §7.1/§7.4：同时设置 `LLM_API_KEY` + `LLM_API_BASE_URL`（base_url 以 `/v1` 结尾，`LLM_API_MODEL` / `LLM_API_EMBED_MODEL` 可选）时对话与嵌入都优先走 OpenAI 兼容 API（嵌入解析同时兼容 OpenAI `data[].embedding` 与 Ollama `embeddings`，失败自动降级到本地 Ollama）；`LLM_API_TRUST_ENV=false` 默认直连（需要 shell 代理时改 true），`LLM_API_TIMEOUT=8` 控制外接 API 单次超时；`LANGFUSE_*` 默认关闭，不可达不影响玩法。运行日志同时写控制台与 `server/data/xia.log`（5MB×3 滚动），`/api/health` 返回 `log_path`。
+M5 新增 `PLAN_ENABLED`（默认 true）、`PLAN_DEVIATION_SHIFT_SEC`（默认 1200）、`PLAN_HEART_MAX_CHARS`（默认 60）；`PLAN_ENABLED=false` 会立即停用心事与日程偏离（已有 `npc_plan` 行保留）。对话短期窗口容量由 `CONVERSATION_WINDOW_CAPACITY`（默认 10）控制；记忆分层新增 `MIDTERM_CAPACITY`（默认 10）、`MIDTERM_TOP_K`（默认 3）、`MIDTERM_MIN_SCORE`（默认 0.45）、`LONGTERM_TURN_INTERVAL`（默认 36）；中期条目与 36 轮原始轮缓冲只在内存，重启清零，`longterm_memory` 表持久化。本地 Ollama 上下文窗口由 `LLM_NUM_CTX`（默认 20480）控制；36 轮长期总结 prompt 较大，不要降到 16k 以下；`OllamaClient.chat/chat_stream` 两条路径都必须在 `options.num_ctx` 传该值，新增请求路径不要漏。旧的 `EVENT_SUMMARY_THRESHOLD` 已废弃，代码不再读取。`MAX_DIALOGUE_DELTA`（默认 3）现在同时约束对话、送礼、切磋的 LLM 好感变化。可选后端/观测见 DESIGN §7.1/§7.4：同时设置 `LLM_API_KEY` + `LLM_API_BASE_URL`（base_url 以 `/v1` 结尾，`LLM_API_MODEL` / `LLM_API_EMBED_MODEL` 可选）时对话与嵌入都优先走 OpenAI 兼容 API（嵌入解析同时兼容 OpenAI `data[].embedding` 与 Ollama `embeddings`，失败自动降级到本地 Ollama）；`LLM_API_TRUST_ENV=false` 默认直连（需要 shell 代理时改 true），`LLM_API_TIMEOUT=8` 控制外接 API 单次超时；`LANGFUSE_*` 默认关闭，不可达不影响玩法。运行日志同时写控制台与 `server/data/xia.log`（5MB×3 滚动），`/api/health` 返回 `log_path`。
 
 ### 本地运行
 
-当前客户端：Godot 导入 `xia-ai-town/project.godot`，F5 运行主场景 `scenes/main.tscn`；或根目录 `godot --path xia-ai-town`。默认连接 `http://127.0.0.1:8080`，可在设置面板保存地址或用 `XIA_API_URL` 覆盖。若 Godot 跑在 Windows 而 server 在 WSL2，uvicorn 加 `--host 0.0.0.0`，客户端地址填 `http://<WSL-IP>:8080`（WSL 内 `hostname -I` 第一项）；只在本机 WSL 内玩可保持 127.0.0.1。隔离真实接口验证：`server/.venv/bin/python xia-ai-town/tools/smoke_test.py`（若 `godot` 不在 PATH，设 `GODOT_BIN=/path/to/godot`，本机为 `/home/behd/.local/bin/godot`）。无 Ollama 的后端回归：`server/.venv/bin/python server/tests/smoke.py`——stub LLM + 临时库，覆盖 M4/M5 后台链路、送礼/切磋窗口轮次、中期线索注入、36 轮长期入库与新局 generation 竞态（世界阶段、议程/情绪、心事/偏离、附近事件），重构后必须全绿。后端保持现有 Python 实现。
+当前客户端：Godot 导入 `xia-ai-town/project.godot`，F5 运行主场景 `scenes/main.tscn`；或根目录 `godot --path xia-ai-town`。默认连接 `http://127.0.0.1:8080`，可在设置面板保存地址或用 `XIA_API_URL` 覆盖。若 Godot 跑在 Windows 而 server 在 WSL2，uvicorn 加 `--host 0.0.0.0`，客户端地址填 `http://<WSL-IP>:8080`（WSL 内 `hostname -I` 第一项）；只在本机 WSL 内玩可保持 127.0.0.1。隔离真实接口验证：`server/.venv/bin/python xia-ai-town/tools/smoke_test.py`（若 `godot` 不在 PATH，设 `GODOT_BIN=/path/to/godot`，本机为 `/home/behd/.local/bin/godot`）。无 Ollama 的后端回归：`server/.venv/bin/python server/tests/smoke.py`——stub LLM + 临时库，覆盖 M4/M5 后台链路、送礼/切磋窗口轮次、中期线索注入、36 轮长期入库与新局 generation 竞态（世界阶段、议程/情绪、心事/偏离、附近事件），重构后必须全绿。P2 冒烟还覆盖 `LLM_NUM_CTX` 下限、clues 字符串与空线索重试、中期 FIFO/无关消息不注入、新局保留 `longterm_memory`、SQLite 取消时锁仍持有；`fake_embed` 按关键词分桶，不要用全同向量，否则检索/线索断言会假通过。后端保持现有 Python 实现。
 
 Python 侧用 **uv**（优先 `command -v uv`；原环境为 `~/.local/bin/uv`）管理虚拟环境——本机 python3 无 pip 且缺 python3-venv，`python3 -m venv` 不可用，不要尝试。依赖装在 `server/.venv`（gitignore）：
 
@@ -76,7 +76,7 @@ cd server && uv venv .venv && uv pip install -r requirements.txt
 - **游戏时钟**：1 现实秒 = 1 游戏分（可配），一个游戏日 ≈ 24 现实分钟。记忆 `ts_game`、NPC 日程、recency 衰减（半衰期 3 游戏日）全部基于游戏时间；但 M4 的 `paused_until`、`last_greet_real`、关系摘要水位 `relationship.updated_at` 和 `memory.created_at_real` 用现实时间（`time.time()`），两套时间不要混用。时钟 anchor 存 kv（`clock_anchor_real/game`），**服务器停机期间游戏时间照常流逝**（偏移语义，重启续走）；客户端（Godot）用同一 anchor 本地推算 HUD，不做轮询。气泡到期用本地 `Time.get_ticks_msec()`，不要与服务器 epoch 字段互比。
 - **ChromaDB 三坑**：① 建集合用 `embedding_function=None` 且 add/query 恒显式传 embeddings——否则 Chroma 会静默下载 onnx MiniLM（英文向），检索全错；② 集合默认相似度空间是 l2，须以 `metadata={"hnsw:space": "cosine"}` 建集合（向量入库前仍 L2 归一化）；③ `Settings(anonymized_telemetry=False)` 关遥测，免离线时 PostHog 报错刷日志。
 - **记忆双库分工**：`memory` 正文/元数据在 SQLite（反思按时间序、八卦按参与人过滤、调试查询都要用，Chroma 元数据不支持排序与列表值），Chroma 只做 `memory` 表的 ANN 向量检索；中期线索向量只在 `MemoryStore` 内存，`longterm_memory` 不进 Chroma。换 embedding 模型时删 Chroma 集合、从 SQLite 全量重嵌入重建。八卦的 `source_memory_id` 恒指向根记忆做祖源去重（配 `idx_memory_source`），不要改成指向直接来源，否则同一件事会沿传播链被反复转述。
-- **记忆分层：中期内存 / 长期独立表**：`npc_state.interacts_since_summary` / `last_summary_conv_id` 仅为旧库兼容保留，代码不再读写；送礼/切磋/购物不再累加互动判断值。满窗只生成一条中期内存条目（summary+线索，`_midterms`，每 NPC 上限 10），**不要恢复 `kind=event` 每 10 轮入库**；长期只写独立的 `longterm_memory` 表，**不要写 `memory`/Chroma**，也不要把长期记忆塞进反思/关系/八卦/RAG。对话不再直接产生 `memory` 行，反思/关系素材只剩规则事件/已有反思/八卦，更新频率变稀是分层后的预期，不要为了触发频率恢复每 10 轮 event。中期与 36 轮原始轮缓冲（`_longterm_turns`）重启清零；`new_game` 只清中期/缓冲/附近事件，`conversation` 与 `longterm_memory` 持久保留。`conversation` 原文永不入 Chroma。查询向量每轮只算一次（`rag.embed_query`），Chroma RAG 与中期线索匹配共用。长期总结走单 worker 队列（`LongTermJob` + `generation`）：新局 `begin_reset()` → `flush()` → `reset_runtime()`，shutdown 用 `shutdown()`，测试用 `wait_background()`；对话入口捕获 `mem_store.generation`，新局后旧回合跳过好感/议程/情绪/记忆写入，`done.stale=true`（送礼/切磋据此不扣物品/不记事件）。不要恢复 fire-and-forget task 集合或裸 `drain()`。同日送礼次数存 kv `gift_count:{npc_id}:{game_day}`，不要恢复按 memory 内容前缀计数。
+- **记忆分层：中期内存 / 长期独立表**：`npc_state.interacts_since_summary` / `last_summary_conv_id` 仅为旧库兼容保留，代码不再读写；送礼/切磋/购物不再累加互动判断值。满窗只生成一条中期内存条目（summary+线索，`_midterms`，每 NPC 上限 10），**不要恢复 `kind=event` 每 10 轮入库**；长期只写独立的 `longterm_memory` 表，**不要写 `memory`/Chroma**，也不要把长期记忆塞进反思/关系/八卦/RAG。对话不再直接产生 `memory` 行，反思/关系素材只剩规则事件/已有反思/八卦，更新频率变稀是分层后的预期，不要为了触发频率恢复每 10 轮 event。中期与 36 轮原始轮缓冲（`_longterm_turns`）重启清零；`new_game` 只清中期/缓冲/附近事件，`conversation` 与 `longterm_memory` 持久保留。`conversation` 原文永不入 Chroma。查询向量每轮只算一次（`rag.embed_query`），Chroma RAG 与中期线索匹配共用。长期总结走单 worker 队列（`LongTermJob` + `generation`）：新局 `begin_reset()` → `flush()` → `reset_runtime()`，shutdown 用 `shutdown()`，测试用 `wait_background()`；对话入口捕获 `mem_store.generation`，新局后旧回合跳过好感/议程/情绪/记忆写入，`done.stale=true`（送礼/切磋据此不扣物品/不记事件）。不要恢复 fire-and-forget task 集合或裸 `drain()`。同日送礼次数存 kv `gift_count:{npc_id}:{game_day}`，不要恢复按 memory 内容前缀计数。中期 summary 的 `clues` 允许字符串（逗号/顿号/分号/空白分隔）或数组；解析后为空必须抛错走 0.3 重试，不能把空线索条目存进 `_midterms`（不可检索）。
 - **增量迁移顺序**：`db._open()` 先 `executescript(SCHEMA)`、后跑 ALTER 补列。给旧库加列时，SCHEMA 里不能出现引用新列的索引/触发器——旧表尚无该列会直接 `no such column` 打断启动；这类索引要放在补列之后创建，新库也会走同一段迁移。
 - **记忆控制噪声**：同场目击入忆仅限战斗与大额消费（≥100 两）两类显著事件，不要扩大范围。
 - **地图交互与出生点约定**：建筑是实心瓦片、玩家站不进去，商店等 E 交互判定用建筑外扩 2 格的门口区；怪物出生点放野外土路行（ROAD），避免与确定性随机树/崖重叠导致不可达。
@@ -109,7 +109,7 @@ Xia/
 │  │  ├─ main.py config.py db.py llm.py logging_setup.py  # main 路由+lifespan装配；config 产 .env 配置；db 单写队列+WAL；llm 双后端封装+优先级限流；logging_setup 运行日志/代理告警
 │  │  ├─ game/             # data skills player inventory mobs battle shop clock schedule（确定性日程，纯函数）
 │  │  │                    # world（公设/立场）world_state plan（当日偏离读取）
-│  │  └─ agent/            # npc memory（对话窗口/中期内存/长期表+双库+reconcile）rag dialogue summary（中期/长期总结）json_utils（JSON 围栏清理）reflection（反思入忆）relationship（滚动摘要）gossip（八卦）greet（前台搭话）scheduler（后台巡检）
+│  │  └─ agent/            # npc memory（对话窗口/中期内存/长期表+双库+reconcile+长期 worker 队列）rag dialogue summary（中期/长期总结+共享 _structured_chat 重试）json_utils（全 agent 共用 JSON 围栏清理）reflection（反思入忆）relationship（滚动摘要）gossip（八卦）greet（前台搭话）scheduler（后台巡检）
 │  │                       # agenda（议程）mood（轻情绪）heart（每日心事/偏离）events（附近事件）
 │  ├─ data/               # xia.db + xia.log + chroma/（向量库），均 gitignore
 │  └─ requirements.txt
@@ -126,7 +126,7 @@ Xia/
 
 M5 已按 [`docs/M5-PLAN.md`](docs/M5-PLAN.md) 全部实施（W/B/A/C 四个 commit）；后续 NPC 生动化调整以 DESIGN.md §6.11/§6.12 与实际冒烟为准。M6 已完成设计定稿与执行计划，按 Phase A（功法/角色卡地基）、B（NPC 同构）、C（南风城/多地图）推进，实施前先读 `docs/M6-PLAN.md`。
 
-**记忆分层重构已按 [`docs/MEMORY-PLAN.md`](docs/MEMORY-PLAN.md) 实施**：短期 `conversation` 窗口、中期 `MemoryStore` 内存 summary+线索（不入库）、长期独立 `longterm_memory` 表（每 36 轮原始对话经单 worker 队列后台总结，暂不参与对话/RAG/反思/八卦）。长期任务与对话回合都带 `generation`，新局用 `begin_reset()`/`flush()`/`reset_runtime()` 屏障；改动记忆链路时以该计划与 DESIGN §6.3/§6.4/§6.6/§8 为准；长期接入对话仍待办，当前优先 M6（按 `docs/M6-PLAN.md`），实施顺序以用户安排为准。
+**记忆分层重构已按 [`docs/MEMORY-PLAN.md`](docs/MEMORY-PLAN.md) 实施**：短期 `conversation` 窗口、中期 `MemoryStore` 内存 summary+线索（不入库）、长期独立 `longterm_memory` 表（每 36 轮原始对话经单 worker 队列后台总结，暂不参与对话/RAG/反思/八卦）。长期任务与对话回合都带 `generation`，新局用 `begin_reset()`/`flush()`/`reset_runtime()` 屏障；P2 加固（`LLM_NUM_CTX`、clues 字符串/空线索重试、共享 `strip_fence`、SQLite 取消锁、冒烟分桶）已落地；改动记忆链路时以该计划与 DESIGN §6.3/§6.4/§6.6/§8 为准；长期接入对话仍待办，当前优先 M6（按 `docs/M6-PLAN.md`），实施顺序以用户安排为准。
 
 ## Git 提交规范：任务完成自动提交
 
