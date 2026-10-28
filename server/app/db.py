@@ -2,7 +2,7 @@ import asyncio
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -251,33 +251,48 @@ class Database:
             raise RuntimeError("database is not connected")
         return self._conn
 
-    async def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
-        async with self.lock:
-            def _run() -> int:
-                cur = self.conn.execute(sql, params)
-                self.conn.commit()
-                return cur.lastrowid or 0
+    async def _call_locked(self, fn: Callable[[], Any]) -> Any:
+        """Run one blocking SQLite call under the single write lock.
 
-            return await asyncio.to_thread(_run)
+        Cancelling the caller must not release the lock while the worker
+        thread is still using the connection: asyncio.to_thread cannot stop
+        that thread. Shield it, wait for it on cancellation, then re-raise.
+        """
+        async with self.lock:
+            task = asyncio.create_task(asyncio.to_thread(fn))
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                try:
+                    await task
+                except BaseException:
+                    pass
+                raise
+
+    async def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
+        def _run() -> int:
+            cur = self.conn.execute(sql, params)
+            self.conn.commit()
+            return cur.lastrowid or 0
+
+        return await self._call_locked(_run)
 
     async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
-        async with self.lock:
-            def _run() -> list[dict[str, Any]]:
-                cur = self.conn.execute(sql, params)
-                cols = [d[0] for d in cur.description]
-                return [dict(zip(cols, row)) for row in cur.fetchall()]
+        def _run() -> list[dict[str, Any]]:
+            cur = self.conn.execute(sql, params)
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
 
-            return await asyncio.to_thread(_run)
+        return await self._call_locked(_run)
 
     async def fetch_one(self, sql: str, params: Sequence[Any] = ()) -> dict[str, Any] | None:
-        async with self.lock:
-            def _run() -> dict[str, Any] | None:
-                cur = self.conn.execute(sql, params)
-                cols = [d[0] for d in cur.description]
-                row = cur.fetchone()
-                return dict(zip(cols, row)) if row else None
+        def _run() -> dict[str, Any] | None:
+            cur = self.conn.execute(sql, params)
+            cols = [d[0] for d in cur.description]
+            row = cur.fetchone()
+            return dict(zip(cols, row)) if row else None
 
-            return await asyncio.to_thread(_run)
+        return await self._call_locked(_run)
 
     async def reset(self) -> None:
         """清空全部业务表，等价于全新开档。
@@ -288,21 +303,20 @@ class Database:
         需在单写锁内执行，避免与并发语句交错。
         """
 
-        async with self.lock:
-            def _run() -> None:
-                tables = [
-                    r[0]
-                    for r in self.conn.execute(
-                        "SELECT name FROM sqlite_master"
-                        " WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-                    ).fetchall()
-                ]
-                for t in tables:
-                    self.conn.execute(f"DELETE FROM {t}")
-                self.conn.execute("DELETE FROM sqlite_sequence")
-                self.conn.commit()
+        def _run() -> None:
+            tables = [
+                r[0]
+                for r in self.conn.execute(
+                    "SELECT name FROM sqlite_master"
+                    " WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+            ]
+            for t in tables:
+                self.conn.execute(f"DELETE FROM {t}")
+            self.conn.execute("DELETE FROM sqlite_sequence")
+            self.conn.commit()
 
-            await asyncio.to_thread(_run)
+        await self._call_locked(_run)
 
     async def kv_get(self, key: str) -> str | None:
         row = await self.fetch_one("SELECT v FROM kv WHERE k = ?", (key,))

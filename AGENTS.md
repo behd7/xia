@@ -31,7 +31,7 @@
 3. **战斗为同步请求-响应**：`POST /api/battle/action` 一次返回双方结算结果。不用 WebSocket。
 4. **LLM 调用永不阻塞玩法**：所有 LLM 结构化输出必须走 校验 → 重试一次(temperature 0.3) → 模板兜底 的链路；JSON 解析失败时用模板回复，游戏可继续。
 5. **好感度防漂移**：对话、送礼、切磋的 LLM 好感变化统一 clamp ±3；送礼价值/同日次数与切磋胜负只作为 prompt 上下文，送礼/切磋不再有固定规则增益（拜师等其它规则不变）。
-6. **SQLite 单写队列**：对话写入与后台反思/八卦任务并发写库，用 asyncio.Lock 串行化 + WAL，不要改成多连接并行写。`memory` 写入 = SQLite 落库 → 同一锁内 Chroma upsert（先 SQLite 后 Chroma）；中期/长期记忆不写 Chroma（见 #11）。
+6. **SQLite 单写队列**：对话写入与后台反思/八卦任务并发写库，用 asyncio.Lock 串行化 + WAL，不要改成多连接并行写。`memory` 写入 = SQLite 落库 → 同一锁内 Chroma upsert（先 SQLite 后 Chroma）；中期/长期记忆不写 Chroma（见 #11）。取消/异常路径必须等 `to_thread` 的 SQL 完成再释放锁（`Database._call_locked`），不要在 cancel 时把仍在运行的线程丢在锁外。
 7. **LLM 全局优先级限流**（`PriorityLimiter`，并发默认 2）：`dialogue`/`dialogue_summary`/`embed`/`gift`/`spar`=0 > `greet`=1 > `relationship`=2 > `reflection`/`heart`=3（默认）> `gossip`=4。`dialogue_summary` 前台中期总结按 0；每 36 轮长期总结在后台调用时显式传 `priority=3`。`llm.chat` 按 purpose 自动取级，新增 purpose 要在 `PRIORITY` 里登记。所有调用写 `llm_log` 表供实验分析。
 8. **M5 只影响措辞**：世界阶段、心事、议程、口癖、轻情绪、附近事件都不改好感数值；好感仍只走 LLM `affinity_delta`（对话/送礼/切磋）与反思。
 9. **偏离零同步**：心事偏离只平移相位边界，不新增路径/坐标/轮询；服务端 `schedule._day_phases` 与客户端 `town_world._deviated_phases` 常量必须同步。

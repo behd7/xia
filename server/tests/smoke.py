@@ -13,9 +13,11 @@ lifespan：连库 -> seed -> 时钟 -> reconcile -> 注入），并 stub 掉 LLM
 import asyncio
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import httpx
@@ -103,8 +105,11 @@ async def main() -> int:
                 text = json.dumps({"summary": "三十六轮往来已归档。"},
                                   ensure_ascii=False)
             else:
+                match = re.search(r"闲谈第(\d+)轮", system)
+                first = int(match.group(1)) if match else 0
                 text = json.dumps(
-                    {"summary": "十轮闲谈已归档。", "clues": ["后山", "剑法"]},
+                    {"summary": f"闲谈第{first}轮起归档。",
+                     "clues": ["后山", "剑法"]},
                     ensure_ascii=False,
                 )
         elif purpose == "gift":
@@ -139,8 +144,21 @@ async def main() -> int:
         for i in range(0, len(result.text), 7):
             yield result.text[i:i + 7]
 
+    def _fake_vec(text: str) -> list[float]:
+        buckets = (
+            ("后山", 0), ("剑法", 0),
+            ("闲谈", 1),
+            ("慢速", 2),
+            ("门禁", 3),
+            ("近来", 4),
+        )
+        idx = next((i for key, i in buckets if key in text), 5)
+        vec = [0.0] * 1024
+        vec[idx] = 1.0
+        return vec
+
     async def fake_embed(texts):
-        return [[1.0] + [0.0] * 1023 for _ in texts]  # 1024 维单位向量
+        return [_fake_vec(t) for t in texts]  # 1024 维单位向量，按关键词分桶
 
     async def fake_tags():
         return ["qwen3:4b-instruct", "qwen3-embedding:0.6b"]
@@ -577,12 +595,12 @@ async def main() -> int:
             midterms = main_mod.mem_store.debug_midterms(npc_window)
             check("midterm kept in memory",
                   len(midterms) == 1
-                  and midterms[0]["summary"] == "十轮闲谈已归档。"
+                  and midterms[0]["summary"] == "闲谈第1轮起归档。"
                   and midterms[0]["clues"] == ["后山", "剑法"]
                   and midterms[0]["turn_count"] == 10)
             midterm_rows = await main_mod.db.fetch_one(
                 "SELECT COUNT(*) AS n FROM memory WHERE npc_id = ? AND content = ?",
-                (npc_window, "十轮闲谈已归档。"))
+                (npc_window, "闲谈第1轮起归档。"))
             check("midterm does not write memory", midterm_rows["n"] == 0)
             check("midterm does not write chroma",
                   main_mod.mem_store._coll.count() == chroma_before)
@@ -605,13 +623,20 @@ async def main() -> int:
             last_system = dialogue_prompts[-1][0]["content"] if dialogue_prompts else ""
             check("midterm block injected",
                   "你想起一些旧事（只作参考，不要逐字复述）" in last_system
-                  and "十轮闲谈已归档。" in last_system)
+                  and "闲谈第1轮起归档。" in last_system)
             check("midterm block sits outside recent turns",
                   last_system.find("你想起一些旧事")
                   < last_system.find("你们最近的往来"))
+            status, _, done = await talk(c, npc_window, "无关话题")
+            check("unrelated talk ok", status == 200 and done is not None)
+            dialogue_prompts = [m for purpose, m in PROMPTS if purpose == "dialogue"]
+            unrelated_system = (dialogue_prompts[-1][0]["content"]
+                                if dialogue_prompts else "")
+            check("unrelated message omits midterm block",
+                  "你想起一些旧事（只作参考，不要逐字复述）" not in unrelated_system)
 
             print("\n== 36 turns -> one longterm memory (async, isolated) ==")
-            for i in range(13, 37):
+            for i in range(14, 37):
                 status, _, done = await talk(c, npc_window, f"闲谈第{i}轮")
                 check(f"longterm talk {i} ok", status == 200 and done is not None)
             await main_mod.mem_store.wait_background()
@@ -636,8 +661,9 @@ async def main() -> int:
                 "SELECT COUNT(*) AS n FROM conversation WHERE npc_id = ?",
                 (npc_window,)))["n"]
             check("window keeps turns 31-36", conv_final == 6)
-            check("midterm capacity FIFO",
-                  len(main_mod.mem_store.debug_midterms(npc_window)) == 2)
+            fifo = [m["summary"] for m in main_mod.mem_store.debug_midterms(npc_window)]
+            check("midterm capacity FIFO keeps newest two",
+                  fifo == ["闲谈第11轮起归档。", "闲谈第21轮起归档。"])
             check("longterm buffer drained",
                   main_mod.mem_store.pending_longterm_turns(npc_window) == 0)
             long_prompts = [
@@ -713,6 +739,29 @@ async def main() -> int:
             stale_rows = await main_mod.db.fetch_one(
                 "SELECT COUNT(*) AS n FROM longterm_memory WHERE npc_id = 2")
             check("stale longterm job dropped", stale_rows["n"] == 0)
+
+            print("\n== db lock survives cancelled worker thread ==")
+            started = threading.Event()
+            release = threading.Event()
+
+            def slow_sql():
+                started.set()
+                release.wait(2)
+                return 42
+
+            slow_task = asyncio.create_task(main_mod.db._call_locked(slow_sql))
+            await asyncio.to_thread(started.wait, 1)
+            check("slow db op started", started.is_set())
+            slow_task.cancel()
+            await asyncio.sleep(0.05)
+            check("db lock held until thread finishes", main_mod.db.lock.locked())
+            release.set()
+            try:
+                await slow_task
+            except asyncio.CancelledError:
+                pass
+            check("db lock released after thread finishes",
+                  not main_mod.db.lock.locked())
 
     shutil.rmtree(_tmp, ignore_errors=True)
     return FAIL
