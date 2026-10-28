@@ -1,6 +1,6 @@
 # AGENTS.md
 
-本文件是每个新会话的行动指南。用户已决定将当前前端改为 **Godot 4 + GDScript**：代码放在 `xia-ai-town/`，以 `server/` 实际接口为准；旧 `client/`（Phaser 历史前端）已删除，历史见 git，勿再引用。地图/建筑/人物已改用 `xia-ai-town/assets/` 贴图（源图在 `asserts/`，切图脚本 `tools/build_art_assets.py`）；新增图片资源须提供生图提示词与存放路径，等待用户手动生成（提示词写在 `docs/ART-PROMPTS.md`）。M0–M5 已全部落地：脚手架、战斗、成长、NPC 记忆/RAG/对话、反思/关系/八卦/主动搭话与确定性日程、世界公设与断岳刀、对话议程/口癖/轻情绪、每日心事与安全偏离、附近事件感知。记忆链路已拆为短期 `conversation` 窗口、中期 `MemoryStore` 内存 summary+线索、长期 `longterm_memory` 独立表。
+本文件是每个新会话的行动指南。用户已决定将当前前端改为 **Godot 4 + GDScript**：代码放在 `xia-ai-town/`，以 `server/` 实际接口为准；旧 `client/`（Phaser 历史前端）已删除，历史见 git，勿再引用。地图/建筑/人物已改用 `xia-ai-town/assets/` 贴图（源图在 `asserts/`，切图脚本 `tools/build_art_assets.py`）；新增图片资源须提供生图提示词与存放路径，等待用户手动生成（提示词写在 `docs/ART-PROMPTS.md`）。M0–M5 已全部落地：脚手架、战斗、成长、NPC 记忆/RAG/对话、反思/关系/八卦/主动搭话与确定性日程、世界公设与断岳刀、对话议程/口癖/轻情绪、每日心事与安全偏离、附近事件感知。记忆链路已拆为短期 `conversation` 窗口、中期 `MemoryStore` 内存 summary+线索、长期 `longterm_memory` 独立表。M6（功法属性/上限、同源转换与散功、NPC 角色卡同构、南风城）已完成设计与执行计划，尚未实施，见 [`docs/M6-PLAN.md`](docs/M6-PLAN.md)。
 
 ## 项目是什么
 
@@ -120,13 +120,13 @@ Xia/
 
 ## 实施顺序
 
-按 DESIGN.md §13 里程碑推进：M0 脚手架、M1 战斗循环、M2 成长系统、M3 NPC 记忆+RAG+对话、M4 反思/关系摘要/八卦/主动搭话与确定性日程、M5 世界公设/议程/情绪/心事偏离/附近事件均已完成。每个里程碑交付可玩 build；调试观察主要靠 `GET /api/debug/npc/{id}`（好感、记忆流、中期/长期记忆、反思、关系摘要、当前日程、议程、情绪、心事、偏离、世界立场）。
+按 DESIGN.md §13 里程碑推进：M0 脚手架、M1 战斗循环、M2 成长系统、M3 NPC 记忆+RAG+对话、M4 反思/关系摘要/八卦/主动搭话与确定性日程、M5 世界公设/议程/情绪/心事偏离/附近事件均已完成；M6 功法境界/NPC 同构/南风城已定稿计划、尚未实施。每个里程碑交付可玩 build；调试观察主要靠 `GET /api/debug/npc/{id}`（好感、记忆流、中期/长期记忆、反思、关系摘要、当前日程、议程、情绪、心事、偏离、世界立场）。
 
-**里程碑的执行前必读**：M2 有专属拆解文档 [`docs/M2-PLAN.md`](docs/M2-PLAN.md)，M4 有 [`docs/M4-PLAN.md`](docs/M4-PLAN.md)，M5 有 [`docs/M5-PLAN.md`](docs/M5-PLAN.md)——数值、API 形状、文件落点、schema 迁移、验证步骤全部内联，关键决策已在文档里拍板，**实施对应里程碑时以计划文档为准、不要重新翻 DESIGN 与旧代码做考古**；仅当实现中发现设计需要变更时才回改 DESIGN.md 并同步该计划文档。后续里程碑建议沿用 `docs/M?-PLAN.md` 模式。
+**里程碑的执行前必读**：M2 有专属拆解文档 [`docs/M2-PLAN.md`](docs/M2-PLAN.md)，M4 有 [`docs/M4-PLAN.md`](docs/M4-PLAN.md)，M5 有 [`docs/M5-PLAN.md`](docs/M5-PLAN.md)，M6 有 [`docs/M6-PLAN.md`](docs/M6-PLAN.md)——数值、API 形状、文件落点、schema 迁移、验证步骤全部内联，关键决策已在文档里拍板，**实施对应里程碑时以计划文档为准、不要重新翻 DESIGN 与旧代码做考古**；仅当实现中发现设计需要变更时才回改 DESIGN.md 并同步该计划文档。后续里程碑建议沿用 `docs/M?-PLAN.md` 模式。
 
-M5 已按 [`docs/M5-PLAN.md`](docs/M5-PLAN.md) 全部实施（W/B/A/C 四个 commit）；后续 NPC 生动化调整以 DESIGN.md §6.11/§6.12 与实际冒烟为准。
+M5 已按 [`docs/M5-PLAN.md`](docs/M5-PLAN.md) 全部实施（W/B/A/C 四个 commit）；后续 NPC 生动化调整以 DESIGN.md §6.11/§6.12 与实际冒烟为准。M6 已完成设计定稿与执行计划，按 Phase A（功法/角色卡地基）、B（NPC 同构）、C（南风城/多地图）推进，实施前先读 `docs/M6-PLAN.md`。
 
-**记忆分层重构已按 [`docs/MEMORY-PLAN.md`](docs/MEMORY-PLAN.md) 实施**：短期 `conversation` 窗口、中期 `MemoryStore` 内存 summary+线索（不入库）、长期独立 `longterm_memory` 表（每 36 轮原始对话经单 worker 队列后台总结，暂不参与对话/RAG/反思/八卦）。长期任务与对话回合都带 `generation`，新局用 `begin_reset()`/`flush()`/`reset_runtime()` 屏障；改动记忆链路时以该计划与 DESIGN §6.3/§6.4/§6.6/§8 为准；长期接入对话是下一任务。
+**记忆分层重构已按 [`docs/MEMORY-PLAN.md`](docs/MEMORY-PLAN.md) 实施**：短期 `conversation` 窗口、中期 `MemoryStore` 内存 summary+线索（不入库）、长期独立 `longterm_memory` 表（每 36 轮原始对话经单 worker 队列后台总结，暂不参与对话/RAG/反思/八卦）。长期任务与对话回合都带 `generation`，新局用 `begin_reset()`/`flush()`/`reset_runtime()` 屏障；改动记忆链路时以该计划与 DESIGN §6.3/§6.4/§6.6/§8 为准；长期接入对话仍待办，当前优先 M6（按 `docs/M6-PLAN.md`），实施顺序以用户安排为准。
 
 ## Git 提交规范：任务完成自动提交
 
