@@ -126,6 +126,8 @@ Xia/
 
 M5 已按 [`docs/M5-PLAN.md`](docs/M5-PLAN.md) 全部实施（W/B/A/C 四个 commit）；后续 NPC 生动化调整以 DESIGN.md §6.11/§6.12 与实际冒烟为准。
 
+**记忆分层重构（下一步，计划已定稿、尚未实施）**：短期 `conversation` 窗口、中期 `MemoryStore` 内存 summary+线索（不入库）、长期独立 `longterm_memory` 表（每 36 轮原始对话后台总结，暂不参与对话/RAG/反思/八卦）。执行前以 [`docs/MEMORY-PLAN.md`](docs/MEMORY-PLAN.md) 为准；当前代码仍是上面的 10 轮窗口批总结 event 链路，实施完成后再改架构约束 #11、已知坑的窗口批总结条目和 DESIGN §6.3/§6.6/§8。
+
 ## Git 提交规范：任务完成自动提交
 
 **每个任务完成时自动 commit**（无需再询问用户），一个任务一个 commit，不新增任何任务记录/变更日志文件——`git log` 就是任务时间线，`git show <hash>` 看细节。提交信息固定三段式：
