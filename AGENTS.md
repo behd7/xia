@@ -57,7 +57,7 @@ M5 新增 `PLAN_ENABLED`（默认 true）、`PLAN_DEVIATION_SHIFT_SEC`（默认 
 
 ### 本地运行
 
-当前客户端：Godot 导入 `xia-ai-town/project.godot`，F5 运行主场景 `scenes/main.tscn`；或根目录 `godot --path xia-ai-town`。默认连接 `http://127.0.0.1:8080`，可在设置面板保存地址或用 `XIA_API_URL` 覆盖。若 Godot 跑在 Windows 而 server 在 WSL2，uvicorn 加 `--host 0.0.0.0`，客户端地址填 `http://<WSL-IP>:8080`（WSL 内 `hostname -I` 第一项）；只在本机 WSL 内玩可保持 127.0.0.1。隔离真实接口验证：`server/.venv/bin/python xia-ai-town/tools/smoke_test.py`（若 `godot` 不在 PATH，设 `GODOT_BIN=/path/to/godot`，本机为 `/home/behd/.local/bin/godot`）。无 Ollama 的后端回归：`server/.venv/bin/python server/tests/smoke.py`——stub LLM + 临时库，覆盖 M4/M5 后台链路、送礼/切磋窗口轮次、中期线索注入、36 轮长期入库与新局 generation 竞态（世界阶段、议程/情绪、心事/偏离、附近事件），重构后必须全绿。P2 冒烟还覆盖 `LLM_NUM_CTX` 下限、clues 字符串与空线索重试、中期 FIFO/无关消息不注入、新局保留 `longterm_memory`、SQLite 取消时锁仍持有；`fake_embed` 按关键词分桶，不要用全同向量，否则检索/线索断言会假通过。后端保持现有 Python 实现。
+当前客户端：Godot 导入 `xia-ai-town/project.godot`，F5 运行主场景 `scenes/main.tscn`；或根目录 `godot --path xia-ai-town`。默认连接 `http://127.0.0.1:8080`，可在设置面板保存地址或用 `XIA_API_URL` 覆盖。若 Godot 跑在 Windows 而 server 在 WSL2，uvicorn 加 `--host 0.0.0.0`，客户端地址填 `http://<WSL-IP>:8080`（WSL 内 `hostname -I` 第一项）；只在本机 WSL 内玩可保持 127.0.0.1。隔离真实接口验证：`server/.venv/bin/python xia-ai-town/tools/smoke_test.py`（若 `godot` 不在 PATH，设 `GODOT_BIN=/path/to/godot`，本机为 `/home/behd/.local/bin/godot`）。无 Ollama 的后端回归：`server/.venv/bin/python server/tests/smoke.py`——stub LLM + 临时库，覆盖 M4/M5 后台链路、送礼/切磋窗口轮次、中期线索注入、36 轮长期入库与新局 generation 竞态（世界阶段、议程/情绪、心事/偏离、附近事件），重构后必须全绿。M6-A/B 还覆盖功法上限/同源异源转修/软散功/属性克制与 NPC 角色卡/招式 AI。P2 冒烟还覆盖 `LLM_NUM_CTX` 下限、clues 字符串与空线索重试、中期 FIFO/无关消息不注入、新局保留 `longterm_memory`、SQLite 取消时锁仍持有；`fake_embed` 按关键词分桶，不要用全同向量，否则检索/线索断言会假通过。后端保持现有 Python 实现。
 
 Python 侧用 **uv**（优先 `command -v uv`；原环境为 `~/.local/bin/uv`）管理虚拟环境——本机 python3 无 pip 且缺 python3-venv，`python3 -m venv` 不可用，不要尝试。依赖装在 `server/.venv`（gitignore）：
 
@@ -82,6 +82,7 @@ cd server && uv venv .venv && uv pip install -r requirements.txt
 - **地图交互与出生点约定**：建筑是实心瓦片、玩家站不进去，商店等 E 交互判定用建筑外扩 2 格的门口区；怪物出生点放野外土路行（ROAD），避免与确定性随机树/崖重叠导致不可达。
 - **派生属性单一入口（M2 起）**：装备与内功被动通过 `modifiers(db,p)` 聚合进 `derived(p, mods)`，任何要拿攻/防/速/闪避/暴击/上下限的代码一律走 `player.stats(db,p)`（M6 起它包装 `character.stats`，玩家/NPC 共用），**不要直接调 `derived(p)`**（会漏装备与被动）。入门门派加成是直改 player 行四维的一次性写入，不进 mods。
 - **角色卡 owner 与旧表迁移（M6 Phase A/B）**：`character` 是成长 SSOT，`player`/`npc` 只保留身份/位置锚点；`player.get()` 返回的 `id` 是 player id，装备/技能/功法查询一律用 `character_id`（`character_inventory`/`character_skill`/`character_art`）。旧 `inventory`/`player_skill` 只在首次迁移回灌一次，之后保持只读，**不要再从旧表回灌**，否则卖出/消耗的物品会在下次启动被加回。功法切换/散功/到顶经验停止统一走 `arts.switch_art`/`character.gain_exp`，不要手写等级变更；内功被动在 `art.passive_json`，招式升级费走 `skills.upgrade_cost(character_level, skill_level)`。NPC 角色卡由 `npc.seed_and_load` 按花名册预设种入，`new_game` 调 `npc.reset_progression` 重置；切磋用 `character.stats` + `skills.combat_skills`，不要恢复花名册 `combat`。
+- **学艺入口与旧拜师路由（M6 A/B）**：清溪镇三馆走 `/api/game/art/learn` 或 `/api/npc/{id}/apprentice` 的 guild 分支；`/api/sect/join` 与 `skills.join_sect` 只接受 `kind='sect'` 的正式门派，guild 会被拒绝。`npc.by_id` 已附带 `character`/`potions`，战斗/调试不要再读花名册 `combat`。Godot 冒烟 fixture 的成长字段改 `UPDATE character ... WHERE kind='player'`，旧 `player` 表只剩位置/名字。
 - **战斗数据分工**：战斗进行态存 `battle.state_json` + `active` 列（敌方快照、回合、药剂用量、`buffs`、`skill_cd`），玩家 HP/MP 以 player 行为单一事实源——断线重入靠这个约定，M3 加新战斗状态时继续挂 state_json。怪物存活存 kv `mob_kills`（击杀时间戳，60s 重生）。胜利结算会把玩家坐标推离怪物出生点 48px，防止重生后刷新页面被站桩开战；`_finalize` 的复活/推离规则改动时想想这条。
 - **杀 dev server 用端口，别用 pkill -f**：`pkill -f "uvicorn ..."` 会匹配到自己这条 bash 命令行里同样含该文本的部分而自杀。用 `fuser -k 8080/tcp` / TaskStop，或 `pkill -f "app[.]main"`（字符类技巧）。
 - **8000 端口归 Godot AI 插件**：`xia-ai-town/addons/godot_ai` 在编辑器启动时会起一个 Windows 侧服务占用 `127.0.0.1:8000`，对普通请求返回 `401 TRANSPORT_AUTH_REQUIRED`（realm=godot-ai），还会导致 WSL 后端无法绑定该端口。游戏后端固定用 8080；排查“401/连接失败”先看响应头是否带 `realm="godot-ai"`。
@@ -121,7 +122,7 @@ Xia/
 
 ## 实施顺序
 
-按 DESIGN.md §13 里程碑推进：M0 脚手架、M1 战斗循环、M2 成长系统、M3 NPC 记忆+RAG+对话、M4 反思/关系摘要/八卦/主动搭话与确定性日程、M5 世界公设/议程/情绪/心事偏离/附近事件均已完成；M6 Phase A/B（功法境界/角色卡/三馆学艺/NPC 同构）已实施，Phase C 待续。每个里程碑交付可玩 build；调试观察主要靠 `GET /api/debug/npc/{id}`（好感、记忆流、中期/长期记忆、反思、关系摘要、当前日程、议程、情绪、心事、偏离、世界立场）。
+按 DESIGN.md §13 里程碑推进：M0 脚手架、M1 战斗循环、M2 成长系统、M3 NPC 记忆+RAG+对话、M4 反思/关系摘要/八卦/主动搭话与确定性日程、M5 世界公设/议程/情绪/心事偏离/附近事件均已完成；M6 Phase A/B（功法境界/角色卡/三馆学艺/NPC 同构）已实施，Phase C 待续。每个里程碑交付可玩 build；调试观察主要靠 `GET /api/debug/npc/{id}`（好感、记忆流、中期/长期记忆、反思、关系摘要、当前日程、议程、情绪、心事、偏离、世界立场、角色卡/功法）。
 
 **里程碑的执行前必读**：M2 有专属拆解文档 [`docs/M2-PLAN.md`](docs/M2-PLAN.md)，M4 有 [`docs/M4-PLAN.md`](docs/M4-PLAN.md)，M5 有 [`docs/M5-PLAN.md`](docs/M5-PLAN.md)，M6 有 [`docs/M6-PLAN.md`](docs/M6-PLAN.md)——数值、API 形状、文件落点、schema 迁移、验证步骤全部内联，关键决策已在文档里拍板，**实施对应里程碑时以计划文档为准、不要重新翻 DESIGN 与旧代码做考古**；仅当实现中发现设计需要变更时才回改 DESIGN.md 并同步该计划文档。后续里程碑建议沿用 `docs/M?-PLAN.md` 模式。
 
