@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from .config import settings
 from .logging_setup import log_proxy_env, setup_logging
 from .db import Database
+from .game import arts as arts_mod
 from .game import battle as battle_mod
 from .game import data, mobs as mobs_mod
 from .game import inventory as inventory_mod
@@ -67,7 +68,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await db.reset()
         logger.warning("startup: reset_on_start=true，SQLite 已清空，本次全新开局")
     await data.seed_and_load(db)
+    await arts_mod.seed_and_load(db)
     await skills_mod.seed_and_load(db)
+    await arts_mod.migrate_legacy(db)
     await npc_mod.seed_and_load(db)
     await clock.load()
     # 补算上次进程在“最后一名山贼胜利结算”后、写世界阶段前退出的情况；幂等。
@@ -179,6 +182,13 @@ class SkillUpgradeReq(BaseModel):
 
 class SectJoinReq(BaseModel):
     sect_id: str
+
+
+class ArtLearnReq(BaseModel):
+    art_id: int
+    npc_id: int | None = None
+    confirm_reset: bool = False
+    confirm_clamp: bool = False
 
 
 class SellReq(BaseModel):
@@ -470,6 +480,58 @@ async def game_state() -> dict[str, Any]:
     }
 
 
+@app.get("/api/game/arts")
+async def game_arts() -> dict[str, Any]:
+    p = await _player_or_409()
+    return {
+        "arts": await arts_mod.list_for_client(db, p),
+        "player": await player_mod.api_dict(db, p),
+    }
+
+
+@app.post("/api/game/art/learn")
+async def game_art_learn(req: ArtLearnReq) -> dict[str, Any]:
+    p = await _player_or_409()
+    art_row = await arts_mod.by_id(db, req.art_id)
+    if art_row is None:
+        raise HTTPException(404, "查无此功法")
+    learned = await db.fetch_one(
+        "SELECT 1 AS ok FROM character_art"
+        " WHERE character_id = ? AND art_id = ?",
+        (p["character_id"], req.art_id),
+    )
+    try:
+        if learned:
+            result = await arts_mod.switch_art(
+                db, p, art_row, confirm_reset=req.confirm_reset,
+                confirm_clamp=req.confirm_clamp, source="switch")
+        else:
+            if req.npc_id is None:
+                raise arts_mod.ArtError("需向传授者学艺。")
+            result = await arts_mod.learn_from_npc(
+                db, p, art_row, req.npc_id,
+                confirm_reset=req.confirm_reset,
+                confirm_clamp=req.confirm_clamp)
+    except arts_mod.ArtError as e:
+        detail: dict[str, Any] = {"message": str(e)}
+        if e.requires_reset:
+            detail["requires_reset"] = True
+        if e.requires_clamp:
+            detail["requires_clamp"] = True
+            detail["clamp_to"] = e.clamp_to
+        if detail.get("requires_reset") or detail.get("requires_clamp"):
+            raise HTTPException(409, detail=detail)
+        raise HTTPException(400, str(e))
+    await player_mod.save(db, p)
+    payload = await player_mod.api_dict(db, p)
+    return {
+        "player": payload, "art": payload.get("art"),
+        "reset": result.get("reset", False),
+        "clamped": result.get("clamped", False),
+        "tuition": result.get("tuition", 0),
+    }
+
+
 @app.post("/api/game/new")
 async def new_game(req: NewGameReq) -> dict[str, Any]:
     existing = await player_mod.get(db)
@@ -570,7 +632,7 @@ async def game_allocate(req: AllocateReq) -> dict[str, Any]:
 async def game_equip(req: EquipReq) -> dict[str, Any]:
     p = await _player_or_409()
     try:
-        await inventory_mod.equip(db, p["id"], req.item_id)
+        await inventory_mod.equip(db, p["character_id"], req.item_id)
     except inventory_mod.InvError as e:
         raise HTTPException(400, str(e))
     await _clamp_after_derived_change(p)
@@ -582,7 +644,7 @@ async def game_equip(req: EquipReq) -> dict[str, Any]:
 async def game_unequip(req: UnequipReq) -> dict[str, Any]:
     p = await _player_or_409()
     try:
-        await inventory_mod.unequip(db, p["id"], req.slot)
+        await inventory_mod.unequip(db, p["character_id"], req.slot)
     except inventory_mod.InvError as e:
         raise HTTPException(400, str(e))
     await _clamp_after_derived_change(p)
@@ -629,7 +691,7 @@ async def shop_sell(shop_id: str, req: SellReq) -> dict[str, Any]:
     if await shop_mod.info(db, shop_id) is None:
         raise HTTPException(404, "查无此店")
     try:
-        gain = await inventory_mod.sell(db, p["id"], req.item_id, req.qty)
+        gain = await inventory_mod.sell(db, p["character_id"], req.item_id, req.qty)
     except inventory_mod.InvError as e:
         raise HTTPException(400, str(e))
     p["gold"] += gain

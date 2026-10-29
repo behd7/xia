@@ -68,7 +68,7 @@ async def buy(db: Database, p: dict, shop_id: str, item_id: int, qty: int, pos: 
     if p["gold"] < cost:
         raise ShopError("银两不足")
     p["gold"] -= cost
-    await inventory.add(db, p["id"], item_id, qty)
+    await inventory.add(db, p["character_id"], item_id, qty)
     if pos:
         p["pos_x"], p["pos_y"] = pos["x"], pos["y"]
     # 记忆控制噪声：大额消费（≥100 两）才写店主记忆（AGENTS.md #6.9 记忆控制噪声）。

@@ -64,17 +64,21 @@ def fixture(db: Path, mode: str) -> None:
     with sqlite3.connect(db) as conn:
         if mode == "advanced":
             conn.execute(
-                "UPDATE player SET level=3, exp=0, cultivation=200, free_points=3, "
+                "UPDATE character SET level=3, exp=0, cultivation=200, free_points=3, "
                 "str=20, con=100, agi=5, int_=20, hp=1000, mp=200, gold=1000"
+                " WHERE kind='player'"
             )
-            # 拜师需掌门好感 ≥60（M3 起），纯等级条件已废弃。
+            # 三馆学艺需馆主好感 ≥20（M6 起），旧拜师等级门槛已废弃。
             conn.execute(
                 "UPDATE npc_state SET affinity=80 WHERE npc_id IN "
                 "(SELECT id FROM npc WHERE role='master' AND sect_id='jianyang')"
             )
         elif mode == "defeat":
             # Enemy acts first and agi=0 makes dodge exactly zero. One hit must kill.
-            conn.execute("UPDATE player SET hp=1, con=5, agi=0, pos_x=792, pos_y=440")
+            conn.execute(
+                "UPDATE character SET hp=1, con=5, agi=0 WHERE kind='player'"
+            )
+            conn.execute("UPDATE player SET pos_x=792, pos_y=440")
         else:
             raise ValueError(mode)
 

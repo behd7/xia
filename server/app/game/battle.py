@@ -5,7 +5,7 @@ import random
 import time
 
 from ..db import Database
-from . import data, inventory, mobs, player as player_mod, skills as skills_mod
+from . import arts, data, inventory, mobs, player as player_mod, skills as skills_mod
 from . import world as world_mod, world_state as world_state_mod
 from ..agent import dialogue as dialogue_mod
 from ..agent import events as events_mod
@@ -36,11 +36,13 @@ def _snapshot(bid: int, state: dict, target_id: str, p: dict, result: str | None
         "id": bid,
         "enemy": {
             "id": target_id, "type": e["type"], "name": e["name"], "level": e["level"],
-            "hp": e["hp"], "hp_max": e["hp_max"], "atk": e["atk"], "def": e["def"], "spd": e["spd"],
+            "hp": e["hp"], "hp_max": e["hp_max"], "atk": e["atk"], "def": e["def"],
+            "spd": e["spd"], "element": e.get("element"),
         },
         "player": {
             "name": p["name"], "level": p["level"],
             "hp": p["hp"], "mp": p["mp"], "hp_max": d["hp_max"], "mp_max": d["mp_max"],
+            "element": arts.element_for_id(p.get("art_id")),
         },
         "player_first": state["player_first"],
         "round": state["round"],
@@ -81,7 +83,7 @@ async def start(db: Database, p: dict, mob_id: str, pos: dict | None) -> dict:
         "enemy": {
             "type": spawn["type"], "name": t["name"], "level": t["level"],
             "hp": t["hp"], "hp_max": t["hp"], "atk": t["atk"], "def": t["def"],
-            "spd": t["spd"], "potions": t["potions"],
+            "spd": t["spd"], "potions": t["potions"], "element": t.get("element"),
         },
         "player_first": d["spd"] >= t["spd"],
         "round": 1, "enemy_acted": False, "potions_used": 0,
@@ -114,7 +116,7 @@ async def start_spar(db: Database, p: dict, npc_id: int, pos: dict | None) -> di
         "enemy": {
             "type": "npc", "name": n["name"], "level": c["level"],
             "hp": c["hp"], "hp_max": c["hp"], "atk": c["atk"], "def": c["def"],
-            "spd": c["spd"], "potions": c.get("potions", 0),
+            "spd": c["spd"], "potions": c.get("potions", 0), "element": None,
         },
         "player_first": d["spd"] >= c["spd"],
         "round": 1, "enemy_acted": False, "potions_used": 0,
@@ -160,6 +162,8 @@ async def apply_action(db: Database, action: str, item_id: int | None) -> dict:
     state = json.loads(brow["state_json"])
     enemy = state["enemy"]
     d = await player_mod.stats(db, p)
+    player_el = arts.element_for_id(p.get("art_id"))
+    enemy_el = enemy.get("element")
     log: list[dict] = []
     result: str | None = None
     rewards: dict | None = None
@@ -180,10 +184,19 @@ async def apply_action(db: Database, action: str, item_id: int | None) -> dict:
         dmg = max(1, round(d["atk"] * mult - defv))
         if crit:
             dmg = round(dmg * 1.5)
+        elem = arts.counter_label(player_el, enemy_el)
+        elem_mult = arts.counter_multiplier(player_el, enemy_el)
+        dmg = max(1, round(dmg * elem_mult))
         enemy["hp"] = max(0, enemy["hp"] - dmg)
         base = f"你使出{name}，" if name else f"你攻向{enemy['name']}，"
         suffix = "（会心一击）" if crit else ""
-        add("player_attack", f"{base}造成 {dmg} 点伤害{suffix}。", value=dmg, crit=crit, enemy_hp=enemy["hp"])
+        if elem == "advantage":
+            suffix += "（属性克制）"
+        elif elem == "disadvantage":
+            suffix += "（属性被克）"
+        add("player_attack", f"{base}造成 {dmg} 点伤害{suffix}。", value=dmg,
+            crit=crit, enemy_hp=enemy["hp"], element_counter=elem,
+            element_mult=round(elem_mult, 2))
 
     def try_player_attack() -> None:
         player_hit("", 1.0, {})
@@ -196,8 +209,15 @@ async def apply_action(db: Database, action: str, item_id: int | None) -> dict:
             return
         defv = d["def"] * pbv.get("def_pct", 1.0)
         dmg = max(1, round(enemy["atk"] - defv))
+        elem = arts.counter_label(enemy_el, player_el)
+        elem_mult = arts.counter_multiplier(enemy_el, player_el)
+        dmg = max(1, round(dmg * elem_mult))
         p["hp"] = max(0, p["hp"] - dmg)
-        add("enemy_attack", f"{enemy['name']}扑将过来，你受到 {dmg} 点伤害。", value=dmg, player_hp=p["hp"])
+        suffix = "（属性克制）" if elem == "advantage" else (
+            "（属性被克）" if elem == "disadvantage" else "")
+        add("enemy_attack", f"{enemy['name']}扑将过来，你受到 {dmg} 点伤害{suffix}。",
+            value=dmg, player_hp=p["hp"], element_counter=elem,
+            element_mult=round(elem_mult, 2))
 
     def enemy_turn() -> None:
         # Rule AI per docs/DESIGN.md §5.6; M1 mobs carry no skills,
@@ -224,11 +244,16 @@ async def apply_action(db: Database, action: str, item_id: int | None) -> dict:
                 raise BattleError("missing skill id")
             srow = await skills_mod.by_id(db, item_id)
             ps = await db.fetch_one(
-                "SELECT level, equipped FROM player_skill WHERE player_id = ? AND skill_id = ?",
-                (p["id"], item_id),
+                "SELECT level, equipped FROM character_skill"
+                " WHERE character_id = ? AND skill_id = ?",
+                (p["character_id"], item_id),
             )
             if srow is None or ps is None:
                 raise BattleError("尚未习得此技")
+            if srow["art_id"] != p.get("art_id"):
+                raise BattleError("此招不属于当前功法")
+            if p["level"] < int(srow["unlock_level"] or 1):
+                raise BattleError("修为未至，此招尚未解锁")
             if srow["kind"] != "active":
                 raise BattleError("内功为被动心法，无需施展")
             if not ps["equipped"]:
@@ -266,15 +291,16 @@ async def apply_action(db: Database, action: str, item_id: int | None) -> dict:
             if state["potions_used"] >= data.BATTLE_POTION_LIMIT:
                 raise BattleError("本场药剂已用尽")
             inv = await db.fetch_one(
-                "SELECT it.name, it.type, it.effect_json FROM inventory inv"
-                " JOIN item it ON it.id = inv.item_id WHERE inv.player_id = ? AND inv.item_id = ?",
-                (p["id"], item_id),
+                "SELECT it.name, it.type, it.effect_json FROM character_inventory inv"
+                " JOIN item it ON it.id = inv.item_id"
+                " WHERE inv.character_id = ? AND inv.item_id = ?",
+                (p["character_id"], item_id),
             )
             if inv is None or inv["type"] != "potion":
                 raise BattleError("not a usable potion")
             effect = json.loads(inv["effect_json"])
             state["potions_used"] += 1
-            await inventory.consume(db, p["id"], item_id)
+            await inventory.consume(db, p["character_id"], item_id)
             parts = []
             if "hp" in effect:
                 heal = min(effect["hp"], d["hp_max"] - p["hp"])
@@ -382,14 +408,14 @@ async def _finalize(db: Database, p: dict, state: dict, add, result: str) -> dic
         drops = []
         if state["enemy"]["type"] == "boss" and not await world_state_mod.artifact_acquired(db):
             row = data.item(world_mod.ARTIFACT_ITEM_KEY)
-            await inventory.add(db, p["id"], row["id"])
+            await inventory.add(db, p["character_id"], row["id"])
             await world_state_mod.mark_artifact_acquired(db)
             drops.append({"name": row["name"], "qty": 1})
             add("drop", "拾获 断岳刀——刀身沉黑，隐有寒光。")
         for dr in t["drops"]:
             if random.random() < dr["rate"]:
                 row = data.item(dr["key"])
-                await inventory.add(db, p["id"], row["id"])
+                await inventory.add(db, p["character_id"], row["id"])
                 drops.append({"name": row["name"], "qty": 1})
                 add("drop", f"拾获 {row['name']}。")
         exp, gold = t["exp"], t["gold"]

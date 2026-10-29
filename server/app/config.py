@@ -70,6 +70,13 @@ class Settings(BaseSettings):
     plan_deviation_shift_sec: int = 1200    # 阶段平移上限（游戏秒）= 20 游戏分钟
     plan_heart_max_chars: int = 60          # 心事字数上限
 
+    # M6 功法境界（docs/DESIGN.md §5.1/§5.8）
+    max_level: int = 100                    # 修为等级全局硬上限
+    artless_level_cap: int = 15             # 未习功法“凡体”的等级上限
+    element_advantage: float = 1.20         # 属性克制伤害倍率
+    element_disadvantage: float = 0.85      # 属性被克伤害倍率
+    skill_upgrade_exp_rate: float = 0.05    # 招式升级费 = 升级经验 × 该值 × 招式等级
+
     # Memory tiers (docs/DESIGN.md §6.6)
     dialogue_window_size: int = 6           # 每轮回复平铺的最近对话轮数
     conversation_window_capacity: int = 10  # conversation 超过此数即总结最早一批

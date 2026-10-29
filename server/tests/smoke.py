@@ -524,13 +524,17 @@ async def main() -> int:
                   and await world_state_mod.stage(main_mod.db) == 0)
             dao = data.item(world_mod.ARTIFACT_ITEM_KEY)
             dao_row = await main_mod.db.fetch_one(
-                "SELECT inv.qty FROM inventory inv JOIN item it ON it.id = inv.item_id"
-                " WHERE inv.player_id = ? AND it.id = ?", (p["id"], dao["id"]))
+                "SELECT inv.qty FROM character_inventory inv"
+                " JOIN item it ON it.id = inv.item_id"
+                " WHERE inv.character_id = (SELECT character_id FROM player LIMIT 1)"
+                " AND it.id = ?", (dao["id"],))
             check("artifact in inventory once", dao_row is not None and dao_row["qty"] == 1)
             await battle_mod._finalize(main_mod.db, p, boss_state, add, "win")
             dao_row = await main_mod.db.fetch_one(
-                "SELECT inv.qty FROM inventory inv JOIN item it ON it.id = inv.item_id"
-                " WHERE inv.player_id = ? AND it.id = ?", (p["id"], dao["id"]))
+                "SELECT inv.qty FROM character_inventory inv"
+                " JOIN item it ON it.id = inv.item_id"
+                " WHERE inv.character_id = (SELECT character_id FROM player LIMIT 1)"
+                " AND it.id = ?", (dao["id"],))
             check("artifact never drops twice", dao_row is not None and dao_row["qty"] == 1)
 
             r = await c.post("/api/shop/clinic/sell",
@@ -564,7 +568,12 @@ async def main() -> int:
                   and "冒烟侠" in (st["world"]["announcement"] or ""))
 
             r = await c.post("/api/npc/1/apprentice")
-            check("apprentice rules unchanged after world event", r.status_code == 400)
+            body = r.json()
+            check("M6 guild apprentice learns art",
+                  r.status_code == 200 and body.get("learned") is True
+                  and body.get("art", {}).get("name") == "烈阳剑诀")
+            check("guild apprentice does not set formal sect",
+                  body.get("player", {}).get("sect") is None)
 
             r = await c.post("/api/game/new", json={"name": "新冒烟侠", "confirm": True})
             st = (await c.get("/api/game/state")).json()
@@ -782,6 +791,93 @@ async def main() -> int:
                 pass
             check("db lock released after thread finishes",
                   not main_mod.db.lock.locked())
+
+            print("\n== M6-A 功法境界 / 软散功 / 克制 ==")
+            from app.game import arts as arts_mod, character as char_mod
+            from app.game import player as player_mod
+            await c.post("/api/game/new", json={"name": "功法侠", "confirm": True})
+            st = (await c.get("/api/game/state")).json()
+            p = st["player"]
+            check("fresh character has no art and cap 15",
+                  p["art"] is None and p["level_cap"] == 15 and p["skills"] == [])
+            arts_list = (await c.get("/api/game/arts")).json()["arts"]
+            by_name = {a["name"]: a for a in arts_list}
+            lieyang = by_name["烈阳剑诀"]
+            chiyang = by_name["赤阳功"]
+            dafeng = by_name["大风诀"]
+            r = await c.post("/api/game/art/learn",
+                             json={"art_id": lieyang["id"], "npc_id": 1})
+            check("guild art learn via master", r.status_code == 200)
+            p = r.json()["player"]
+            check("learned fire art level 1 cap 15",
+                  p["art"]["name"] == "烈阳剑诀"
+                  and p["level"] == 1 and p["level_cap"] == 15
+                  and len(p["skills"]) == 3)
+            check("guild tuition deducted", p["gold"] < 100)
+            cid = p["character_id"]
+            await main_mod.db.execute(
+                "UPDATE character SET level=15, exp=0 WHERE id=?", (cid,))
+            p15 = await player_mod.get(main_mod.db)
+            ups = char_mod.gain_exp(p15, 1000)
+            check("art cap stops exp at 15",
+                  ups == [] and p15["exp"] == 0 and p15["level"] == 15)
+            await player_mod.save(main_mod.db, p15)
+            chiyang_row = await arts_mod.by_id(main_mod.db, chiyang["id"])
+            lieyang_row = await arts_mod.by_id(main_mod.db, lieyang["id"])
+            dafeng_row = await arts_mod.by_id(main_mod.db, dafeng["id"])
+            p15 = await player_mod.get(main_mod.db)
+            res = await arts_mod.switch_art(main_mod.db, p15, chiyang_row,
+                                            source="test")
+            await player_mod.save(main_mod.db, p15)
+            check("same element keeps level and raises cap",
+                  res["reset"] is False and p15["level"] == 15
+                  and arts_mod.cap_of(p15) == 40)
+            await main_mod.db.execute(
+                "UPDATE character SET level=20, exp=0 WHERE id=?", (cid,))
+            p15 = await player_mod.get(main_mod.db)
+            try:
+                await arts_mod.switch_art(main_mod.db, p15, lieyang_row)
+                clamp_required = False
+            except arts_mod.ArtError as e:
+                clamp_required = e.requires_clamp
+            check("same element lower cap requires confirm", clamp_required)
+            res = await arts_mod.switch_art(main_mod.db, p15, lieyang_row,
+                                            confirm_clamp=True, source="test")
+            await player_mod.save(main_mod.db, p15)
+            check("confirmed clamp lowers level to cap",
+                  res["clamped"] is True and p15["level"] == 15
+                  and arts_mod.cap_of(p15) == 15)
+            before_stats = {k: p15[k] for k in ("str", "con", "agi", "int_")}
+            before_gold = p15["gold"]
+            try:
+                await arts_mod.switch_art(main_mod.db, p15, dafeng_row)
+                reset_required = False
+            except arts_mod.ArtError as e:
+                reset_required = e.requires_reset
+            check("different element requires reset confirm", reset_required)
+            res = await arts_mod.switch_art(main_mod.db, p15, dafeng_row,
+                                            confirm_reset=True, source="test")
+            await player_mod.save(main_mod.db, p15)
+            check("soft reset keeps stats/gold, level 1",
+                  res["reset"] is True and p15["level"] == 1 and p15["exp"] == 0
+                  and all(p15[k] == before_stats[k] for k in before_stats)
+                  and p15["gold"] == before_gold)
+            check("wind art lacks moves but is current",
+                  arts_mod.row_for(p15)["name"] == "大风诀"
+                  and arts_mod.cap_of(p15) == 45)
+            check("counter ring",
+                  arts_mod.counter_multiplier("fire", "metal") == 1.2
+                  and arts_mod.counter_multiplier("metal", "fire") == 0.85
+                  and arts_mod.counter_multiplier("fire", "wind") == 1.0
+                  and arts_mod.counter_multiplier("demon", "fire") == 1.0)
+            r = await c.post("/api/game/art/learn", json={"art_id": chiyang["id"]})
+            check("API requires reset for different element",
+                  r.status_code == 409
+                  and r.json()["detail"].get("requires_reset") is True)
+            r = await c.post("/api/game/art/learn",
+                             json={"art_id": chiyang["id"], "confirm_reset": True})
+            check("API confirmed reset succeeds",
+                  r.status_code == 200 and r.json()["player"]["level"] == 1)
 
     shutil.rmtree(_tmp, ignore_errors=True)
     return FAIL

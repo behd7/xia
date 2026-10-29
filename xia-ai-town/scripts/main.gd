@@ -420,7 +420,15 @@ func _apply_player(data: Dictionary, move_actor: bool = false) -> void:
 		world.actor_pos = _walkable_position(Vector2(player.pos.x, player.pos.y))
 	character_name.text = str(player.name)
 	var sect: Variant = player.get("sect")
-	character_meta.text = "第 %d 重  /  %s" % [int(player.level), "江湖散人" if sect == null else str(sect.name)]
+	var art: Variant = player.get("art")
+	var art_text := "未习功法"
+	if art != null:
+		art_text = "%s·%s" % [str(art.name), str(art.element_name)]
+		if bool(art.get("at_cap", false)):
+			art_text += "（瓶颈）"
+	character_meta.text = "第 %d 重  /  %s%s" % [
+		int(player.level), art_text,
+		"" if sect == null else "  /  " + str(sect.name)]
 	hp_label.text = "气血    %d / %d" % [int(player.hp), int(player.hp_max)]
 	mp_label.text = "内力    %d / %d" % [int(player.mp), int(player.mp_max)]
 	hp_bar.max_value = float(player.hp_max)
@@ -429,7 +437,9 @@ func _apply_player(data: Dictionary, move_actor: bool = false) -> void:
 	mp_bar.value = float(player.mp)
 	exp_bar.max_value = float(player.exp_next)
 	exp_bar.value = float(player.exp)
-	exp_bar.tooltip_text = "经验 %d / %d" % [int(player.exp), int(player.exp_next)]
+	exp_bar.tooltip_text = "经验 %d / %d%s" % [
+		int(player.exp), int(player.exp_next),
+		"（瓶颈：需更高上限功法）" if bool(player.get("at_cap", false)) else ""]
 	gold_label.text = "银两  %d 两    ·    修炼 %d" % [int(player.gold), int(player.cultivation)]
 
 func _walkable_position(point: Vector2) -> Vector2:
@@ -639,19 +649,53 @@ func open_skills() -> void:
 		return
 	var body := _new_modal("武 学", "内练一口气，外练手中锋。最多装备三门主动招式。", "skills")
 	UI.row(body, "修炼点", str(player.cultivation), UI.GOLD)
-	if player.skills.is_empty():
-		body.add_child(UI.label("尚无师承", 24, UI.JADE))
-		body.add_child(UI.paragraph("等级达到三重后，可前往剑阳道馆、玄铁堂或烟雨小筑门前，按 E 拜师。一生只入一派。", 18, UI.INK))
+	var art: Variant = player.get("art")
+	if art == null:
+		body.add_child(UI.label("尚未习武", 24, UI.JADE))
+		body.add_child(UI.paragraph("走近剑阳道馆、玄铁堂或烟雨小筑，按 E 向馆主学艺。三馆可兼学；转修异属性功法会散功归 1 级，四维/装备/图鉴保留。", 18, UI.INK))
+	else:
+		body.add_child(UI.label("%s  ·  %s  ·  修为 %d / %d" % [
+			str(art.name), str(art.element_name), int(player.level), int(art.cap_level)], 22, UI.JADE))
+		var bottleneck := "  ·  瓶颈：需更高上限功法" if bool(art.get("at_cap", false)) else ""
+		body.add_child(UI.paragraph("内功：%s%s" % [str(art.get("passive_desc", "—")), bottleneck], 17, UI.INK))
+	body.add_child(UI.rule())
+	var learned: Array = player.get("learned_arts", [])
+	var shown_any := false
+	for a in learned:
+		if not bool(a.get("learned", false)):
+			continue
+		shown_any = true
+		var art_row := HBoxContainer.new()
+		body.add_child(art_row)
+		var art_box := _vbox(art_row, 3)
+		art_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		art_box.add_child(UI.label("%s  ·  %s  ·  上限 %d" % [
+			str(a.name), str(a.element_name), int(a.cap_level)], 17))
+		if bool(a.get("current", false)):
+			art_box.add_child(UI.paragraph("当前功法", 14, UI.MUTED))
+		else:
+			var label := "同源转修"
+			if bool(a.get("requires_reset", false)):
+				label = "散功转修 · 等级归 1"
+			if bool(a.get("requires_clamp", false)):
+				label += " · 压至 %d 级" % int(a.get("clamp_to", 0))
+			art_row.add_child(_action(label, func(): await mutate(
+				"/api/game/art/learn",
+				{"art_id": int(a.get("id", 0)), "confirm_reset": true, "confirm_clamp": true},
+				"功法已转修。", open_skills)))
+	if shown_any:
+		body.add_child(UI.rule())
 	for skill in player.skills:
-		var details := _vbox(body, 5)
-		details.add_child(UI.label("%s  ·  第 %d 层%s" % [skill.name, int(skill.level), "  [未解锁]" if skill.locked else ""], 18))
-		details.add_child(UI.paragraph("%s  ·  内力 %d  ·  %s" % ["内功" if skill.kind == "passive" else "招式", int(skill.mp_cost), skill.effect_desc]))
+		var skill_box := _vbox(body, 5)
+		skill_box.add_child(UI.label("%s  ·  第 %d 层%s" % [skill.name, int(skill.level), "  [未解锁]" if skill.locked else ""], 18))
+		skill_box.add_child(UI.paragraph("招式  ·  内力 %d  ·  %s" % [int(skill.mp_cost), skill.effect_desc], 16))
 		var actions := HBoxContainer.new()
-		details.add_child(actions)
-		if skill.kind == "active":
-			actions.add_child(_action("卸出招式" if skill.equipped else "装备招式", func(): await mutate("/api/game/skill/equip", {"skill_id": skill.skill_id, "equip": not skill.equipped}, "招式已调整。", open_skills), bool(skill.locked)))
+		skill_box.add_child(actions)
+		actions.add_child(_action("卸出招式" if skill.equipped else "装备招式", func(): await mutate("/api/game/skill/equip", {"skill_id": skill.skill_id, "equip": not skill.equipped}, "招式已调整。", open_skills), bool(skill.locked)))
 		actions.add_child(_action("修习 · %d 点" % int(skill.upgrade_cost), func(): await mutate("/api/game/skill/upgrade", {"skill_id": skill.skill_id}, "武学精进。", open_skills), not skill.upgradable or int(player.cultivation) < int(skill.upgrade_cost)))
 		body.add_child(UI.rule())
+	if art != null and player.skills.is_empty():
+		body.add_child(UI.paragraph("此功法暂无招式，先在馆中练到所需修为。", 16, UI.MUTED))
 
 func interact() -> void:
 	if busy or player.is_empty() or modal != null:
@@ -709,17 +753,72 @@ func _render_shop(selling: bool = false) -> void:
 		body.add_child(UI.paragraph("装备中的物品须先卸下，卖出价格为原价一半。"))
 
 func open_sect(id: String, place: String) -> void:
-	var descriptions := {"jianyang": ["剑阳派", "以剑入道，刚正凌厉。入门臂力 +3，悟性 +2。"], "xuantie": ["玄铁堡", "横刀立马，厚重沉稳。入门根骨 +3，悟性 +2。"], "yanyu": ["烟雨楼", "身随烟雨，剑走轻灵。入门身法 +3，悟性 +2。"]}
-	var data: Array = descriptions.get(id, [place, ""])
-	var body := _new_modal(str(data[0]), place + " · 拜入师门", "sect")
+	var descriptions := {
+		"jianyang": ["烈阳剑诀", "火", 15, "剑走刚猛，每 3 级臂力 +1。"],
+		"xuantie": ["玄土刀法", "土", 15, "沉稳厚重，每 3 级根骨 +1。"],
+		"yanyu": ["烟雨诀", "水", 15, "身法轻灵，每 3 级身法 +1。"],
+	}
+	var data: Array = descriptions.get(id, [place, "", 15, ""])
+	var body := _new_modal(str(data[0]), place + " · 武馆学艺", "sect")
 	body.add_child(UI.label(str(data[0]), 32, UI.JADE))
-	body.add_child(UI.paragraph(str(data[1]), 19, UI.INK))
-	body.add_child(UI.paragraph("当前入门条件：等级达到三重，且尚无门派。一生只可加入一派，请慎重选择。", 17))
-	var join := _action("确认拜入" + str(data[0]), func():
-		if await mutate("/api/sect/join", {"sect_id": id}, "礼成，今日起便是同门。"):
-			open_skills(), int(player.level) < 3 or player.get("sect") != null, true)
-	body.add_child(join)
-	body.add_child(UI.paragraph("也可走近掌门对话，交情到了再提拜师。", 13))
+	body.add_child(UI.paragraph("属性：%s  ·  功法上限：%d 级\n%s" % [
+		str(data[1]), int(data[2]), str(data[3])], 19, UI.INK))
+	body.add_child(UI.paragraph("学艺条件：馆主好感≥20，学费 50 两。三馆可兼学；转修异属性功法会散功归 1 级，四维/装备/图鉴保留。", 16, UI.MUTED))
+	var master_slug: String = str({
+		"jianyang": "gu_changfeng", "xuantie": "tie_wushuang",
+		"yanyu": "su_wanqing",
+	}.get(id, ""))
+	var master_id := _npc_id_for_slug(str(master_slug))
+	var learn := _action("向馆主学艺", func(): await _learn_sect_art(
+		id, master_id, str(data[0])), master_id == 0, true)
+	body.add_child(learn)
+	body.add_child(UI.paragraph("也可走近馆主按 E 对话，选择[学艺]。", 13))
+
+func _npc_id_for_slug(slug: String) -> int:
+	for entry in world.npcs:
+		if str(entry.get("slug", "")) == slug:
+			return int(entry.get("npc_id", 0))
+	return 0
+
+func _learn_sect_art(sect_id: String, master_id: int, art_name: String) -> void:
+	if busy:
+		return
+	if master_id == 0:
+		notify("馆主不在近前，稍后再来。")
+		return
+	busy = true
+	state_version += 1
+	_set_request_buttons(true)
+	var arts_response: Dictionary = await api.request("/api/game/arts")
+	if not arts_response.ok:
+		busy = false
+		_set_request_buttons(false)
+		notify(arts_response.error)
+		return
+	var art_id := 0
+	for a in arts_response.data.get("arts", []):
+		if str(a.get("sect_id", "")) == sect_id and not bool(a.get("is_true", false)):
+			art_id = int(a.get("id", 0))
+			break
+	if art_id == 0:
+		busy = false
+		_set_request_buttons(false)
+		notify("未找到该馆功法。")
+		return
+	var response: Dictionary = await api.request(
+		"/api/game/art/learn",
+		{"art_id": art_id, "npc_id": master_id,
+		 "confirm_reset": true, "confirm_clamp": true},
+		20.0)
+	busy = false
+	_set_request_buttons(false)
+	if not response.ok:
+		notify(response.error)
+		return
+	_apply_player(response.data.get("player", {}))
+	notify("习得%s。" % art_name)
+	_remove_modal()
+	open_skills()
 
 func open_people() -> void:
 	if people_npcs.is_empty():
@@ -928,13 +1027,21 @@ func dialog_apprentice() -> void:
 		modal_status.text = str(response.error)
 		return
 	var data: Dictionary = response.data
-	_log("apprentice npc=%d joined=%s affinity=%d" % [
-		dialogue_id, str(data.get("joined", false)), int(data.get("affinity", -1))])
+	_log("apprentice npc=%d joined=%s learned=%s affinity=%d" % [
+		dialogue_id, str(data.get("joined", false)), str(data.get("learned", false)),
+		int(data.get("affinity", -1))])
 	_append_talk(dialogue_name, str(data.get("reply", "")))
 	if data.has("player"):
 		_apply_player(data.player)
 		dialogue_affinity = int(data.get("affinity", dialogue_affinity))
-	if data.get("joined", false):
+	if data.get("learned", false):
+		var art: Dictionary = data.get("art", {})
+		var msg := "习得%s（上限 %d 级）。" % [
+			str(art.get("name", "功法")), int(art.get("cap_level", 0))]
+		if bool(data.get("reset", false)):
+			msg = "散功重修，" + msg
+		notify(msg)
+	elif data.get("joined", false):
 		notify("礼成，今日起便是%s门下。" % str(data.get("sect", {}).get("name", "")))
 	modal_status.text = ""
 

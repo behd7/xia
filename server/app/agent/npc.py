@@ -9,6 +9,7 @@ an NPC by its numeric id.
 import logging
 
 from ..db import Database
+from ..game import arts as arts_mod
 from ..game import inventory as inventory_mod
 from ..game import plan as plan_mod
 from ..game import player as player_mod
@@ -187,16 +188,76 @@ CEREMONY = {
 }
 
 
+GUILD_CEREMONY = {
+    "gu_changfeng": "烈阳剑诀，看好了——剑走一线，气随火行。",
+    "tie_wushuang": "哈哈，玄土刀法不花哨，先站稳下盘！",
+    "su_wanqing": "烟雨诀讲究一个轻字，别把水意练成蛮力。",
+}
+
+
 async def apprentice(db: Database, mem_store, npc_id: int) -> dict:
-    """对话式拜师（DESIGN §5.2）：好感≥60 且 等级≥3，一生只入一派。"""
+    """对话式学艺/拜师（DESIGN §5.2）：三馆传功，南风城正式门派才收徒。"""
     n = await by_id(db, npc_id)
     if n is None:
         raise ValueError("查无此人")
     if n.get("role") != "master" or not n.get("sect"):
         raise ValueError("此人不收徒，另寻他路吧。")
+    sect = skills_mod.SECTS.get(n["sect"])
+    if sect is None:
+        raise ValueError("此人不收徒，另寻他路吧。")
     p = await player_mod.get(db)
     aff_before = await affinity(db, npc_id)
-    if p["sect_id"]:
+
+    if sect.get("kind") == "guild":
+        try:
+            result = await arts_mod.learn_guild_art(
+                db, p, sect["art"], aff_before)
+        except arts_mod.ArtError as e:
+            raise ValueError(str(e))
+        art_row = result["art"]
+        art_name = art_row["name"]
+        if result.get("already"):
+            await player_mod.save(db, p)
+            return {
+                "reply": f"{art_name}你已学过了，回去多练几遍。",
+                "learned": False, "already": True,
+                "art": {"id": art_row["id"], "name": art_name,
+                        "element": art_row["element"],
+                        "cap_level": art_row["cap_level"]},
+                "affinity": aff_before, "player": await player_mod.api_dict(db, p),
+            }
+        await player_mod.save(db, p)
+        new_aff = await set_affinity(db, npc_id, aff_before + 3)
+        if mem_store is not None:
+            now_game = mem_store.clock.now()
+            dev = await plan_mod.deviation_for(db, npc_id, now_game)
+            poi = schedule_mod.poi_label_for(n, now_game, dev)
+            await mem_store.add_memory(
+                db, npc_id,
+                content=f"你将{art_name}传给了{p['name']}，看他练得还算用心。",
+                kind="event", participants=[p["name"]], poi=poi, importance=6,
+            )
+            events_mod.record(
+                mem_store, "apprentice", f"学艺{art_name}", poi,
+                [p["name"], n["name"]])
+        reply = GUILD_CEREMONY.get(
+            n["slug"], f"{n['name']}将{art_name}演了一遍，让你照着练。")
+        tr = await trace_mod.trace_turn(
+            "apprentice", input_={"npc": n["name"], "player": p["name"]},
+            tags=[f"npc:{n['name']}", f"npc_id:{npc_id}", f"player:{p['name']}"],
+            metadata={"affinity_before": aff_before},
+        )
+        if tr is not None:
+            await _close_trace(tr, reply, {"affinity_after": new_aff})
+        return {
+            "reply": reply, "learned": True,
+            "art": {"id": art_row["id"], "name": art_name,
+                    "element": art_row["element"], "cap_level": art_row["cap_level"]},
+            "reset": result["reset"], "tuition": result["tuition"],
+            "affinity": new_aff, "player": await player_mod.api_dict(db, p),
+        }
+
+    if p.get("sect_id"):
         raise ValueError("你已拜入门派，武德不容贰师。")
     try:
         await skills_mod.join_sect(db, p, n["sect"])
@@ -204,13 +265,13 @@ async def apprentice(db: Database, mem_store, npc_id: int) -> dict:
         raise ValueError(str(e))
     await player_mod.save(db, p)
     new_aff = await set_affinity(db, npc_id, aff_before + 3)
-    sect_name = skills_mod.SECTS[n["sect"]]["name"]
+    sect_name = sect["name"]
     if mem_store is not None:
         now_game = mem_store.clock.now()
         dev = await plan_mod.deviation_for(db, npc_id, now_game)
         poi = schedule_mod.poi_label_for(n, now_game, dev)
         await mem_store.add_memory(
-            db, npc_id, content=f"你将{p['name']}收归{sect_name}门下，授以入门剑诀。",
+            db, npc_id, content=f"你将{p['name']}收归{sect_name}门下，授以入门功法。",
             kind="event", participants=[p["name"]], poi=poi, importance=6,
         )
         events_mod.record(
@@ -237,9 +298,10 @@ async def gift(db: Database, mem_store, npc_id: int, item_id: int) -> dict:
         raise ValueError("查无此人")
     p = await player_mod.get(db)
     inv = await db.fetch_one(
-        "SELECT it.name, it.price, inv.qty FROM inventory inv JOIN item it ON it.id = inv.item_id"
-        " WHERE inv.player_id = ? AND inv.item_id = ?",
-        (p["id"], item_id),
+        "SELECT it.name, it.price, inv.qty FROM character_inventory inv"
+        " JOIN item it ON it.id = inv.item_id"
+        " WHERE inv.character_id = ? AND inv.item_id = ?",
+        (p["character_id"], item_id),
     )
     if inv is None or inv["qty"] < 1:
         raise ValueError("行囊里没有此物，无从相赠。")
@@ -261,7 +323,7 @@ async def gift(db: Database, mem_store, npc_id: int, item_id: int) -> dict:
             "reply": payload["reply"], "affinity": int(payload["affinity"]),
             "item": inv["name"], "player": payload["player"],
         }
-    await inventory_mod.consume(db, p["id"], item_id)
+    await inventory_mod.consume(db, p["character_id"], item_id)
     await _mark_gift(db, npc_id, gift_day)
     events_mod.record(
         mem_store, "gift", f"向{n['name']}送了{inv['name']}",

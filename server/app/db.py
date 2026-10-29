@@ -37,6 +37,29 @@ CREATE TABLE IF NOT EXISTS player (
     last_saved_at TEXT NOT NULL
 );
 
+-- M6 角色卡：玩家与 NPC 共用，player/npc 只保留身份/位置锚点。
+CREATE TABLE IF NOT EXISTS character (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL DEFAULT 'player',
+    name TEXT NOT NULL,
+    level INTEGER NOT NULL DEFAULT 1,
+    exp INTEGER NOT NULL DEFAULT 0,
+    cultivation INTEGER NOT NULL DEFAULT 0,
+    hp REAL NOT NULL DEFAULT 140,
+    mp REAL NOT NULL DEFAULT 90,
+    gold INTEGER NOT NULL DEFAULT 100,
+    str INTEGER NOT NULL DEFAULT 5,
+    con INTEGER NOT NULL DEFAULT 5,
+    agi INTEGER NOT NULL DEFAULT 5,
+    int_ INTEGER NOT NULL DEFAULT 5,
+    free_points INTEGER NOT NULL DEFAULT 0,
+    art_id INTEGER,
+    sect_id TEXT,
+    map_id TEXT NOT NULL DEFAULT 'qingxi',
+    created_at TEXT NOT NULL,
+    last_saved_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS item (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
@@ -72,6 +95,41 @@ CREATE TABLE IF NOT EXISTS player_skill (
     level INTEGER NOT NULL DEFAULT 1,
     equipped INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (player_id, skill_id)
+);
+
+CREATE TABLE IF NOT EXISTS art (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    element TEXT NOT NULL,
+    cap_level INTEGER NOT NULL,
+    sect_id TEXT,
+    is_true INTEGER NOT NULL DEFAULT 0,
+    passive_json TEXT NOT NULL DEFAULT '{}',
+    desc TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS character_art (
+    character_id INTEGER NOT NULL,
+    art_id INTEGER NOT NULL,
+    learned_at REAL NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (character_id, art_id)
+);
+
+CREATE TABLE IF NOT EXISTS character_skill (
+    character_id INTEGER NOT NULL,
+    skill_id INTEGER NOT NULL,
+    level INTEGER NOT NULL DEFAULT 1,
+    equipped INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (character_id, skill_id)
+);
+
+CREATE TABLE IF NOT EXISTS character_inventory (
+    character_id INTEGER NOT NULL,
+    item_id INTEGER NOT NULL,
+    qty INTEGER NOT NULL DEFAULT 1,
+    equipped_slot TEXT,
+    PRIMARY KEY (character_id, item_id)
 );
 
 CREATE TABLE IF NOT EXISTS npc (
@@ -235,6 +293,67 @@ class Database:
                         conn.execute(f"ALTER TABLE npc DROP COLUMN {col}")
                     except sqlite3.OperationalError as e:
                         logger.warning("skip dropping npc.%s: %s", col, e)
+
+            # M6：角色卡/功法列与旧档迁移。旧表保留只读，M6 期间不删。
+            player_cols = {r[1] for r in conn.execute("PRAGMA table_info(player)")}
+            if "character_id" not in player_cols:
+                conn.execute("ALTER TABLE player ADD COLUMN character_id INTEGER")
+            npc_cols = {r[1] for r in conn.execute("PRAGMA table_info(npc)")}
+            if "character_id" not in npc_cols:
+                conn.execute("ALTER TABLE npc ADD COLUMN character_id INTEGER")
+            skill_cols = {r[1] for r in conn.execute("PRAGMA table_info(skill)")}
+            if "art_id" not in skill_cols:
+                conn.execute("ALTER TABLE skill ADD COLUMN art_id INTEGER")
+            if "unlock_level" not in skill_cols:
+                conn.execute(
+                    "ALTER TABLE skill ADD COLUMN unlock_level INTEGER NOT NULL DEFAULT 1"
+                )
+
+            prow = conn.execute(
+                "SELECT id, name, level, exp, cultivation, hp, mp, gold, str, con,"
+                " agi, int_, free_points, sect_id, created_at, last_saved_at,"
+                " character_id FROM player LIMIT 1"
+            ).fetchone()
+            if prow:
+                (pid, name, level, exp, cultivation, hp, mp, gold, str_, con, agi,
+                 int_, free_points, sect_id, created_at, last_saved_at, cid) = prow
+                if cid is None:
+                    crow = conn.execute(
+                        "SELECT id FROM character WHERE kind = 'player'"
+                        " ORDER BY id LIMIT 1"
+                    ).fetchone()
+                    if crow:
+                        cid = crow[0]
+                    else:
+                        cid = conn.execute(
+                            "INSERT INTO character(kind, name, level, exp, cultivation,"
+                            " hp, mp, gold, str, con, agi, int_, free_points, art_id,"
+                            " sect_id, map_id, created_at, last_saved_at)"
+                            " VALUES('player',?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?,?)",
+                            (name, level, exp, cultivation, hp, mp, gold, str_, con,
+                             agi, int_, free_points, sect_id, "qingxi", created_at,
+                             last_saved_at),
+                        ).lastrowid
+                    # 只在首次迁移时从旧表回灌；之后旧表保持只读，
+                    # 否则卖出/消耗过的物品会在下次启动被重新加回。
+                    conn.execute(
+                        "INSERT OR IGNORE INTO character_skill"
+                        "(character_id, skill_id, level, equipped)"
+                        " SELECT ?, ps.skill_id, ps.level, ps.equipped"
+                        " FROM player_skill ps JOIN skill sk ON sk.id = ps.skill_id"
+                        " WHERE ps.player_id = ? AND sk.kind = 'active'",
+                        (cid, pid),
+                    )
+                    conn.execute(
+                        "INSERT OR IGNORE INTO character_inventory"
+                        "(character_id, item_id, qty, equipped_slot)"
+                        " SELECT ?, item_id, qty, equipped_slot"
+                        " FROM inventory WHERE player_id = ?",
+                        (cid, pid),
+                    )
+                    conn.execute(
+                        "UPDATE player SET character_id = ? WHERE id = ?", (cid, pid)
+                    )
             conn.commit()
             return conn
 
