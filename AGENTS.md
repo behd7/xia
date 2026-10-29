@@ -1,6 +1,6 @@
 # AGENTS.md
 
-本文件是每个新会话的行动指南。用户已决定将当前前端改为 **Godot 4 + GDScript**：代码放在 `xia-ai-town/`，以 `server/` 实际接口为准；旧 `client/`（Phaser 历史前端）已删除，历史见 git，勿再引用。地图/建筑/人物已改用 `xia-ai-town/assets/` 贴图（源图在 `asserts/`，切图脚本 `tools/build_art_assets.py`）；新增图片资源须提供生图提示词与存放路径，等待用户手动生成（提示词写在 `docs/ART-PROMPTS.md`）。M0–M5 已全部落地：脚手架、战斗、成长、NPC 记忆/RAG/对话、反思/关系/八卦/主动搭话与确定性日程、世界公设与断岳刀、对话议程/口癖/轻情绪、每日心事与安全偏离、附近事件感知。记忆链路已拆为短期 `conversation` 窗口、中期 `MemoryStore` 内存 summary+线索、长期 `longterm_memory` 独立表。M6 Phase A（功法属性/上限、同源转换与散功、属性克制、角色卡地基、清溪镇三馆学艺）已实施；Phase B（NPC 同构）/C（南风城/多地图）待续，见 [`docs/M6-PLAN.md`](docs/M6-PLAN.md)。
+本文件是每个新会话的行动指南。用户已决定将当前前端改为 **Godot 4 + GDScript**：代码放在 `xia-ai-town/`，以 `server/` 实际接口为准；旧 `client/`（Phaser 历史前端）已删除，历史见 git，勿再引用。地图/建筑/人物已改用 `xia-ai-town/assets/` 贴图（源图在 `asserts/`，切图脚本 `tools/build_art_assets.py`）；新增图片资源须提供生图提示词与存放路径，等待用户手动生成（提示词写在 `docs/ART-PROMPTS.md`）。M0–M5 已全部落地：脚手架、战斗、成长、NPC 记忆/RAG/对话、反思/关系/八卦/主动搭话与确定性日程、世界公设与断岳刀、对话议程/口癖/轻情绪、每日心事与安全偏离、附近事件感知。记忆链路已拆为短期 `conversation` 窗口、中期 `MemoryStore` 内存 summary+线索、长期 `longterm_memory` 独立表。M6 Phase A/B（功法属性/上限、同源转换与散功、属性克制、角色卡地基、清溪镇三馆学艺、NPC 角色卡同构）已实施；Phase C（南风城/多地图）待续，见 [`docs/M6-PLAN.md`](docs/M6-PLAN.md)。
 
 ## 项目是什么
 
@@ -19,7 +19,7 @@
 | 向量模型 | 本地 Ollama `qwen3-embedding:0.6b`（8bit 量化，1024 维，入库前 L2 归一化） |
 | 美术 | 16px 瓦片 + 32px 人物贴图（`assets/`），纸墨 UI 由 `ui_kit.gd` 程序绘制；如需新图片，先提供提示词和路径并等待用户生成 |
 | 渲染 | 原生分辨率（`stretch/mode=disabled`），世界整数倍 1×/2×/3× 缩放，HUD 不缩放；绝不用整帧拉伸 |
-| 玩家入门 | 无初始门派；清溪镇三馆为武馆、可兼学（Phase A 已实施），南风城正式门派同一时间只入一派（Phase C，见 [DESIGN §5.2](docs/DESIGN.md) 与 [M6-PLAN](docs/M6-PLAN.md)） |
+| 玩家入门 | 无初始门派；清溪镇三馆为武馆、可兼学（Phase A/B 已实施），南风城正式门派同一时间只入一派（Phase C，见 [DESIGN §5.2](docs/DESIGN.md) 与 [M6-PLAN](docs/M6-PLAN.md)） |
 | 战斗 | 1v1 回合制，敌方 AI 为规则型（**不调 LLM**） |
 
 ## 实现时必须遵守的架构约束
@@ -81,7 +81,7 @@ cd server && uv venv .venv && uv pip install -r requirements.txt
 - **记忆控制噪声**：同场目击入忆仅限战斗与大额消费（≥100 两）两类显著事件，不要扩大范围。
 - **地图交互与出生点约定**：建筑是实心瓦片、玩家站不进去，商店等 E 交互判定用建筑外扩 2 格的门口区；怪物出生点放野外土路行（ROAD），避免与确定性随机树/崖重叠导致不可达。
 - **派生属性单一入口（M2 起）**：装备与内功被动通过 `modifiers(db,p)` 聚合进 `derived(p, mods)`，任何要拿攻/防/速/闪避/暴击/上下限的代码一律走 `player.stats(db,p)`（M6 起它包装 `character.stats`，玩家/NPC 共用），**不要直接调 `derived(p)`**（会漏装备与被动）。入门门派加成是直改 player 行四维的一次性写入，不进 mods。
-- **角色卡 owner 与旧表迁移（M6 Phase A）**：`character` 是成长 SSOT，`player`/`npc` 只保留身份/位置锚点；`player.get()` 返回的 `id` 是 player id，装备/技能/功法查询一律用 `character_id`（`character_inventory`/`character_skill`/`character_art`）。旧 `inventory`/`player_skill` 只在首次迁移回灌一次，之后保持只读，**不要再从旧表回灌**，否则卖出/消耗的物品会在下次启动被加回。功法切换/散功/到顶经验停止统一走 `arts.switch_art`/`character.gain_exp`，不要手写等级变更；内功被动在 `art.passive_json`，招式升级费走 `skills.upgrade_cost(character_level, skill_level)`。
+- **角色卡 owner 与旧表迁移（M6 Phase A/B）**：`character` 是成长 SSOT，`player`/`npc` 只保留身份/位置锚点；`player.get()` 返回的 `id` 是 player id，装备/技能/功法查询一律用 `character_id`（`character_inventory`/`character_skill`/`character_art`）。旧 `inventory`/`player_skill` 只在首次迁移回灌一次，之后保持只读，**不要再从旧表回灌**，否则卖出/消耗的物品会在下次启动被加回。功法切换/散功/到顶经验停止统一走 `arts.switch_art`/`character.gain_exp`，不要手写等级变更；内功被动在 `art.passive_json`，招式升级费走 `skills.upgrade_cost(character_level, skill_level)`。NPC 角色卡由 `npc.seed_and_load` 按花名册预设种入，`new_game` 调 `npc.reset_progression` 重置；切磋用 `character.stats` + `skills.combat_skills`，不要恢复花名册 `combat`。
 - **战斗数据分工**：战斗进行态存 `battle.state_json` + `active` 列（敌方快照、回合、药剂用量、`buffs`、`skill_cd`），玩家 HP/MP 以 player 行为单一事实源——断线重入靠这个约定，M3 加新战斗状态时继续挂 state_json。怪物存活存 kv `mob_kills`（击杀时间戳，60s 重生）。胜利结算会把玩家坐标推离怪物出生点 48px，防止重生后刷新页面被站桩开战；`_finalize` 的复活/推离规则改动时想想这条。
 - **杀 dev server 用端口，别用 pkill -f**：`pkill -f "uvicorn ..."` 会匹配到自己这条 bash 命令行里同样含该文本的部分而自杀。用 `fuser -k 8080/tcp` / TaskStop，或 `pkill -f "app[.]main"`（字符类技巧）。
 - **8000 端口归 Godot AI 插件**：`xia-ai-town/addons/godot_ai` 在编辑器启动时会起一个 Windows 侧服务占用 `127.0.0.1:8000`，对普通请求返回 `401 TRANSPORT_AUTH_REQUIRED`（realm=godot-ai），还会导致 WSL 后端无法绑定该端口。游戏后端固定用 8080；排查“401/连接失败”先看响应头是否带 `realm="godot-ai"`。
@@ -121,11 +121,11 @@ Xia/
 
 ## 实施顺序
 
-按 DESIGN.md §13 里程碑推进：M0 脚手架、M1 战斗循环、M2 成长系统、M3 NPC 记忆+RAG+对话、M4 反思/关系摘要/八卦/主动搭话与确定性日程、M5 世界公设/议程/情绪/心事偏离/附近事件均已完成；M6 Phase A（功法境界/角色卡/三馆学艺）已实施，Phase B/C 待续。每个里程碑交付可玩 build；调试观察主要靠 `GET /api/debug/npc/{id}`（好感、记忆流、中期/长期记忆、反思、关系摘要、当前日程、议程、情绪、心事、偏离、世界立场）。
+按 DESIGN.md §13 里程碑推进：M0 脚手架、M1 战斗循环、M2 成长系统、M3 NPC 记忆+RAG+对话、M4 反思/关系摘要/八卦/主动搭话与确定性日程、M5 世界公设/议程/情绪/心事偏离/附近事件均已完成；M6 Phase A/B（功法境界/角色卡/三馆学艺/NPC 同构）已实施，Phase C 待续。每个里程碑交付可玩 build；调试观察主要靠 `GET /api/debug/npc/{id}`（好感、记忆流、中期/长期记忆、反思、关系摘要、当前日程、议程、情绪、心事、偏离、世界立场）。
 
 **里程碑的执行前必读**：M2 有专属拆解文档 [`docs/M2-PLAN.md`](docs/M2-PLAN.md)，M4 有 [`docs/M4-PLAN.md`](docs/M4-PLAN.md)，M5 有 [`docs/M5-PLAN.md`](docs/M5-PLAN.md)，M6 有 [`docs/M6-PLAN.md`](docs/M6-PLAN.md)——数值、API 形状、文件落点、schema 迁移、验证步骤全部内联，关键决策已在文档里拍板，**实施对应里程碑时以计划文档为准、不要重新翻 DESIGN 与旧代码做考古**；仅当实现中发现设计需要变更时才回改 DESIGN.md 并同步该计划文档。后续里程碑建议沿用 `docs/M?-PLAN.md` 模式。
 
-M5 已按 [`docs/M5-PLAN.md`](docs/M5-PLAN.md) 全部实施（W/B/A/C 四个 commit）；后续 NPC 生动化调整以 DESIGN.md §6.11/§6.12 与实际冒烟为准。M6 Phase A 已实施（`arts`/`character`、schema 迁移、三馆学艺、属性克制、武学面板）；Phase B/C 按计划继续，实施前先读 `docs/M6-PLAN.md`。
+M5 已按 [`docs/M5-PLAN.md`](docs/M5-PLAN.md) 全部实施（W/B/A/C 四个 commit）；后续 NPC 生动化调整以 DESIGN.md §6.11/§6.12 与实际冒烟为准。M6 Phase A/B 已实施（`arts`/`character`、schema 迁移、三馆学艺、属性克制、武学面板、NPC 角色卡/切磋/招式 AI）；Phase C 按计划继续，实施前先读 `docs/M6-PLAN.md`。
 
 **记忆分层重构已按 [`docs/MEMORY-PLAN.md`](docs/MEMORY-PLAN.md) 实施**：短期 `conversation` 窗口、中期 `MemoryStore` 内存 summary+线索（不入库）、长期独立 `longterm_memory` 表（每 36 轮原始对话经单 worker 队列后台总结，暂不参与对话/RAG/反思/八卦）。长期任务与对话回合都带 `generation`，新局用 `begin_reset()`/`flush()`/`reset_runtime()` 屏障；P2 加固（`LLM_NUM_CTX`、clues 字符串/空线索重试、共享 `strip_fence`、SQLite 取消锁、冒烟分桶）已落地；改动记忆链路时以该计划与 DESIGN §6.3/§6.4/§6.6/§8 为准；长期接入对话仍待办，当前优先 M6（按 `docs/M6-PLAN.md`），实施顺序以用户安排为准。
 

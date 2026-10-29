@@ -190,6 +190,27 @@ async def upgrade(db: Database, p: dict, skill_id: int) -> None:
     )
 
 
+async def combat_skills(db: Database, character_id: int, art_id: int | None,
+                        level: int) -> list[dict]:
+    if not art_id:
+        return []
+    rows = await db.fetch_all(
+        "SELECT sk.id, sk.name, sk.mp_cost, sk.multiplier, sk.cooldown,"
+        " sk.effect_json, cs.level AS mastery"
+        " FROM character_skill cs JOIN skill sk ON sk.id = cs.skill_id"
+        " WHERE cs.character_id = ? AND cs.equipped = 1 AND sk.kind = 'active'"
+        " AND sk.art_id = ? AND sk.unlock_level <= ? ORDER BY sk.id",
+        (character_id, art_id, level),
+    )
+    return [{
+        "id": r["id"], "name": r["name"], "mp_cost": r["mp_cost"],
+        "multiplier": effective_multiplier(r["multiplier"], r["mastery"]),
+        "cooldown": r["cooldown"],
+        "effect": json.loads(r["effect_json"] or "{}"),
+        "mastery": r["mastery"],
+    } for r in rows]
+
+
 async def set_equip(db: Database, p: dict, skill_id: int, equip: bool) -> None:
     srow = await by_id(db, skill_id)
     if srow is None:

@@ -5,7 +5,7 @@ import random
 import time
 
 from ..db import Database
-from . import arts, data, inventory, mobs, player as player_mod, skills as skills_mod
+from . import arts, character as character_mod, data, inventory, mobs, player as player_mod, skills as skills_mod
 from . import world as world_mod, world_state as world_state_mod
 from ..agent import dialogue as dialogue_mod
 from ..agent import events as events_mod
@@ -38,6 +38,7 @@ def _snapshot(bid: int, state: dict, target_id: str, p: dict, result: str | None
             "id": target_id, "type": e["type"], "name": e["name"], "level": e["level"],
             "hp": e["hp"], "hp_max": e["hp_max"], "atk": e["atk"], "def": e["def"],
             "spd": e["spd"], "element": e.get("element"),
+            "mp": e.get("mp"), "mp_max": e.get("mp_max"),
         },
         "player": {
             "name": p["name"], "level": p["level"],
@@ -107,18 +108,27 @@ async def start_spar(db: Database, p: dict, npc_id: int, pos: dict | None) -> di
     n = await npc_mod.by_id(db, npc_id)
     if n is None:
         raise BattleError("查无此人")
-    c = n.get("combat")
+    c = n.get("character")
     if not c:
         raise BattleError("此人不肯比试")
     d = await player_mod.stats(db, p)
+    de = await character_mod.stats(db, c)
+    npc_skills = await skills_mod.combat_skills(
+        db, c["character_id"], c.get("art_id"), int(c["level"]))
+    hp = float(c["hp"]) if c["hp"] and float(c["hp"]) > 0 else de["hp_max"]
     state = {
         "npc_id": npc_id, "spar": True,
         "enemy": {
             "type": "npc", "name": n["name"], "level": c["level"],
-            "hp": c["hp"], "hp_max": c["hp"], "atk": c["atk"], "def": c["def"],
-            "spd": c["spd"], "potions": c.get("potions", 0), "element": None,
+            "hp": min(hp, de["hp_max"]), "hp_max": de["hp_max"],
+            "atk": de["atk"], "def": de["def"], "spd": de["spd"],
+            "crit": de["crit"], "dodge": de["dodge"],
+            "potions": int(n.get("potions", 0)),
+            "element": arts.element_for_id(c.get("art_id")),
+            "mp": float(c["mp"]), "mp_max": de["mp_max"],
+            "skills": npc_skills,
         },
-        "player_first": d["spd"] >= c["spd"],
+        "player_first": d["spd"] >= de["spd"],
         "round": 1, "enemy_acted": False, "potions_used": 0,
         "buffs": {"player": {}, "enemy": {}}, "skill_cd": {},
     }
@@ -178,7 +188,14 @@ async def apply_action(db: Database, action: str, item_id: int | None) -> dict:
         return state.setdefault("buffs", {}).setdefault("enemy", {})
 
     def player_hit(name: str, mult: float, eff: dict) -> None:
-        defv = enemy["def"] * enemy_buff().get("def_pct", 1.0)
+        ebv = enemy_buff()
+        e_dodge = enemy.get("dodge", 0.0) + ebv.get("dodge_add", 0.0)
+        if random.random() < e_dodge:
+            add("player_attack",
+                f"{enemy['name']}身形一晃，避开了你的攻击。",
+                dodged=True, enemy_hp=enemy["hp"])
+            return
+        defv = enemy["def"] * ebv.get("def_pct", 1.0)
         defv *= 1 - eff.get("pierce_def", 0)
         crit = random.random() < (d["crit"] + eff.get("crit_add", 0))
         dmg = max(1, round(d["atk"] * mult - defv))
@@ -201,34 +218,81 @@ async def apply_action(db: Database, action: str, item_id: int | None) -> dict:
     def try_player_attack() -> None:
         player_hit("", 1.0, {})
 
-    def try_enemy_attack() -> None:
+    def enemy_hit(name: str, mult: float, eff: dict) -> None:
         pbv = player_buff()
-        dodge = d["dodge"] + pbv.get("dodge_add", 0.0)
-        if random.random() < dodge:
-            add("enemy_attack", f"你身形一晃，避开了{enemy['name']}的攻击。", dodged=True, player_hp=p["hp"])
-            return
+        if not eff.get("ignore_dodge"):
+            dodge = d["dodge"] + pbv.get("dodge_add", 0.0)
+            if random.random() < dodge:
+                add("enemy_attack",
+                    f"你身形一晃，避开了{enemy['name']}的{'这一招' if name else '攻击'}。",
+                    dodged=True, player_hp=p["hp"])
+                return
         defv = d["def"] * pbv.get("def_pct", 1.0)
-        dmg = max(1, round(enemy["atk"] - defv))
+        defv *= 1 - eff.get("pierce_def", 0)
+        crit = random.random() < (enemy.get("crit", 0) + eff.get("crit_add", 0))
+        dmg = max(1, round(enemy["atk"] * mult - defv))
+        if crit:
+            dmg = round(dmg * 1.5)
         elem = arts.counter_label(enemy_el, player_el)
         elem_mult = arts.counter_multiplier(enemy_el, player_el)
         dmg = max(1, round(dmg * elem_mult))
         p["hp"] = max(0, p["hp"] - dmg)
-        suffix = "（属性克制）" if elem == "advantage" else (
-            "（属性被克）" if elem == "disadvantage" else "")
-        add("enemy_attack", f"{enemy['name']}扑将过来，你受到 {dmg} 点伤害{suffix}。",
-            value=dmg, player_hp=p["hp"], element_counter=elem,
+        base = f"{enemy['name']}使出{name}，" if name else f"{enemy['name']}扑将过来，"
+        suffix = "（会心一击）" if crit else ""
+        if elem == "advantage":
+            suffix += "（属性克制）"
+        elif elem == "disadvantage":
+            suffix += "（属性被克）"
+        add("enemy_skill" if name else "enemy_attack",
+            f"{base}你受到 {dmg} 点伤害{suffix}。", value=dmg, crit=crit,
+            player_hp=p["hp"], element_counter=elem,
             element_mult=round(elem_mult, 2))
 
+    def pick_enemy_skill() -> dict | None:
+        best: dict | None = None
+        cd_map = state.setdefault("skill_cd", {})
+        for s in enemy.get("skills", []):
+            if float(enemy.get("mp", 0)) < float(s.get("mp_cost", 0)):
+                continue
+            if cd_map.get(f"e:{s['id']}", 0) > 0:
+                continue
+            if best is None or float(s.get("multiplier", 1)) > float(best.get("multiplier", 1)):
+                best = s
+        return best
+
+    def enemy_use_skill(s: dict) -> None:
+        eff = s.get("effect") or {}
+        enemy["mp"] = max(0, float(enemy.get("mp", 0)) - float(s.get("mp_cost", 0)))
+        if int(s.get("cooldown", 0)):
+            state.setdefault("skill_cd", {})[f"e:{s['id']}"] = int(s["cooldown"])
+        enemy_hit(str(s["name"]), float(s.get("multiplier", 1.0)), eff)
+        faster = eff.get("double_if_faster")
+        if faster and enemy["spd"] > d["spd"] * float(faster):
+            add("double", f"{enemy['name']}身法奇快，再补一招！")
+            enemy_hit(str(s["name"]), float(s.get("multiplier", 1.0)), eff)
+        b = eff.get("buff_self")
+        if b:
+            ebv = enemy_buff()
+            if "def_pct" in b:
+                ebv["def_pct"] = b["def_pct"]
+                ebv["def_rounds"] = max(ebv.get("def_rounds", 0), b["rounds"])
+            if "dodge_add" in b:
+                ebv["dodge_add"] = b["dodge_add"]
+                ebv["dodge_rounds"] = max(ebv.get("dodge_rounds", 0), b["rounds"])
+
     def enemy_turn() -> None:
-        # Rule AI per docs/DESIGN.md §5.6; M1 mobs carry no skills,
-        # so branches 2/3 fall through to a plain attack.
+        # Rule AI per docs/DESIGN.md §5.6; NPCs use their equipped moves.
         if enemy["hp"] < enemy["hp_max"] * 0.35 and enemy["potions"] > 0:
             enemy["potions"] -= 1
             heal = min(data.ENEMY_POTION_HEAL, enemy["hp_max"] - enemy["hp"])
             enemy["hp"] += heal
             add("enemy_item", f"{enemy['name']}服下药剂，恢复了 {heal} 点气血。", value=heal, enemy_hp=enemy["hp"])
         else:
-            try_enemy_attack()
+            skill = pick_enemy_skill()
+            if skill and (p["hp"] <= d["hp_max"] * 0.4 or random.random() < 0.7):
+                enemy_use_skill(skill)
+            else:
+                enemy_hit("", 1.0, {})
         state["enemy_acted"] = True
 
     if not state["player_first"] and not state["enemy_acted"]:

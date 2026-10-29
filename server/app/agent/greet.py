@@ -39,8 +39,10 @@ def _messages(n: dict, p: dict, affinity: int, memories: list[dict], now_str: st
     events_line = f"近年附近发生的事：\n{events_text}\n" if events_text else ""
     heart_line = f"你眼下挂心的事：{heart}\n" if heart else ""
     mood_line = f"你此刻的心气：{mood_text}\n" if mood_text else ""
+    art_line = npc_mod.art_brief(n)
     system = (
         f"你是{n['name']}。{n['persona']}你说话{n['speech_style']}。\n"
+        f"{art_line}"
         f"{world_brief}\n"
         f"{dialogue_mod._warmth(affinity, p['name'])}\n"
         f"你记得的一些事：\n{mem_lines}\n"

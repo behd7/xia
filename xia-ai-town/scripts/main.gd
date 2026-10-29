@@ -1144,7 +1144,7 @@ func open_battle() -> void:
 		info.add_child(UI.label("%s  ·  第 %d 重" % [side.name, int(side.level)], 23))
 		info.add_child(UI.label("气血 %d / %d" % [int(side.hp), int(side.hp_max)], 15))
 		info.add_child(UI.bar(side.hp, side.hp_max, UI.RED))
-		if side.has("mp"):
+		if side.get("mp") != null and side.get("mp_max") != null:
 			info.add_child(UI.label("内力 %d / %d" % [int(side.mp), int(side.mp_max)], 14, UI.MUTED))
 	var buffs: Dictionary = battle.get("buffs", {})
 	for side in ["player", "enemy"]:

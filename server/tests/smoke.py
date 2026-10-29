@@ -352,7 +352,7 @@ async def main() -> int:
             from app.game import player as player_mod
 
             p = await player_mod.get(main_mod.db)
-            await inventory_mod.add(main_mod.db, p["id"], potion["id"])
+            await inventory_mod.add(main_mod.db, p["character_id"], potion["id"])
             r = await c.post("/api/npc/5/gift", json={"item_id": potion["id"]})
             check("second gift succeeds", r.status_code == 200)
             check("second gift increments day counter",
@@ -878,6 +878,67 @@ async def main() -> int:
                              json={"art_id": chiyang["id"], "confirm_reset": True})
             check("API confirmed reset succeeds",
                   r.status_code == 200 and r.json()["player"]["level"] == 1)
+
+            print("\n== M6-B NPC 角色卡同构 ==")
+            from app.game import character as char_mod_b, skills as skills_b
+            n1 = await npc_mod.by_id(main_mod.db, 1)
+            check("guild master has level-15 character",
+                  n1["character"]["level"] == 15
+                  and n1["character"]["art_id"] is not None
+                  and n1["potions"] == 2)
+            n1_stats = await char_mod_b.stats(main_mod.db, n1["character"])
+            check("NPC stats derive from character sheet",
+                  n1_stats["atk"] > 0 and n1_stats["hp_max"] > 0)
+            n1_skills = await skills_b.combat_skills(
+                main_mod.db, n1["character_id"], n1["character"]["art_id"], 15)
+            check("NPC equipped moves exposed for battle", len(n1_skills) == 3)
+            dbg = (await c.get("/api/debug/npc/1")).json()
+            check("debug exposes NPC character",
+                  dbg["character"]["level"] == 15
+                  and dbg["character"]["art"]["name"] == "烈阳剑诀")
+            n5 = await npc_mod.by_id(main_mod.db, 5)
+            check("non-combat NPC has low-level character",
+                  n5["character"]["level"] == 3
+                  and n5["character"]["art_id"] is None)
+            await main_mod.db.execute(
+                "UPDATE character SET level=1 WHERE id=?", (n1["character_id"],))
+            check("NPC level mutation visible",
+                  (await npc_mod.by_id(main_mod.db, 1))["character"]["level"] == 1)
+            r = await c.post("/api/game/new",
+                             json={"name": "同构侠", "confirm": True})
+            n1b = await npc_mod.by_id(main_mod.db, 1)
+            check("new game resets NPC progression",
+                  r.status_code == 200 and n1b["character"]["level"] == 15
+                  and n1b["character"]["art_id"] == n1["character"]["art_id"])
+
+            print("\n== M6-B NPC 招式 AI ==")
+            from app.game import battle as battle_mod
+            p = await player_mod.get(main_mod.db)
+            await battle_mod.start_spar(main_mod.db, p, 1, None)
+            row = await battle_mod.active_row(main_mod.db)
+            state = json.loads(row["state_json"])
+            check("master spar snapshots three moves and fire element",
+                  len(state["enemy"]["skills"]) == 3
+                  and state["enemy"]["element"] == "fire"
+                  and state["enemy"]["mp_max"] > 0)
+            mp_before = float(state["enemy"]["mp"])
+            orig_random = battle_mod.random.random
+            seq = iter([0.0, 0.99, 0.99])
+            battle_mod.random.random = lambda: next(seq, 0.99)
+            try:
+                body = await battle_mod.apply_action(
+                    main_mod.db, "attack", None)
+            finally:
+                battle_mod.random.random = orig_random
+            check("NPC uses an equipped move",
+                  any(line.get("kind") == "enemy_skill" for line in body["log"])
+                  and float(body["battle"]["enemy"]["mp"]) < mp_before)
+            for _ in range(30):
+                if not (await battle_mod.active_row(main_mod.db)):
+                    break
+                await battle_mod.apply_action(main_mod.db, "attack", None)
+            check("NPC spar resolves",
+                  await battle_mod.active_row(main_mod.db) is None)
 
     shutil.rmtree(_tmp, ignore_errors=True)
     return FAIL

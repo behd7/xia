@@ -166,8 +166,10 @@ def _build_messages(p, n, affinity, memories, turns, impression, now_str, place,
         quoted = "".join(f"“{example}”" for example in speech_examples)
         examples_line = f"你说话的样子：参考这些语气，不要逐字照抄：{quoted}\n"
     mood_line = f"你此刻的心气：{mood_text}\n" if mood_text else ""
+    art_line = npc_mod.art_brief(n)
     system = (
         f"你是{n['name']}。{n['persona']}你说话{n['speech_style']}。\n"
+        f"{art_line}"
         f"{world_brief}\n"
         f"{_warmth(affinity, p['name'])}\n"
         + (f"你对{p['name']}的印象：{impression}\n" if impression else "")

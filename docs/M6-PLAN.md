@@ -1,8 +1,10 @@
 # M6 执行计划：功法境界、NPC 同构与南风城
 
-> 状态：**Phase A 已实施（2026-10-29），Phase B/C 待续**。本文件是执行拆解，不是已实现记录；实施按 Phase 分次提交，完成后回写状态。
+> 状态：**Phase A/B 已实施（2026-10-29），Phase C 待续**。本文件是执行拆解，不是已实现记录；实施按 Phase 分次提交，完成后回写状态。
 >
-> Phase A 交付：`game/arts.py`、`game/character.py`、角色卡 schema 迁移、同源/异源转换与软散功、属性克制、招式解锁/升级费、`/api/game/arts`、`/api/game/art/learn`、三馆学艺与武学面板。Phase B（NPC 同构）与 Phase C（南风城/多地图）尚未开始。
+> Phase A 交付：`game/arts.py`、`game/character.py`、角色卡 schema 迁移、同源/异源转换与软散功、属性克制、招式解锁/升级费、`/api/game/arts`、`/api/game/art/learn`、三馆学艺与武学面板。
+>
+> Phase B 交付：花名册角色卡预设、seed/reset、NPC 切磋统一 `character.stats` + 装备/招式、敌方规则 AI 使用已装备招式、debug/prompt 注入功法上下文。Phase C（南风城/多地图）尚未开始。
 >
 > 执行方式：一个 Phase 一个 commit，每个 Phase 独立可回退；每个 Phase 完成即跑 `server/tests/smoke.py` 与 `xia-ai-town/tools/smoke_test.py`（`SCHEDULER_ENABLED=false`），全绿才提交。
 >

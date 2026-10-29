@@ -7,9 +7,13 @@ an NPC by its numeric id.
 """
 
 import logging
+import time
+from datetime import datetime
 
 from ..db import Database
 from ..game import arts as arts_mod
+from ..game import character as character_mod
+from ..game import data as data_mod
 from ..game import inventory as inventory_mod
 from ..game import plan as plan_mod
 from ..game import player as player_mod
@@ -29,7 +33,12 @@ NPC_ROSTER: dict[str, dict] = {
         "speech_examples": ["话不必多。", "你握剑的手，先稳三分。", "庸才。"],
         "persona": "剑阳派掌门，性傲而严苛，重悟性，最厌庸钝之人。一言不合便以剑论道，话少而锋利。",
         "init_affinity": 25, "work": "剑阳道馆", "home": "道馆后屋",
-        "combat": {"level": 6, "hp": 320, "atk": 30, "def": 8, "spd": 12, "potions": 0},
+        "character": {"level": 15, "art": "art_lieyang",
+                      "attrs": {"str": 24, "con": 18, "agi": 18, "int": 16},
+                      "gold": 300,
+                      "equipment": ["jinggang_jian", "jingge_jia", "yu_pei"],
+                      "skills": ["chiyang_zhan", "fenglei_shi", "xuri_sheng"],
+                      "potions": 2},
     },
     "tie_wushuang": {
         "name": "铁无双", "slug": "tie_wushuang", "sect": "xuantie", "role": "master",
@@ -37,7 +46,12 @@ NPC_ROSTER: dict[str, dict] = {
         "speech_examples": ["小子，先喝一碗！", "这事俺老铁给你兜着。", "哈哈，痛快！"],
         "persona": "玄铁堡堡主，豪爽嗜酒，重品性，貌似粗鲁实则义气过顶。高兴了便拍人后颈。",
         "init_affinity": 25, "work": "玄铁堂", "home": "客栈",
-        "combat": {"level": 6, "hp": 340, "atk": 32, "def": 10, "spd": 9, "potions": 0},
+        "character": {"level": 15, "art": "art_xuantu",
+                      "attrs": {"str": 26, "con": 22, "agi": 14, "int": 14},
+                      "gold": 300,
+                      "equipment": ["jinggang_jian", "jingge_jia", "yu_pei"],
+                      "skills": ["nulang_dao", "tiebu_shan", "kaishan_dao"],
+                      "potions": 2},
     },
     "su_wanqing": {
         "name": "苏婉清", "slug": "su_wanqing", "sect": "yanyu", "role": "master",
@@ -45,7 +59,12 @@ NPC_ROSTER: dict[str, dict] = {
         "speech_examples": ["哦？这话是谁教你的。", "你猜。", "急什么，茶还没凉。"],
         "persona": "烟雨楼楼主，高深戏谑，重机敏，看似玩世不恭实则洞察入微。说话总留三分。",
         "init_affinity": 30, "work": "烟雨小筑", "home": "小筑内室",
-        "combat": {"level": 6, "hp": 290, "atk": 28, "def": 7, "spd": 16, "potions": 0},
+        "character": {"level": 15, "art": "art_yanyu",
+                      "attrs": {"str": 18, "con": 16, "agi": 24, "int": 18},
+                      "gold": 300,
+                      "equipment": ["jinggang_jian", "jingge_jia", "yu_pei"],
+                      "skills": ["mizong_bu", "xiyu_ci", "feihong_guan"],
+                      "potions": 2},
     },
     "chen_bansong": {
         "name": "陈半松", "slug": "chen_bansong", "sect": None, "role": "clinic",
@@ -53,7 +72,9 @@ NPC_ROSTER: dict[str, dict] = {
         "speech_examples": ["唉，年轻人哪……", "先把脉，再说别的。", "当年我也见过这样的伤。"],
         "persona": "药铺大夫，慈祥啰嗦，爱忆当年。见人先问寒暖，一言三叹，望闻问切样样慢。",
         "init_affinity": 30, "work": "药铺", "home": "铺后家",
-        "combat": {"level": 3, "hp": 150, "atk": 14, "def": 5, "spd": 6, "potions": 0},
+        "character": {"level": 3, "art": None,
+                      "attrs": {"str": 5, "con": 6, "agi": 5, "int": 8},
+                      "gold": 150, "equipment": [], "skills": [], "potions": 0},
     },
     "wang_dazhu": {
         "name": "王大柱", "slug": "wang_dazhu", "sect": None, "role": "smith",
@@ -61,7 +82,9 @@ NPC_ROSTER: dict[str, dict] = {
         "speech_examples": ["客官，这消息可不白给。", "您再加点，我再说一句。", "嗨，都是听来的。"],
         "persona": "铁匠铺主，爱财爱打听，满镇消息贩子。见白花花的银子和奇闻异事最是来劲。",
         "init_affinity": 25, "work": "铁匠铺", "home": "铺后家",
-        "combat": {"level": 3, "hp": 170, "atk": 18, "def": 6, "spd": 7, "potions": 0},
+        "character": {"level": 3, "art": None,
+                      "attrs": {"str": 8, "con": 7, "agi": 6, "int": 5},
+                      "gold": 250, "equipment": [], "skills": [], "potions": 0},
     },
     "liu_xiaodie": {
         "name": "柳小蝶", "slug": "liu_xiaodie", "sect": None, "role": "inn",
@@ -69,7 +92,9 @@ NPC_ROSTER: dict[str, dict] = {
         "speech_examples": ["真的假的？！", "我跟你讲，我亲眼看见的！", "哎哟，那可热闹了。"],
         "persona": "客栈掌柜之女，活泼好奇，最爱看热闹。说话清脆连珠，镇上有甚风吹草动必先问她。",
         "init_affinity": 40, "work": "客栈", "home": "客栈",
-        "combat": {"level": 2, "hp": 110, "atk": 12, "def": 4, "spd": 12, "potions": 0},
+        "character": {"level": 2, "art": None,
+                      "attrs": {"str": 5, "con": 5, "agi": 8, "int": 6},
+                      "gold": 100, "equipment": [], "skills": [], "potions": 0},
     },
     "zhang_mantou": {
         "name": "张馒头", "slug": "zhang_mantou", "sect": None, "role": "temple",
@@ -77,7 +102,9 @@ NPC_ROSTER: dict[str, dict] = {
         "speech_examples": ["山外山，楼外楼，一把刀儿换馒头。", "疯话不疯，听的人聋。", "刀归你，路归我。"],
         "persona": "破庙疯丐，癫三倒四，偶尔语出惊人。爱念押韵的疯话，世人皆笑他痴。",
         "init_affinity": 50, "work": "镇口水井", "home": "破庙",
-        "combat": {"level": 4, "hp": 200, "atk": 21, "def": 7, "spd": 9, "potions": 0},
+        "character": {"level": 1, "art": None,
+                      "attrs": {"str": 6, "con": 6, "agi": 6, "int": 6},
+                      "gold": 10, "equipment": [], "skills": [], "potions": 0},
     },
 }
 
@@ -100,6 +127,81 @@ def _load_rows(rows: list[dict]) -> None:
         _npc_meta_by_id[r["id"]] = meta
 
 
+async def _ensure_character(db: Database, nid: int, n: dict,
+                            force: bool = False) -> int:
+    preset = n.get("character") or {}
+    row = await db.fetch_one("SELECT character_id FROM npc WHERE id = ?", (nid,))
+    cid = row["character_id"] if row else None
+    if cid and await db.fetch_one("SELECT 1 AS ok FROM character WHERE id = ?", (cid,)) is None:
+        cid = None
+    attrs = preset.get("attrs") or {}
+    level = int(preset.get("level", 1))
+    art_key = preset.get("art")
+    art_row = arts_mod.art(art_key) if art_key else None
+    art_id = art_row["id"] if art_row else None
+    now = datetime.now().isoformat(timespec="seconds")
+    created = False
+    if cid is None:
+        cid = await db.execute(
+            "INSERT INTO character(kind, name, level, exp, cultivation, hp, mp, gold,"
+            " str, con, agi, int_, free_points, art_id, sect_id, map_id,"
+            " created_at, last_saved_at)"
+            " VALUES('npc',?,?,0,0,1,1,?,?,?,?,?,0,?,?,'qingxi',?,?)",
+            (n["name"], level, preset.get("gold", 0),
+             attrs.get("str", 5), attrs.get("con", 5), attrs.get("agi", 5),
+             attrs.get("int", 5), art_id, n.get("sect"), now, now),
+        )
+        await db.execute(
+            "UPDATE npc SET character_id = ? WHERE id = ?", (cid, nid)
+        )
+        created = True
+    elif force:
+        await db.execute(
+            "UPDATE character SET name=?, level=?, exp=0, cultivation=0, gold=?,"
+            " str=?, con=?, agi=?, int_=?, free_points=0, art_id=?, sect_id=?,"
+            " map_id='qingxi', last_saved_at=? WHERE id=?",
+            (n["name"], level, preset.get("gold", 0),
+             attrs.get("str", 5), attrs.get("con", 5), attrs.get("agi", 5),
+             attrs.get("int", 5), art_id, n.get("sect"), now, cid),
+        )
+    if not (created or force):
+        return cid
+
+    await db.execute("DELETE FROM character_skill WHERE character_id = ?", (cid,))
+    await db.execute("DELETE FROM character_inventory WHERE character_id = ?", (cid,))
+    await db.execute("DELETE FROM character_art WHERE character_id = ?", (cid,))
+    if art_row:
+        await db.execute(
+            "INSERT OR IGNORE INTO character_art(character_id, art_id, learned_at, source)"
+            " VALUES(?,?,?,'npc')",
+            (cid, art_row["id"], time.time()),
+        )
+        await arts_mod.ensure_art_skills(db, cid, art_row)
+        for key in preset.get("skills", []):
+            sk = skills_mod.skill(key)
+            await db.execute(
+                "INSERT INTO character_skill(character_id, skill_id, level, equipped)"
+                " VALUES(?,?,1,1)"
+                " ON CONFLICT(character_id, skill_id) DO UPDATE SET equipped=1",
+                (cid, sk["id"]),
+            )
+    for key in preset.get("equipment", []):
+        item = data_mod.item(key)
+        slot = item["type"] if item["type"] in ("weapon", "armor", "accessory") else None
+        await db.execute(
+            "INSERT OR IGNORE INTO character_inventory"
+            "(character_id, item_id, qty, equipped_slot) VALUES(?,?,1,?)",
+            (cid, item["id"], slot),
+        )
+    c = await db.fetch_one("SELECT * FROM character WHERE id = ?", (cid,))
+    c["character_id"] = cid
+    d = await character_mod.stats(db, c)
+    await db.execute(
+        "UPDATE character SET hp=?, mp=? WHERE id=?", (d["hp_max"], d["mp_max"], cid)
+    )
+    return cid
+
+
 async def seed_and_load(db: Database) -> None:
     for n in NPC_ROSTER.values():
         row = await db.fetch_one("SELECT id FROM npc WHERE name = ?", (n["name"],))
@@ -116,16 +218,67 @@ async def seed_and_load(db: Database) -> None:
             " paused_until, last_greet_real) VALUES(?,?,NULL,0,NULL,NULL)",
             (nid, n["init_affinity"]),
         )
+        await _ensure_character(db, nid, n)
     rows = await db.fetch_all("SELECT * FROM npc")
     _load_rows(rows)
 
 
+async def reset_progression(db: Database) -> None:
+    """新局把 NPC 角色卡重置回花名册预设；好感/记忆/关系不求改。"""
+    for n in NPC_ROSTER.values():
+        row = await db.fetch_one("SELECT id FROM npc WHERE name = ?", (n["name"],))
+        if row:
+            await _ensure_character(db, row["id"], n, force=True)
+
+
+def character_view(n: dict) -> dict | None:
+    c = n.get("character")
+    if not c:
+        return None
+    row = arts_mod.row_for(c)
+    out = dict(c)
+    out["art"] = ({
+        "id": row["id"], "name": row["name"], "element": row["element"],
+        "element_name": arts_mod.element_name(row["element"]),
+        "cap_level": row["cap_level"],
+    } if row else None)
+    out["cap_level"] = arts_mod.cap_of(c)
+    return out
+
+
+def art_brief(n: dict) -> str:
+    c = n.get("character")
+    if not c:
+        return ""
+    row = arts_mod.row_for(c)
+    if not row:
+        return "你尚未修习功法。\n"
+    cap = int(row["cap_level"])
+    bottleneck = "，已至瓶颈" if int(c["level"]) >= cap else ""
+    return (
+        f"你当前修{row['name']}（{arts_mod.element_name(row['element'])}，"
+        f"{int(c['level'])}级，上限{cap}级{bottleneck}）。\n"
+    )
+
+
 async def by_id(db: Database, npc_id: int) -> dict | None:
-    """Static NPC metadata + roster enrichments, from the seeded in-memory registry."""
+    """Static NPC metadata + live character sheet, from the seeded registry."""
     meta = _npc_meta_by_id.get(npc_id)
     if meta is None:
         return None
-    return dict(meta)
+    out = dict(meta)
+    preset = out.get("character") or {}
+    out["potions"] = int(preset.get("potions", 0))
+    c = await db.fetch_one(
+        "SELECT c.* FROM npc n JOIN character c ON c.id = n.character_id"
+        " WHERE n.id = ?",
+        (npc_id,),
+    )
+    if c:
+        c["character_id"] = c["id"]
+        out["character_id"] = c["id"]
+        out["character"] = c
+    return out
 
 
 def ids() -> list[int]:
@@ -162,8 +315,10 @@ async def apply_delta(db: Database, npc_id: int, delta: int) -> int:
 async def list_for_client(db: Database, clock,
                           deviations: dict[int, dict] | None = None) -> list[dict]:
     rows = await db.fetch_all(
-        "SELECT n.id, n.name, n.role, n.work_poi, n.home_poi, ns.affinity, ns.paused_until"
-        " FROM npc n JOIN npc_state ns ON ns.npc_id = n.id ORDER BY n.id"
+        "SELECT n.id, n.name, n.role, n.work_poi, n.home_poi, ns.affinity,"
+        " ns.paused_until, c.level AS level, c.art_id AS art_id"
+        " FROM npc n JOIN npc_state ns ON ns.npc_id = n.id"
+        " LEFT JOIN character c ON c.id = n.character_id ORDER BY n.id"
     )
     now = clock.now()
     deviations = deviations or {}
@@ -171,12 +326,17 @@ async def list_for_client(db: Database, clock,
     for r in rows:
         meta = _npc_meta_by_id.get(r["id"])
         label_src = meta or {"home": r["home_poi"], "work": r["work_poi"]}
+        art_row = arts_mod.row_for({"art_id": r["art_id"]})
         out.append({
             "id": r["id"], "slug": (meta or {}).get("slug", r["name"]), "name": r["name"],
             "role": r["role"], "affinity": r["affinity"],
             "poi": schedule_mod.poi_label_for(label_src, now, deviations.get(r["id"])),
             "work_poi": r["work_poi"], "home_poi": r["home_poi"],
             "paused_until": r["paused_until"],
+            "level": int(r["level"] or 1),
+            "art_name": art_row["name"] if art_row else None,
+            "element": art_row["element"] if art_row else None,
+            "cap_level": int(art_row["cap_level"]) if art_row else 15,
         })
     return out
 

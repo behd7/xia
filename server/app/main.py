@@ -375,6 +375,7 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
     paused = bool(reflection.get("paused_until") and reflection["paused_until"] > now_real)
     return {
         "npc": {"id": npc_id, "name": n["name"], "role": n.get("role"), "sect": n.get("sect")},
+        "character": npc_mod.character_view(n),
         "affinity": aff,
         "reflection": reflection,
         "schedule": {
@@ -545,6 +546,7 @@ async def new_game(req: NewGameReq) -> dict[str, Any]:
     p = await player_mod.create(db, name)
     # 新档不能继承上个存档的世界阶段，否则 NPC 会对着新角色讲旧角色的事。
     await world_state_mod.reset(db)
+    await npc_mod.reset_progression(db)
     if mem_store is not None:
         await mem_store.flush()  # 等旧局在跑的长期总结收尾/丢弃
         mem_store.reset_runtime()
