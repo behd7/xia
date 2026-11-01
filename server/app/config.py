@@ -88,6 +88,7 @@ class Settings(BaseSettings):
     midterm_query_message_limit: int = 12   # 召回 query 拼接的消息条数
     midterm_query_max_chars: int = 2400     # 召回 query 字数上限
     longterm_turn_interval: int = 36        # 每累计 N 轮原始对话触发一次长期总结
+    longterm_importance: int = 5            # 长期记忆条目的重要度（v2 只写不读，固定值）
 
     # RAG (docs/DESIGN.md §6.4)
     recency_half_life: float = 3.0

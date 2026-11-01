@@ -90,7 +90,8 @@ class LongTermJob:
     db: Database
     generation: int
     npc_id: int
-    turns: list[dict]
+    turn_start: int
+    turn_end: int
     ts_game: float
     npc_name: str
     player_name: str
@@ -106,7 +107,7 @@ _SHUTDOWN_GRACE = 5.0
 
 
 class MemoryStore:
-    """Chroma 索引、记忆写锁、中期内存与长期总结 worker 的持有者。"""
+    """Chroma 索引、记忆写锁、中期召回冷却与长期总结 worker 的持有者。"""
 
     def __init__(self, chroma_dir, llm, clock) -> None:
         self.llm = llm
@@ -117,11 +118,14 @@ class MemoryStore:
         self._coll = self._client.get_or_create_collection(
             "memories", embedding_function=None, metadata={"hnsw:space": "cosine"}
         )
+        # 长期记忆的派生索引：只索引 longterm_memory，v2 只写不读（供 P5 召回）。
+        self._lt_coll = self._client.get_or_create_collection(
+            "longterm", embedding_function=None, metadata={"hnsw:space": "cosine"}
+        )
         self._lock = asyncio.Lock()
         self._window_locks: dict[int, asyncio.Lock] = {}
-        # 中期条目在 conversation 表里；这里只留召回冷却与长期原始轮缓冲。
+        # 中期条目与长期原文都在 SQLite；这里只留召回冷却。
         self._recalled_at: dict[int, dict[int, int]] = {}
-        self._longterm_turns: dict[int, list[dict]] = {}
         # 长期总结走单 worker 队列；generation 在 new_game 时递增，旧局任务据此丢弃。
         self._queue: asyncio.Queue = asyncio.Queue()
         self._worker: asyncio.Task | None = None
@@ -234,32 +238,13 @@ class MemoryStore:
                 # 唯一允许的运行期删除：这一轮属于已作废的旧局，留着会被新局归档。
                 await db.execute("DELETE FROM conversation WHERE id = ?", (conv_id,))
                 return TurnOutcome(stale=True)
-            self._longterm_turns.setdefault(npc_id, []).append({
-                "user": user, "npc": npc, "place": place, "ts_game": now_game,
-            })
 
             outcome = TurnOutcome()
             capacity = max(1, settings.conversation_window_capacity)
             if turn_no - last_mid > capacity:
                 per = max(1, settings.midterm_turns_per_entry)
                 start, end = last_mid + 1, last_mid + per
-                rows = await db.fetch_all(
-                    "SELECT turns_json FROM conversation WHERE npc_id = ?"
-                    " AND kind = 'turn' AND turn_no BETWEEN ? AND ?"
-                    " ORDER BY turn_no",
-                    (npc_id, start, end),
-                )
-                turns: list[dict] = []
-                for item in rows:
-                    try:
-                        data = json.loads(item["turns_json"])
-                    except (TypeError, ValueError):
-                        continue
-                    turns.append({
-                        "user": data.get("user", ""),
-                        "npc": data.get("npc", ""),
-                        "place": data.get("place", place),
-                    })
+                turns = await self._window_turns(db, npc_id, start, end)
                 result = await summary_mod.summarize_midterm(
                     self, npc_id, npc_name, player_name, place, turns)
                 stored = await self._store_midterm(
@@ -277,14 +262,12 @@ class MemoryStore:
                 await db.execute("DELETE FROM conversation WHERE id = ?", (conv_id,))
                 return TurnOutcome(stale=True)
             interval = max(1, settings.longterm_turn_interval)
-            buffer = self._longterm_turns.setdefault(npc_id, [])
-            if len(buffer) >= interval:
-                batch = buffer[:interval]
-                del buffer[:interval]
+            last_long = await self._longterm_cursor(db, npc_id)
+            if turn_no - last_long >= interval:
                 self._schedule_longterm(
-                    db, npc_id, batch, ts_game=now_game,
-                    npc_name=npc_name, player_name=player_name,
-                    generation=generation)
+                    db, npc_id, last_long + 1, last_long + interval,
+                    ts_game=now_game, npc_name=npc_name,
+                    player_name=player_name, generation=generation)
                 outcome.longterm_scheduled = True
             return outcome
 
@@ -296,6 +279,31 @@ class MemoryStore:
         if row is None:
             return 0, 0
         return int(row["turn_no"] or 0), int(row["last_midterm_turn"] or 0)
+
+    async def _longterm_cursor(self, db: Database, npc_id: int) -> int:
+        row = await db.fetch_one(
+            "SELECT last_longterm_turn FROM npc_state WHERE npc_id = ?", (npc_id,))
+        return int(row["last_longterm_turn"] or 0) if row else 0
+
+    async def _window_turns(self, db: Database, npc_id: int,
+                            start: int, end: int) -> list[dict]:
+        """按轮号区间取原文轮（长期总结的素材）。"""
+        rows = await db.fetch_all(
+            "SELECT turns_json FROM conversation WHERE npc_id = ?"
+            " AND kind = ? AND turn_no BETWEEN ? AND ? ORDER BY turn_no",
+            (npc_id, TURN_KIND, start, end))
+        turns: list[dict] = []
+        for row in rows:
+            try:
+                data = json.loads(row["turns_json"])
+            except (TypeError, ValueError):
+                continue
+            turns.append({
+                "user": data.get("user", ""),
+                "npc": data.get("speech") or data.get("npc", ""),
+                "place": data.get("place", ""),
+            })
+        return turns
 
     async def _store_midterm(self, db: Database, npc_id: int, result: dict, *,
                              ts_game: float, generation: int,
@@ -401,9 +409,9 @@ class MemoryStore:
             remaining = [hit for hit in remaining if hit[0] != row_id]
         return picked
 
-    def _schedule_longterm(self, db: Database, npc_id: int, turns: list[dict], *,
-                           ts_game: float, npc_name: str, player_name: str,
-                           generation: int) -> None:
+    def _schedule_longterm(self, db: Database, npc_id: int, turn_start: int,
+                           turn_end: int, *, ts_game: float, npc_name: str,
+                           player_name: str, generation: int) -> None:
         if self._closed or self._draining or generation != self._generation:
             logger.info("drop longterm schedule npc=%d gen=%d current=%d "
                         "draining=%s closed=%s",
@@ -412,30 +420,61 @@ class MemoryStore:
             return
         self._ensure_worker()
         self._queue.put_nowait(LongTermJob(
-            db=db, generation=generation, npc_id=npc_id, turns=turns,
+            db=db, generation=generation, npc_id=npc_id,
+            turn_start=turn_start, turn_end=turn_end,
             ts_game=ts_game, npc_name=npc_name, player_name=player_name,
         ))
 
     async def _run_longterm(self, job: LongTermJob) -> None:
+        """按轮号区间从 SQLite 取原文，总结后写 longterm_memory + `longterm` 集合。"""
+        turns = await self._window_turns(
+            job.db, job.npc_id, job.turn_start, job.turn_end)
         result = await summary_mod.summarize_longterm(
-            self, job.npc_id, job.npc_name, job.player_name, job.turns)
+            self, job.npc_id, job.npc_name, job.player_name, turns)
         if job.generation != self._generation:
             logger.info("drop stale longterm result npc=%d gen=%d current=%d",
                         job.npc_id, job.generation, self._generation)
             return
-        row_id = await job.db.execute(
-            "INSERT INTO longterm_memory(npc_id, ts_game, content, turn_count,"
-            " created_at_real) VALUES(?,?,?,?,?)",
-            (job.npc_id, job.ts_game, result["summary"], len(job.turns), time.time()),
-        )
+        poi = ""
+        for turn in reversed(turns):
+            if turn.get("place"):
+                poi = turn["place"]
+                break
+        async with self._lock:
+            row_id = await job.db.execute(
+                "INSERT INTO longterm_memory(npc_id, ts_game, content, turn_count,"
+                " created_at_real, turn_range_start, turn_range_end,"
+                " participants_json, poi, importance) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (job.npc_id, job.ts_game, result["summary"], len(turns),
+                 time.time(), job.turn_start, job.turn_end,
+                 json.dumps([job.player_name], ensure_ascii=False),
+                 poi, settings.longterm_importance),
+            )
+            vec = (await self.llm.embed([result["summary"]]))[0]
+            self._lt_coll.add(
+                ids=[str(row_id)], embeddings=[vec], documents=[result["summary"]],
+                metadatas=[{
+                    "npc_id": str(job.npc_id), "ts_game": job.ts_game,
+                    "turn_range_end": job.turn_end, "poi": poi,
+                }],
+            )
         if job.generation != self._generation:
             await job.db.execute(
                 "DELETE FROM longterm_memory WHERE id = ?", (row_id,))
+            try:
+                self._lt_coll.delete(ids=[str(row_id)])
+            except Exception:
+                logger.warning("longterm vector delete failed id=%d", row_id)
             logger.info("drop stale longterm row npc=%d gen=%d current=%d",
                         job.npc_id, job.generation, self._generation)
             return
+        await job.db.execute(
+            "UPDATE npc_state SET last_longterm_turn = CASE"
+            " WHEN last_longterm_turn < ? THEN ? ELSE last_longterm_turn END"
+            " WHERE npc_id = ?",
+            (job.turn_end, job.turn_end, job.npc_id))
         logger.info("longterm memory stored npc=%d turns=%d chars=%d",
-                    job.npc_id, len(job.turns), len(result["summary"]))
+                    job.npc_id, len(turns), len(result["summary"]))
 
     async def _longterm_worker(self) -> None:
         while True:
@@ -506,7 +545,6 @@ class MemoryStore:
     def reset_runtime(self) -> None:
         """新局只清运行时；conversation 与 longterm_memory 是持久记忆，不在此清。"""
         self._recalled_at.clear()
-        self._longterm_turns.clear()
         self.recent_events.clear()
         self._draining = False
 
@@ -554,8 +592,18 @@ class MemoryStore:
             "window_turns": max(0, turn_no - last_mid),
         }
 
-    def pending_longterm_turns(self, npc_id: int) -> int:
-        return len(self._longterm_turns.get(npc_id, []))
+    def longterm_indexed(self) -> int:
+        """`longterm` 集合里的条数；v2 没有读路径，靠它与表行数对账。"""
+        try:
+            return self._lt_coll.count()
+        except Exception:
+            return -1
+
+    async def pending_longterm_turns(self, db: Database, npc_id: int) -> int:
+        """还没归档进长期记忆的轮数（v2：由游标算，不再依赖内存缓冲）。"""
+        turn_no, _ = await self._ledger_cursor(db, npc_id)
+        last_long = await self._longterm_cursor(db, npc_id)
+        return max(0, turn_no - last_long)
 
     def query(self, npc_id: int, query_vec: list[float], n_results: int = 20) -> dict:
         """ANN search over this NPC's memories (vector similarity only)."""
@@ -565,14 +613,18 @@ class MemoryStore:
         )
 
     async def reconcile(self, db: Database) -> bool:
-        """Ensure the Chroma index matches the SQLite memory SSOT; True if rebuilt.
+        """按集合分别校验派生索引，True 表示重建过。
 
-        Chroma is a derived index. If it's out of sync with `memory`, or its
-        on-disk format is unreadable (e.g. an unpinned chromadb got bumped and
-        changed the internal seq_id encoding), drop the collection and re-embed
-        every memory row from SQLite (AGENTS.md: Chroma 恒可从 SQLite 全量重建).
-        Cheap no-op when the counts already agree.
+        Chroma 是派生索引：`memories` 对 `memory`、`longterm` 对 `longterm_memory`，
+        数量不符或格式不可读就删该集合、从 SQLite 全量重嵌入（AGENTS.md：恒可重建）。
+        两个集合必须各自校验——一张表数量不符不能连带重建另一个。
         """
+        rebuilt = False
+        rebuilt |= await self._reconcile_memories(db)
+        rebuilt |= await self._reconcile_longterm(db)
+        return rebuilt
+
+    async def _reconcile_memories(self, db: Database) -> bool:
         try:
             in_chroma = self._coll.count()
         except Exception:
@@ -603,6 +655,41 @@ class MemoryStore:
             })
         if ids:
             self._coll.add(ids=ids, embeddings=embeds, documents=docs, metadatas=metas)
+        return True
+
+    async def _reconcile_longterm(self, db: Database) -> bool:
+        """`longterm` 集合（v2 只写不读，重建后供 P5 召回）。"""
+        try:
+            in_chroma = self._lt_coll.count()
+        except Exception:
+            in_chroma = -1
+        sql_count = (await db.fetch_one(
+            "SELECT COUNT(*) AS n FROM longterm_memory"))["n"]
+        if in_chroma == sql_count and in_chroma >= 0:
+            return False
+        try:
+            self._client.delete_collection("longterm")
+        except Exception:
+            pass
+        self._lt_coll = self._client.get_or_create_collection(
+            "longterm", embedding_function=None, metadata={"hnsw:space": "cosine"}
+        )
+        rows = await db.fetch_all(
+            "SELECT id, npc_id, ts_game, content, turn_range_end, poi"
+            " FROM longterm_memory ORDER BY id")
+        ids, embeds, docs, metas = [], [], [], []
+        for r in rows:
+            vec = (await self.llm.embed([r["content"]]))[0]
+            ids.append(str(r["id"]))
+            embeds.append(vec)
+            docs.append(r["content"])
+            metas.append({
+                "npc_id": str(r["npc_id"]), "ts_game": r["ts_game"],
+                "turn_range_end": r["turn_range_end"], "poi": r["poi"] or "",
+            })
+        if ids:
+            self._lt_coll.add(ids=ids, embeddings=embeds, documents=docs,
+                              metadatas=metas)
         return True
 
     def close(self) -> None:

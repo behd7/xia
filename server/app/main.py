@@ -84,7 +84,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     reconciled = await mem_store.reconcile(db)
     mem_store.start()  # 长期总结单 worker 队列
     logger.info("startup: chroma reconcile %s",
-                "rebuilt from SQLite" if reconciled else "already in sync")
+                "rebuilt from SQLite" if reconciled else "already in sync (memories+longterm)")
     battle_mod.mem_store = mem_store  # 切磋写入 NPC 记忆的注入点
     shop_mod.mem_store = mem_store  # 大额消费写入店主记忆的注入点
     scheduler_tasks = await scheduler_mod.start(db, mem_store)
@@ -390,7 +390,9 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
         "midterm": (await mem_store.debug_midterms(db, npc_id)) if mem_store else [],
         "longterm": longterm,
         "longterm_pending_turns": (
-            mem_store.pending_longterm_turns(npc_id) if mem_store else 0),
+            (await mem_store.pending_longterm_turns(db, npc_id))
+            if mem_store else 0),
+        "longterm_indexed": mem_store.longterm_indexed() if mem_store else 0,
         "relationship": rel,
         "agenda": await agenda_mod.current(db, npc_id),
         "mood": await mood_mod.current(db, npc_id, now_real),

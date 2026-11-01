@@ -680,11 +680,15 @@ async def main() -> int:
                 check(f"longterm talk {i} ok", status == 200 and done is not None)
             await main_mod.mem_store.wait_background()
             long_rows = await main_mod.db.fetch_all(
-                "SELECT npc_id, content, turn_count FROM longterm_memory"
-                " WHERE npc_id = ?", (npc_window,))
+                "SELECT npc_id, content, turn_count, turn_range_start, turn_range_end,"
+                " importance FROM longterm_memory WHERE npc_id = ?", (npc_window,))
             check("one longterm memory for 36 turns",
                   len(long_rows) == 1 and long_rows[0]["turn_count"] == 36
                   and long_rows[0]["content"] == "三十六轮往来已归档。")
+            check("longterm row records its turn range",
+                  long_rows[0]["turn_range_start"] == 1
+                  and long_rows[0]["turn_range_end"] == 36
+                  and long_rows[0]["importance"] == 5)
             check("two midterm + one longterm summary calls",
                   CALLED.count("dialogue_summary") == summary_calls + 3)
             check("longterm summary uses priority 3",
@@ -694,8 +698,10 @@ async def main() -> int:
                 "SELECT COUNT(*) AS n FROM memory WHERE npc_id = ? AND content = ?",
                 (npc_window, "三十六轮往来已归档。"))
             check("longterm does not write memory", long_mem_hit["n"] == 0)
-            check("longterm does not write chroma",
+            check("longterm does not write the memories collection",
                   main_mod.mem_store._coll.count() == chroma_before)
+            check("longterm indexed into its own collection",
+                  main_mod.mem_store.longterm_indexed() == 1)
             conv_final = (await main_mod.db.fetch_one(
                 "SELECT COUNT(*) AS n FROM conversation"
                 " WHERE npc_id = ? AND kind = 'turn'", (npc_window,)))["n"]
@@ -708,8 +714,9 @@ async def main() -> int:
                         main_mod.db, npc_window)]
             check("midterm capacity FIFO keeps newest one",
                   fifo == ["闲谈第11轮起归档。"])
-            check("longterm buffer drained",
-                  main_mod.mem_store.pending_longterm_turns(npc_window) == 0)
+            check("longterm cursor advanced to 36",
+                  await main_mod.mem_store.pending_longterm_turns(
+                      main_mod.db, npc_window) == 0)
             long_prompts = [
                 m for purpose, m in PROMPTS
                 if purpose == "dialogue_summary" and "长期记忆" in m[0]["content"]]
@@ -722,7 +729,22 @@ async def main() -> int:
             check("debug exposes midterm and longterm",
                   len(debug.get("midterm", [])) == 1
                   and len(debug.get("longterm", [])) == 1
-                  and debug.get("longterm_pending_turns") == 0)
+                  and debug.get("longterm_pending_turns") == 0
+                  and debug.get("longterm_indexed") == 1)
+
+            print("\n== reconcile: 两个向量集合各自校验 ==")
+            mem_count = main_mod.mem_store._coll.count()
+            check("reconcile is a no-op when both collections agree",
+                  await main_mod.mem_store.reconcile(main_mod.db) is False)
+            main_mod.mem_store._client.delete_collection("longterm")
+            main_mod.mem_store._lt_coll = (
+                main_mod.mem_store._client.get_or_create_collection(
+                    "longterm", embedding_function=None,
+                    metadata={"hnsw:space": "cosine"}))
+            rebuilt = await main_mod.mem_store.reconcile(main_mod.db)
+            check("reconcile rebuilds only the drifted collection",
+                  rebuilt is True and main_mod.mem_store.longterm_indexed() == 1
+                  and main_mod.mem_store._coll.count() == mem_count)
 
             print("\n== midterm matcher + clue vector codec (pure functions) ==")
             from app.agent import memory as memory_mod
@@ -775,9 +797,9 @@ async def main() -> int:
                 " WHERE npc_id = ? AND turns_json LIKE ?",
                 (npc_race, "%慢速对话%"))
             check("stale turn not written to conversation", conv_race["n"] == 0)
-            check("stale turn not buffered",
-                  all("慢速对话" not in t["user"]
-                      for t in main_mod.mem_store._longterm_turns.get(npc_race, [])))
+            check("stale turn not queued for longterm",
+                  await main_mod.mem_store.pending_longterm_turns(
+                      main_mod.db, npc_race) == 0)
             check("stale turn not in midterm",
                   all("慢速对话" not in m["summary"]
                       for m in await main_mod.mem_store.debug_midterms(
@@ -789,10 +811,18 @@ async def main() -> int:
             check("new game keeps persistent longterm rows", persisted["n"] == 1)
 
             print("\n== longterm worker drops stale generation ==")
-            turns = [{"user": "门禁长期测试", "npc": "……", "place": "镇口",
-                      "ts_game": 0.0} for _ in range(36)]
+            # v2 的长期素材从 SQLite 按轮号读，所以先给 NPC 2 落 36 轮原文。
+            for i in range(1, 37):
+                await main_mod.db.execute(
+                    "INSERT INTO conversation(npc_id, ts_game, turns_json,"
+                    " affinity_delta_total, kind, turn_no) VALUES(?,?,?,0,'turn',?)",
+                    (2, 0.0,
+                     json.dumps({"user": "门禁长期测试", "npc": "……",
+                                 "place": "镇口"}, ensure_ascii=False),
+                     i))
             main_mod.mem_store._schedule_longterm(
-                main_mod.db, 2, turns, ts_game=main_mod.mem_store.clock.now(),
+                main_mod.db, 2, 1, 36,
+                ts_game=main_mod.mem_store.clock.now(),
                 npc_name="张馒头", player_name="门禁测试",
                 generation=main_mod.mem_store.generation)
             await asyncio.wait_for(GATE_LT["reached"].wait(), timeout=5)
