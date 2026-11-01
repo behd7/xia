@@ -130,6 +130,8 @@ M5 已按 [`docs/M5-PLAN.md`](docs/M5-PLAN.md) 全部实施（W/B/A/C 四个 com
 
 **记忆分层重构已按 [`docs/MEMORY-PLAN.md`](docs/MEMORY-PLAN.md) 实施**：短期 `conversation` 窗口、中期 `MemoryStore` 内存 summary+线索（不入库）、长期独立 `longterm_memory` 表（每 36 轮原始对话经单 worker 队列后台总结，暂不参与对话/RAG/反思/八卦）。长期任务与对话回合都带 `generation`，新局用 `begin_reset()`/`flush()`/`reset_runtime()` 屏障；P2 加固（`LLM_NUM_CTX`、clues 字符串/空线索重试、共享 `strip_fence`、SQLite 取消锁、冒烟分桶）已落地；改动记忆链路时以该计划与 DESIGN §6.3/§6.4/§6.6/§8 为准；长期接入对话仍待办，当前优先 M6（按 `docs/M6-PLAN.md`），实施顺序以用户安排为准。
 
+**记忆架构 v2 已定稿、未实施**（2026-11-01，见 [`docs/MEMORY-V2-PLAN.md`](docs/MEMORY-V2-PLAN.md)）：把三层记忆改成「每个人物一本账」——`npc_state` 绝对轮号 `turn_no` + 三个游标（`turn_no` / `last_midterm_turn` / `last_longterm_turn`）；中期条目入库（`conversation.kind='midterm'`，clues+向量在 `turns_json`）；**总结后不删原文**，只把已归档的轮移出窗口；中期召回 query 改 12 条消息拼接（≤2400 字）、阈值 0.8、`top_k=1`、5 轮冷却；长期改从 SQLite 原文总结、写 `longterm_memory` + 独立 Chroma 集合 `longterm`，**v2 只写不读**；新增行动层（NPC 原地工具调用 `give_item`/`take_item`/`teach_skill`/`refuse`，副作用即时写入 `memory.kind='action'`，`reply` 可为空）。**上一条 #11 与 DESIGN 相关段落描述的仍是 v1 现状**：实施 v2 前不要按 v2 删改既有语义与冒烟断言，按该计划 P0–P4 分阶段落地并同步文档。
+
 ## Git 提交规范：任务完成自动提交
 
 **每个任务完成时自动 commit**（无需再询问用户），一个任务一个 commit，不新增任何任务记录/变更日志文件——`git log` 就是任务时间线，`git show <hash>` 看细节。提交信息固定三段式：

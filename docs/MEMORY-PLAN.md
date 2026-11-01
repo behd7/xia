@@ -1,5 +1,7 @@
 # 记忆分层重构执行计划：短期 / 中期 / 长期
 
+> **已被 v2 取代（2026-11-01）**：新设计见 [`MEMORY-V2-PLAN.md`](MEMORY-V2-PLAN.md)。本文件以下三处语义不再采用——①「满窗后删除已总结的 `conversation` 记录」改为**不删原文、只推进 `last_midterm_turn` 把已归档轮移出窗口**；②「中期纯内存、重启清零」改为**中期条目入库**（`conversation.kind='midterm'`）；③「长期完全不写 Chroma」改为**写独立集合 `longterm`**（v2 只写不读）。其余内容（schema、worker 队列、generation 屏障、兜底链路、冒烟口径）仍是 v1 实施记录，v2 沿用。
+>
 > 状态：已实施（2026-10-28）。§6.3/§6.4/§6.6/§6.7/§6.8/§7.5/§8/§14 已同步到 `docs/DESIGN.md`，`AGENTS.md` 已同步；本文件保留为设计决策记录。
 >
 > 实施修订（2026-10-28，P1 竞态修复）：长期任务从 fire-and-forget task 集合改为**单 worker 队列**（`LongTermJob` + `asyncio.Queue` + `_Barrier`/`_STOP`）；任务与对话回合都带 `generation`。`new_game`：`begin_reset()`（generation++/draining）→ `flush()`（barrier 等当前/排队任务收尾或丢弃）→ `reset_runtime()`；shutdown：`shutdown()` 丢弃排队任务、当前任务收尾后停 worker；测试：`wait_background()`。对话入口捕获 `mem_store.generation`，LLM 返回后局代已变则跳过好感/议程/情绪/记忆写入，`done.stale=true`；送礼/切磋看到 stale 不扣物品/不记事件。§6、§9 中旧的 `_bg_tasks`/`drain` 描述以本节为准。
