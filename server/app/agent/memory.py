@@ -6,15 +6,18 @@
 Chroma 集合恒建为 embedding_function=None + hnsw:space=cosine，add/query
 恒定传 embeddings（AGENTS.md ChromaDB 三坑）。
 
-三层记忆：短期 conversation 窗口仍走 SQLite；中期 summary+线索只存
-`_midterms` 进程内存；长期每 36 轮原始对话在后台总结，写独立的
-`longterm_memory` 表（不写 memory、不写 Chroma，也不参与反思/关系/八卦）。
+账本模型（docs/MEMORY-V2-PLAN.md）：短期与中期都是 `conversation` 的行，
+用 `kind` 区分、用绝对轮号 `turn_no` 排序；窗口 = `turn_no > last_midterm_turn`，
+归档只推进游标、不删原文。长期每 36 轮原始对话在后台总结，写独立的
+`longterm_memory` 表（v2 只写不读，不参与反思/关系/八卦）。
 """
 
 import asyncio
+import base64
 import contextvars
 import json
 import logging
+import struct
 import time
 from dataclasses import dataclass
 
@@ -27,10 +30,41 @@ from . import summary as summary_mod
 
 logger = logging.getLogger(__name__)
 
+MIDTERM_KIND = "midterm"
+TURN_KIND = "turn"
+
+
+def pack_vec(vec: list[float]) -> str:
+    """float32 -> base64，中期线索向量随摘要行一起存 SQLite（重启免重嵌入）。"""
+    return base64.b64encode(struct.pack(f"<{len(vec)}f", *vec)).decode("ascii")
+
+
+def unpack_vec(blob: str) -> list[float]:
+    raw = base64.b64decode(blob)
+    return list(struct.unpack(f"<{len(raw) // 4}f", raw))
+
+
+def dot(left: list[float], right: list[float]) -> float:
+    return sum(a * b for a, b in zip(left, right))
+
+
+def best_midterm(
+    hits: list[tuple[int, list[list[float]]]], query_vec: list[float], threshold: float
+) -> tuple[int, float] | None:
+    """在 (行 id, 线索向量) 候选里取「最高分线索」最高的一条；必须严格高于阈值。"""
+    best: tuple[int, float] | None = None
+    for row_id, vectors in hits:
+        if not vectors:
+            continue
+        score = max(dot(query_vec, vec) for vec in vectors)
+        if score > threshold and (best is None or score > best[1]):
+            best = (row_id, score)
+    return best
+
 
 @dataclass
 class MidTerm:
-    """进程内中期记忆：单条 summary + 线索向量，不入库。"""
+    """中期记忆：单条 summary + 线索 + 线索向量；持久化在 conversation.kind='midterm'。"""
 
     summary: str
     clues: list[str]
@@ -38,6 +72,8 @@ class MidTerm:
     ts_game: float
     turn_count: int
     turn_range: tuple[int, int] | None = None
+    id: int | None = None
+    score: float = 0.0
 
 
 @dataclass
@@ -83,8 +119,8 @@ class MemoryStore:
         )
         self._lock = asyncio.Lock()
         self._window_locks: dict[int, asyncio.Lock] = {}
-        # 中期记忆与长期原始轮缓冲都只在进程内，重启清零。
-        self._midterms: dict[int, list[MidTerm]] = {}
+        # 中期条目在 conversation 表里；这里只留召回冷却与长期原始轮缓冲。
+        self._recalled_at: dict[int, dict[int, int]] = {}
         self._longterm_turns: dict[int, list[dict]] = {}
         # 长期总结走单 worker 队列；generation 在 new_game 时递增，旧局任务据此丢弃。
         self._queue: asyncio.Queue = asyncio.Queue()
@@ -227,7 +263,7 @@ class MemoryStore:
                 result = await summary_mod.summarize_midterm(
                     self, npc_id, npc_name, player_name, place, turns)
                 stored = await self._store_midterm(
-                    npc_id, result, ts_game=now_game, generation=generation,
+                    db, npc_id, result, ts_game=now_game, generation=generation,
                     turn_range=(start, end))
                 if not stored:
                     await db.execute("DELETE FROM conversation WHERE id = ?", (conv_id,))
@@ -261,12 +297,8 @@ class MemoryStore:
             return 0, 0
         return int(row["turn_no"] or 0), int(row["last_midterm_turn"] or 0)
 
-    async def reset_ledger(self, db: Database) -> None:
-        """新局：把窗口清零（游标前移），原文保留供长期归档与复盘。"""
-        await db.execute("UPDATE npc_state SET last_midterm_turn = turn_no")
-
-    async def _store_midterm(self, npc_id: int, result: dict, *, ts_game: float,
-                             generation: int,
+    async def _store_midterm(self, db: Database, npc_id: int, result: dict, *,
+                             ts_game: float, generation: int,
                              turn_range: tuple[int, int] | None = None) -> bool:
         if generation != self._generation:
             return False
@@ -282,28 +314,92 @@ class MemoryStore:
             return False
         if not clues:
             logger.warning("midterm stored without clues npc=%d; not retrievable", npc_id)
-        bucket = self._midterms.setdefault(npc_id, [])
-        bucket.append(MidTerm(
-            summary=result["summary"], clues=clues, vectors=vectors,
-            ts_game=ts_game, turn_count=int(result.get("turn_count", 0)),
-            turn_range=turn_range,
-        ))
+        payload = {
+            "summary": result["summary"],
+            "clues": clues,
+            "clue_vectors": [pack_vec(vec) for vec in vectors],
+            "turn_range": list(turn_range) if turn_range else [],
+            "turn_count": int(result.get("turn_count", 0)),
+        }
+        end_turn = turn_range[1] if turn_range else 0
+        row_id = await db.execute(
+            "INSERT INTO conversation(npc_id, ts_game, turns_json,"
+            " affinity_delta_total, kind, turn_no) VALUES(?,?,?,0,?,?)",
+            (npc_id, ts_game, json.dumps(payload, ensure_ascii=False),
+             MIDTERM_KIND, end_turn),
+        )
+        # 派生摘要的 FIFO 淘汰：每 NPC 只留最近 MIDTERM_CAPACITY 条。
         cap = max(1, settings.midterm_capacity)
-        if len(bucket) > cap:
-            del bucket[:len(bucket) - cap]
-        return True
+        rows = await db.fetch_all(
+            "SELECT id FROM conversation WHERE npc_id = ? AND kind = ?"
+            " ORDER BY turn_no DESC, id DESC", (npc_id, MIDTERM_KIND))
+        stale = [str(r["id"]) for r in rows[cap:]]
+        if stale:
+            await db.execute(
+                f"DELETE FROM conversation WHERE id IN ({','.join('?' for _ in stale)})",
+                stale)
+        return row_id > 0
 
-    def match_midterms(self, npc_id: int, query_vec: list[float]) -> list[MidTerm]:
-        """用当前消息向量匹配中期线索，返回命中的完整中期条目。"""
-        scored: list[tuple[float, MidTerm]] = []
-        for item in self._midterms.get(npc_id, []):
-            if not item.vectors:
+    async def recall_midterm(self, db: Database, npc_id: int,
+                             query_vec: list[float]) -> list[MidTerm]:
+        """用长拼接 query 匹配中期线索，返回命中的完整条目（≤MIDTERM_TOP_K）。
+
+        阈值是严格大于；同一条在冷却期内不重复注入（MaiBot 的「已注入身份去重」
+        等价物，不设累计配额）。
+        """
+        rows = await db.fetch_all(
+            "SELECT id, ts_game, turn_no, turns_json FROM conversation"
+            " WHERE npc_id = ? AND kind = ? ORDER BY turn_no DESC, id DESC LIMIT ?",
+            (npc_id, MIDTERM_KIND, max(1, settings.midterm_capacity)))
+        if not rows:
+            return []
+        turn_no, _ = await self._ledger_cursor(db, npc_id)
+        now_turn = turn_no + 1  # 本轮尚未落库，按将要写入的轮号算冷却
+        cooldown = max(0, settings.midterm_recall_cooldown_turns)
+        seen = self._recalled_at.setdefault(npc_id, {})
+        hits: list[tuple[int, list[list[float]]]] = []
+        parsed: dict[int, MidTerm] = {}
+        for row in rows:
+            row_id = int(row["id"])
+            last = seen.get(row_id)
+            if cooldown and last is not None and now_turn - last < cooldown:
                 continue
-            score = max(sum(a * b for a, b in zip(query_vec, v)) for v in item.vectors)
-            if score >= settings.midterm_min_score:
-                scored.append((score, item))
-        scored.sort(key=lambda pair: -pair[0])
-        return [item for _, item in scored[: max(1, settings.midterm_top_k)]]
+            try:
+                data = json.loads(row["turns_json"])
+                vectors = [unpack_vec(blob) for blob in data.get("clue_vectors") or []]
+            except (TypeError, ValueError, KeyError):
+                continue
+            if not vectors:
+                continue
+            turn_range = data.get("turn_range") or []
+            parsed[row_id] = MidTerm(
+                summary=str(data.get("summary", "")),
+                clues=list(data.get("clues") or []),
+                vectors=vectors,
+                ts_game=float(row["ts_game"] or 0.0),
+                turn_count=int(data.get("turn_count") or 0),
+                turn_range=(int(turn_range[0]), int(turn_range[1]))
+                if len(turn_range) == 2 else None,
+                id=row_id,
+            )
+            hits.append((row_id, vectors))
+        if not hits:
+            return []
+        top_k = max(1, settings.midterm_top_k)
+        picked: list[MidTerm] = []
+        threshold = settings.midterm_min_score
+        remaining = list(hits)
+        for _ in range(top_k):
+            best = best_midterm(remaining, query_vec, threshold)
+            if best is None:
+                break
+            row_id, score = best
+            item = parsed[row_id]
+            item.score = score
+            picked.append(item)
+            seen[row_id] = now_turn
+            remaining = [hit for hit in remaining if hit[0] != row_id]
+        return picked
 
     def _schedule_longterm(self, db: Database, npc_id: int, turns: list[dict], *,
                            ts_game: float, npc_name: str, player_name: str,
@@ -409,18 +505,37 @@ class MemoryStore:
 
     def reset_runtime(self) -> None:
         """新局只清运行时；conversation 与 longterm_memory 是持久记忆，不在此清。"""
-        self._midterms.clear()
+        self._recalled_at.clear()
         self._longterm_turns.clear()
         self.recent_events.clear()
         self._draining = False
 
-    def debug_midterms(self, npc_id: int) -> list[dict]:
-        return [
-            {"summary": item.summary, "clues": item.clues,
-             "ts_game": item.ts_game, "turn_count": item.turn_count,
-             "turn_range": list(item.turn_range) if item.turn_range else None}
-            for item in self._midterms.get(npc_id, [])
-        ]
+    async def reset_ledger(self, db: Database) -> None:
+        """新局：清空窗口与中期派生摘要，原文保留供长期归档与复盘。"""
+        await db.execute(
+            "DELETE FROM conversation WHERE kind = ?", (MIDTERM_KIND,))
+        await db.execute("UPDATE npc_state SET last_midterm_turn = turn_no")
+
+    async def debug_midterms(self, db: Database, npc_id: int) -> list[dict]:
+        rows = await db.fetch_all(
+            "SELECT id, ts_game, turn_no, turns_json FROM conversation"
+            " WHERE npc_id = ? AND kind = ? ORDER BY turn_no DESC, id DESC",
+            (npc_id, MIDTERM_KIND))
+        items: list[dict] = []
+        for row in rows:
+            try:
+                data = json.loads(row["turns_json"])
+            except (TypeError, ValueError):
+                continue
+            items.append({
+                "id": row["id"],
+                "summary": data.get("summary", ""),
+                "clues": data.get("clues") or [],
+                "turn_count": data.get("turn_count") or 0,
+                "turn_range": data.get("turn_range") or None,
+                "ts_game": row["ts_game"],
+            })
+        return items
 
     async def ledger_view(self, db: Database, npc_id: int) -> dict:
         """调试用：账本游标与窗口大小。"""

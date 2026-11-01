@@ -605,13 +605,19 @@ async def main() -> int:
                   conv_before == 0 and conv_after == 21)
             check("one LLM summary for the overflowing window",
                   CALLED.count("dialogue_summary") == summary_calls + 1)
-            midterms = main_mod.mem_store.debug_midterms(npc_window)
+            midterms = await main_mod.mem_store.debug_midterms(main_mod.db, npc_window)
             check("midterm archived on the watermark",
                   len(midterms) == 1
                   and midterms[0]["summary"] == "闲谈第1轮起归档。"
                   and midterms[0]["clues"] == ["后山", "剑法"]
                   and midterms[0]["turn_count"] == 10
                   and midterms[0]["turn_range"] == [1, 10])
+            midterm_row = await main_mod.db.fetch_one(
+                "SELECT turns_json FROM conversation"
+                " WHERE npc_id = ? AND kind = 'midterm'", (npc_window,))
+            check("midterm persisted as a conversation row",
+                  midterm_row is not None
+                  and "clue_vectors" in midterm_row["turns_json"])
             ledger = (await c.get(f"/api/debug/npc/{npc_window}")).json()["ledger"]
             check("ledger cursors exposed",
                   ledger["turn_no"] == 21 and ledger["last_midterm_turn"] == 10
@@ -645,6 +651,12 @@ async def main() -> int:
             check("midterm block sits outside recent turns",
                   last_system.find("你想起一些旧事")
                   < last_system.find("你们最近的往来"))
+            status, _, done = await talk(c, npc_window, "再说说后山的事")
+            dialogue_prompts = [m for purpose, m in PROMPTS if purpose == "dialogue"]
+            cooldown_system = (dialogue_prompts[-1][0]["content"]
+                               if dialogue_prompts else "")
+            check("same midterm is not re-injected inside cooldown",
+                  "你想起一些旧事（只作参考，不要逐字复述）" not in cooldown_system)
             status, _, done = await talk(c, npc_window, "无关话题")
             check("unrelated talk ok", status == 200 and done is not None)
             dialogue_prompts = [m for purpose, m in PROMPTS if purpose == "dialogue"]
@@ -652,9 +664,18 @@ async def main() -> int:
                                 if dialogue_prompts else "")
             check("unrelated message omits midterm block",
                   "你想起一些旧事（只作参考，不要逐字复述）" not in unrelated_system)
+            for i in (25, 26):
+                status, _, done = await talk(c, npc_window, f"闲谈第{i}轮")
+                check(f"cooldown talk {i} ok", status == 200 and done is not None)
+            status, _, done = await talk(c, npc_window, "再说说后山的事")
+            dialogue_prompts = [m for purpose, m in PROMPTS if purpose == "dialogue"]
+            rehit_system = (dialogue_prompts[-1][0]["content"]
+                            if dialogue_prompts else "")
+            check("midterm re-injected after cooldown",
+                  "你想起一些旧事（只作参考，不要逐字复述）" in rehit_system)
 
             print("\n== 36 turns -> one longterm memory (async, isolated) ==")
-            for i in range(24, 37):
+            for i in range(28, 37):
                 status, _, done = await talk(c, npc_window, f"闲谈第{i}轮")
                 check(f"longterm talk {i} ok", status == 200 and done is not None)
             await main_mod.mem_store.wait_background()
@@ -682,7 +703,9 @@ async def main() -> int:
             ledger = (await c.get(f"/api/debug/npc/{npc_window}")).json()["ledger"]
             check("window holds turns 21-36 after two archives",
                   ledger["last_midterm_turn"] == 20 and ledger["window_turns"] == 16)
-            fifo = [m["summary"] for m in main_mod.mem_store.debug_midterms(npc_window)]
+            fifo = [m["summary"]
+                    for m in await main_mod.mem_store.debug_midterms(
+                        main_mod.db, npc_window)]
             check("midterm capacity FIFO keeps newest one",
                   fifo == ["闲谈第11轮起归档。"])
             check("longterm buffer drained",
@@ -701,20 +724,24 @@ async def main() -> int:
                   and len(debug.get("longterm", [])) == 1
                   and debug.get("longterm_pending_turns") == 0)
 
-            print("\n== midterm clue matcher (pure function) ==")
-            from app.agent.memory import MidTerm
+            print("\n== midterm matcher + clue vector codec (pure functions) ==")
+            from app.agent import memory as memory_mod
             vec_a = [1.0] + [0.0] * 1023
             vec_b = [0.0, 1.0] + [0.0] * 1022
-            main_mod.mem_store._midterms[999] = [
-                MidTerm("甲", ["甲"], [vec_a], 0.0, 1),
-                MidTerm("乙", ["乙"], [vec_b], 0.0, 1),
-            ]
-            matched = main_mod.mem_store.match_midterms(999, vec_a)
+            hits = [(1, [vec_a]), (2, [vec_b])]
+            best = memory_mod.best_midterm(hits, vec_a, settings.midterm_min_score)
             check("midterm clue matcher picks nearest",
-                  [m.summary for m in matched] == ["甲"])
+                  best is not None and best[0] == 1 and best[1] > 0.8)
             below = [0.3, 0.3] + [0.0] * 1022
             check("midterm score threshold filters weak matches",
-                  main_mod.mem_store.match_midterms(999, below) == [])
+                  memory_mod.best_midterm(hits, below, settings.midterm_min_score)
+                  is None)
+            check("midterm threshold is strict",
+                  memory_mod.best_midterm([(1, [vec_a])], vec_a, 1.0) is None)
+            round_trip = memory_mod.unpack_vec(memory_mod.pack_vec(vec_b))
+            check("clue vector codec round-trips",
+                  len(round_trip) == 1024 and round_trip[1] == 1.0
+                  and round_trip[0] == 0.0)
 
             print("\n== midterm parser accepts string clues ==")
             from app.agent import summary as summary_mod
@@ -753,7 +780,8 @@ async def main() -> int:
                       for t in main_mod.mem_store._longterm_turns.get(npc_race, [])))
             check("stale turn not in midterm",
                   all("慢速对话" not in m["summary"]
-                      for m in main_mod.mem_store.debug_midterms(npc_race)))
+                      for m in await main_mod.mem_store.debug_midterms(
+                          main_mod.db, npc_race)))
             check("new game clears runtime events",
                   main_mod.mem_store.recent_events == [])
             persisted = await main_mod.db.fetch_one(

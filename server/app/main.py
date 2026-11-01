@@ -387,7 +387,7 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
         "deviation": deviation or {},
         "memories": memories,
         "ledger": (await mem_store.ledger_view(db, npc_id)) if mem_store else {},
-        "midterm": mem_store.debug_midterms(npc_id) if mem_store else [],
+        "midterm": (await mem_store.debug_midterms(db, npc_id)) if mem_store else [],
         "longterm": longterm,
         "longterm_pending_turns": (
             mem_store.pending_longterm_turns(npc_id) if mem_store else 0),

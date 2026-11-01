@@ -142,6 +142,18 @@ def _warmth(affinity: int, name: str) -> str:
     return f"你与{name}情谊甚笃，信得过。"
 
 
+def _midterm_query(window_turns: list[dict], message: str) -> str:
+    """中期召回 query：窗口内最近若干条消息 + 本轮原话，截尾到字数上限。
+
+    0.8 的阈值只在长文本 query 上成立（MaiBot 用 2400 字上限），所以这里不用
+    玩家单句——短句 query 会让阈值形同虚设（docs/MEMORY-V2-PLAN.md §12）。
+    """
+    lines = [f"玩家：{turn.get('user', '')}\n你：{turn.get('npc', '')}"
+             for turn in window_turns[-max(1, settings.midterm_query_message_limit):]]
+    lines.append(f"玩家：{message}")
+    return "\n".join(lines)[-max(200, settings.midterm_query_max_chars):]
+
+
 def _build_messages(p, n, affinity, memories, turns, impression, now_str, place, message,
                     world_brief: str = "", agenda: dict | None = None,
                     mood_text: str = "", speech_examples: list[str] | None = None,
@@ -241,15 +253,20 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
                   "mood": mood["mood"] if mood else None},
     )
 
-    # 查询向量只算一次：Chroma RAG 与中期线索匹配共用（DESIGN §7.2 前台等待 2~5s）
-    qvec, turns, impression = await asyncio.gather(
-        rag_mod.embed_query(mem_store, message),
-        rag_mod.recent_turns(db, npc_id, n=settings.dialogue_window_size),
+    # RAG 用本轮原话；中期召回用「最近 N 条消息拼接」的长 query（docs/MEMORY-V2-PLAN.md §5.1），
+    # 两者由同一次批量 embed 产出，前台仍只有一次嵌入往返。
+    window_turns, impression = await asyncio.gather(
+        rag_mod.recent_turns(
+            db, npc_id,
+            n=max(settings.midterm_query_message_limit, settings.dialogue_window_size)),
         relationship_mod.summary_for(db, npc_id, "player", p["name"]),
     )
+    turns = window_turns[-max(1, settings.dialogue_window_size):]
+    midterm_query = _midterm_query(window_turns, message)
+    qvec, midterm_qvec = (await mem_store.llm.embed([message, midterm_query]))[:2]
     memories = await rag_mod.retrieve(
         db, mem_store, npc_id, message, settings=settings, qvec=qvec)
-    midterms = mem_store.match_midterms(npc_id, qvec)
+    midterms = await mem_store.recall_midterm(db, npc_id, midterm_qvec)
     midterm_summaries = [m.summary for m in midterms]
     if trace is not None:
         await trace_mod.span(trace, "retrieve", input_=message,
@@ -257,9 +274,12 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
                                       ("memory_id", "content", "score", "importance", "poi", "kind")}
                                      for m in memories],
                              metadata={"top_k": settings.rag_top_k, "rerank": "w_rel/w_rec/w_imp"})
-        await trace_mod.span(trace, "midterm", output=[
-            {"summary": m.summary, "clues": m.clues, "turn_count": m.turn_count}
-            for m in midterms])
+        await trace_mod.span(trace, "midterm", input_=midterm_query,
+                             output=[{"summary": m.summary, "clues": m.clues,
+                                      "turn_count": m.turn_count, "score": round(m.score, 4)}
+                                     for m in midterms],
+                             metadata={"threshold": settings.midterm_min_score,
+                                       "top_k": settings.midterm_top_k})
         await trace_mod.span(trace, "recent_turns", output=turns)
         await trace_mod.span(trace, "relationship", output={"summary": impression})
 
