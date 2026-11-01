@@ -208,16 +208,23 @@ def _build_messages(p, n, affinity, memories, turns, impression, now_str, place,
                     mood_text: str = "", speech_examples: list[str] | None = None,
                     heart: str = "", events_text: str = "",
                     midterm_summaries: list[str] | None = None,
-                    profile_text: str = "") -> list[dict]:
+                    profile_text: str = "",
+                    longterm_summaries: list[str] | None = None) -> list[dict]:
     mem_lines = "\n".join(m["content"] for m in memories[: settings.rag_top_k]) or "（暂无）"
     midterm_lines = "\n".join(f"- {s}" for s in (midterm_summaries or []))
     midterm_block = (
         f"你想起一些旧事（只作参考，不要逐字复述）：\n{midterm_lines}"
         if midterm_lines else ""
     )
-    # 中期与画像共享一个总预算（docs/MEMORY-V2-PLAN.md §5.3）：中期优先级更高。
+    longterm_lines = "\n".join(f"- {s}" for s in (longterm_summaries or []))
+    longterm_block = (
+        f"你记得更早年间的事（只是些旧印象，别当成刚发生的）：\n{longterm_lines}"
+        if longterm_lines else ""
+    )
+    # 中期 / 画像 / 长期共享一个总预算（docs/MEMORY-V2-PLAN.md §5.3），按此优先级装填。
     extra_memory = budget_mod.fit_blocks(
-        [("midterm", midterm_block), ("profile", profile_text)],
+        [("midterm", midterm_block), ("profile", profile_text),
+         ("longterm", longterm_block)],
         settings.memory_context_max_chars)
     extra_block = f"{extra_memory}\n" if extra_memory else ""
     turn_lines = "\n".join(
@@ -328,6 +335,10 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
     midterms = await mem_store.recall_midterm(db, npc_id, midterm_qvec)
     midterm_summaries = [m.summary for m in midterms]
     profile_text = await profile_mod.build(db, npc_id, p["name"], now_game)
+    longterms = await mem_store.longterm.recall(
+        db, mem_store, npc_id, query_text=midterm_query, query_vec=midterm_qvec,
+        turn_no=await mem_store.ledger_turn(db, npc_id))
+    longterm_summaries = [h["content"] for h in longterms]
     if trace is not None:
         await trace_mod.span(trace, "retrieve", input_=message,
                              output=[{k: m.get(k) for k in
@@ -359,7 +370,7 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
                 agenda=agenda, mood_text=mood_text,
                 speech_examples=n.get("speech_examples", []), heart=heart,
                 events_text=events_text, midterm_summaries=midterm_summaries,
-                profile_text=profile_text,
+                profile_text=profile_text, longterm_summaries=longterm_summaries,
             )
             last_msgs = msgs
             async for chunk in mem_store.llm.chat_stream(

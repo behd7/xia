@@ -27,6 +27,7 @@ from chromadb.config import Settings
 from ..config import settings
 from ..db import Database
 from . import summary as summary_mod
+from .longterm import LongTermRecall
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ class MemoryStore:
         self._coll = self._client.get_or_create_collection(
             "memories", embedding_function=None, metadata={"hnsw:space": "cosine"}
         )
-        # 长期记忆的派生索引：只索引 longterm_memory，v2 只写不读（供 P5 召回）。
+        # 长期记忆的派生索引：只索引 longterm_memory；读路径见 agent/longterm.py（P5）。
         self._lt_coll = self._client.get_or_create_collection(
             "longterm", embedding_function=None, metadata={"hnsw:space": "cosine"}
         )
@@ -126,6 +127,8 @@ class MemoryStore:
         self._window_locks: dict[int, asyncio.Lock] = {}
         # 中期条目与长期原文都在 SQLite；这里只留召回冷却。
         self._recalled_at: dict[int, dict[int, int]] = {}
+        # 长期召回的节流状态挂在 store 上，随 new_game 一起清空。
+        self.longterm = LongTermRecall()
         # 长期总结走单 worker 队列；generation 在 new_game 时递增，旧局任务据此丢弃。
         self._queue: asyncio.Queue = asyncio.Queue()
         self._worker: asyncio.Task | None = None
@@ -551,6 +554,7 @@ class MemoryStore:
     def reset_runtime(self) -> None:
         """新局只清运行时；conversation 与 longterm_memory 是持久记忆，不在此清。"""
         self._recalled_at.clear()
+        self.longterm.reset()
         self.recent_events.clear()
         self._draining = False
 
@@ -611,9 +615,22 @@ class MemoryStore:
         last_long = await self._longterm_cursor(db, npc_id)
         return max(0, turn_no - last_long)
 
+    async def ledger_turn(self, db: Database, npc_id: int) -> int:
+        """当前绝对轮号（`npc_state.turn_no`，不含本轮）。"""
+        turn_no, _last = await self._ledger_cursor(db, npc_id)
+        return turn_no
+
     def query(self, npc_id: int, query_vec: list[float], n_results: int = 20) -> dict:
         """ANN search over this NPC's memories (vector similarity only)."""
         return self._coll.query(
+            query_embeddings=[query_vec], n_results=n_results,
+            where={"npc_id": str(npc_id)},
+        )
+
+    def query_longterm(self, npc_id: int, query_vec: list[float],
+                       n_results: int = 20) -> dict:
+        """ANN search over this NPC's longterm_memory index (P5 召回)."""
+        return self._lt_coll.query(
             query_embeddings=[query_vec], n_results=n_results,
             where={"npc_id": str(npc_id)},
         )

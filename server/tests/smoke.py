@@ -904,6 +904,97 @@ async def main() -> int:
             check("debug exposes the profile",
                   "给过他" in dbg_profile.get("profile", ""))
 
+            print("\n== P5 longterm recall (read path) ==")
+            import json as _json
+            import time as _time
+            lt_rows = [
+                ("后山崖口旧事：黑风寨又下山收买路钱，镇上没人敢管。", "后山"),
+                ("闲谈旧事：镇口酒价涨了三文，王二麻子又欠了酒钱。", "镇口"),
+            ]
+            for text, poi in lt_rows:
+                row_id = await main_mod.db.execute(
+                    "INSERT INTO longterm_memory(npc_id, ts_game, content, turn_count,"
+                    " created_at_real, turn_range_start, turn_range_end,"
+                    " participants_json, poi, importance) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (npc_act, now_g, text, 36, 0.0, 0, 36,
+                     _json.dumps([p_act["name"]], ensure_ascii=False), poi, 5))
+                main_mod.mem_store._lt_coll.add(
+                    ids=[str(row_id)], embeddings=[_fake_vec(text)], documents=[text],
+                    metadatas=[{"npc_id": str(npc_act), "ts_game": now_g,
+                                "turn_range_end": 36, "poi": poi}])
+
+            lt = main_mod.mem_store.longterm
+            lt.reset()
+            hits = await lt.recall(
+                main_mod.db, main_mod.mem_store, npc_act,
+                query_text="后山那边近况如何", query_vec=_fake_vec("后山"), turn_no=1000)
+            check("longterm recall returns the on-topic entry",
+                  len(hits) == 1 and "黑风寨" in hits[0]["content"])
+            cached = await lt.recall(
+                main_mod.db, main_mod.mem_store, npc_act,
+                query_text="后山那边近况如何", query_vec=_fake_vec("后山"), turn_no=1001)
+            check("longterm recall served from cache inside TTL", cached is hits)
+            late = await lt.recall(
+                main_mod.db, main_mod.mem_store, npc_act,
+                query_text="后山那边近况如何", query_vec=_fake_vec("后山"),
+                turn_no=1010, now_real=_time.time() + 400)
+            check("longterm recall waits for enough new turns", late == [])
+            resumed = await lt.recall(
+                main_mod.db, main_mod.mem_store, npc_act,
+                query_text="后山那边近况如何", query_vec=_fake_vec("后山"),
+                turn_no=1040, now_real=_time.time() + 800)
+            check("longterm recall resumes after enough new turns", len(resumed) == 1)
+            off = await lt.recall(
+                main_mod.db, main_mod.mem_store, npc_act,
+                query_text="门禁那事", query_vec=_fake_vec("门禁室"),
+                turn_no=2000, now_real=_time.time() + 1500)
+            check("longterm recall ignores off-topic query", off == [])
+
+            lt.reset()
+            status, _, done = await talk(c, npc_act, "后山那边近来如何？")
+            lt_prompt = ([m for purpose, m in PROMPTS if purpose == "dialogue"] or [[{}]])
+            lt_lines = lt_prompt[-1][0]["content"] if lt_prompt[-1] else ""
+            check("longterm block injected into the dialogue prompt",
+                  status == 200 and "你记得更早年间的事" in lt_lines
+                  and "黑风寨" in lt_lines)
+            dbg_lt = (await c.get(f"/api/debug/npc/{npc_act}")).json()
+            check("debug exposes longterm recall state",
+                  len(dbg_lt.get("longterm_recall", {}).get("cached", [])) == 1)
+
+            print("\n== retrieval primitives (P5 纯函数) ==")
+            from app.agent import retrieval as rt
+            index = rt.BM25Index([("1", "后山的黑风寨收了买路钱"), ("2", "镇口酒价涨了三文")])
+            top = index.search("黑风寨", k=5)
+            check("bm25 ranks the matching document first",
+                  top and top[0][0] == "1")
+            check("bm25 ignores documents without the query term",
+                  [doc for doc, _score in top] == ["1"])
+            fused = rt.rrf([([("a", 1.0), ("b", 0.5)], 0.7), ([("b", 1.0)], 0.3)], k=60)
+            check("rrf gives the entry found by both paths the best rank",
+                  fused[0][0] == "b")
+            tight = rt.dynamic_threshold([0.62, 0.60, 0.58, 0.30, 0.28],
+                                         floor=0.42, ceil=0.65)
+            check("dynamic threshold lands inside its clamp",
+                  0.42 <= tight <= 0.65 and tight > 0.30)
+            lone = rt.dynamic_threshold([0.9], floor=0.42, ceil=0.65)
+            check("dynamic threshold falls back to the floor on a single sample",
+                  lone == 0.42)
+            graph = rt.CooccurGraph()
+            graph.add_edge("铁无双", "后山")
+            graph.add_edge("后山", "黑风寨")
+            rank = graph.ppr({"铁无双": 1.0})
+            check("ppr spreads mass along the graph", rank["后山"] > rank["黑风寨"])
+            hops = graph.multi_hop(["铁无双"], decays=(1.0, 0.75, 0.55), max_depth=2)
+            check("multi-hop decays with distance",
+                  hops["后山"] > hops["黑风寨"] > 0)
+            check("entity links prefer the longest closed term",
+                  rt.entity_links("铁无双在后山打铁",
+                                  {"铁无双", "无双", "后山"}) == {"铁无双", "后山"})
+            kept = rt.dedupe([{"content": "后山黑风寨收了买路钱"},
+                              {"content": "后山黑风寨收了买路钱。"},
+                              {"content": "镇口酒价涨了三文"}])
+            check("dedupe collapses near-duplicate memories", len(kept) == 2)
+
             print("\n== new_game vs in-flight dialogue (generation barrier) ==")
             npc_race = 2
             GATE["reached"].clear()

@@ -88,8 +88,26 @@ class Settings(BaseSettings):
     midterm_query_message_limit: int = 12   # 召回 query 拼接的消息条数
     midterm_query_max_chars: int = 2400     # 召回 query 字数上限
     longterm_turn_interval: int = 36        # 每累计 N 轮原始对话触发一次长期总结
-    longterm_importance: int = 5            # 长期记忆条目的重要度（v2 只写不读，固定值）
-    # 注入预算（P4）：中期 + 画像共享一个总闸，按优先级装填
+    longterm_importance: int = 5            # 长期记忆条目的重要度（固定值）
+    # P5 长期召回（读路径）：默认开，但由阈值 + 节流把噪声挡在外面
+    longterm_recall_enabled: bool = True
+    longterm_recall_limit: int = 3          # 每轮最多注入几条长期记忆
+    longterm_recall_max_chars: int = 900    # 长期板块字数上限
+    longterm_recall_cache_ttl: int = 300    # 结果缓存秒数（命中优先，不再重算）
+    longterm_recall_min_interval: int = 180  # 缓存过期后的最短重算间隔（防抖）
+    longterm_recall_min_new_turns: int = 30  # 距上次召回至少新增多少轮（≈60 条消息）
+    longterm_candidate_k: int = 20          # 候选池大小
+    longterm_min_score: float = 0.45        # 余弦阈值；由 tools/calibrate_longterm.py 实测标定（0.55 时召回率 0.33）
+    longterm_dynamic_threshold: bool = False  # 动态阈值（P5-B，实测决定默认）
+    longterm_hybrid_enabled: bool = False   # 稀疏 BM25 路 + RRF（P5-C，实测决定默认）
+    longterm_graph_enabled: bool = False    # 实体图多跳 + PPR（P5-D，实测决定默认）
+    longterm_fallback_enabled: bool = False  # 召回为空时取最近几条（噪声换覆盖，默认关）
+    longterm_rrf_k: int = 60                # RRF 常数
+    longterm_dense_weight: float = 0.7      # RRF 里向量路权重
+    longterm_sparse_weight: float = 0.3     # RRF 里 BM25 路权重
+    longterm_dynamic_floor: float = 0.42    # 动态阈值下夹（低于 0.40 会退化成「全都要」）
+    longterm_dynamic_ceil: float = 0.65     # 动态阈值上夹（实测分布决定）
+    # 注入预算（P4/P5）：中期 / 画像 / 长期共享一个总闸，按优先级装填
     memory_context_max_chars: int = 1500
     profile_max_persons: int = 2            # Xia 是单玩家，留 2 只为将来 NPC 互评
     profile_max_chars: int = 400

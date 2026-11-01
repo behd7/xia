@@ -280,20 +280,22 @@ profile_max_persons: int = 2             # 新：P4
 profile_max_chars: int = 400             # 新：P4
 ```
 
-### 8.2 预留不落地（P5）
+### 8.2 长期召回参数（P5 已实施）
 
-写进本文件备查，**不要现在加进 `config.py`**（没有读路径就是死配置）：
-
-| 参数 | 值 | 说明 |
+| 参数 | 落地值 | 与 §8.2 草案的差异 |
 |---|---|---|
-| `LONGTERM_RECALL_ENABLED` | false | 打开才对对话注入长期记忆 |
-| `LONGTERM_RECALL_LIMIT` | 3 | 条数上限 |
-| `LONGTERM_RECALL_MAX_CHARS` | 900 | 字数上限 |
-| `LONGTERM_RECALL_CACHE_TTL` | 300s | 结果缓存（命中优先） |
-| `LONGTERM_RECALL_MIN_INTERVAL` | 180s | 缓存失效后的防抖（**AND** 语义） |
-| `LONGTERM_RECALL_MIN_NEW_MESSAGES` | 60 | 同上，两个条件同时满足 |
-| `LONGTERM_CANDIDATE_K` | 20 | 候选池 |
-| 动态阈值 | `median(p75, mean−1.5σ, min(gap, p40))` 夹 `[0.29, 0.80]`，保底 `min(2, 候选数)` | 见 §14 |
+| `LONGTERM_RECALL_ENABLED` | **true** | 草案是 false；读路径就是 P5 的目的，确认默认开 |
+| `LONGTERM_RECALL_LIMIT` | 3 | 不变 |
+| `LONGTERM_RECALL_MAX_CHARS` | 900 | 不变 |
+| `LONGTERM_RECALL_CACHE_TTL` | 300s | 不变 |
+| `LONGTERM_RECALL_MIN_INTERVAL` | 180s | 不变（**AND** 语义：与下一条同时满足） |
+| `LONGTERM_RECALL_MIN_NEW_TURNS` | 30 | 原草案是 60 条消息；Xia 一轮 = 玩家+NPC 两条消息，改按轮计更直白（30 轮 ≈ 60 条） |
+| `LONGTERM_CANDIDATE_K` | 20 | 不变 |
+| `LONGTERM_MIN_SCORE` | **0.45** | 新增固定阈值；实测 0.55 时召回率只剩 0.33（见 §12） |
+| `LONGTERM_DYNAMIC_THRESHOLD` | false | 动态阈值夹 `[0.42, 0.65]`；实测在这套分布上会退化成「全都要」，默认关 |
+| `LONGTERM_HYBRID_ENABLED` | false | 稀疏 BM25 路 + RRF；实测只加噪声不加命中 |
+| `LONGTERM_GRAPH_ENABLED` | false | 实体图多跳 + PPR；实测与纯向量打平 |
+| `LONGTERM_FALLBACK_ENABLED` | false | 空召回兜底取最近几条；阈值已标定，兜底只会加噪声 |
 
 ### 8.3 `server/.env.example`
 
@@ -328,7 +330,8 @@ P0 实施时同步注释段（`DIALOGUE_WINDOW_SIZE` / `CONVERSATION_WINDOW_CAPA
   - 验收：§11 的 E 组。
 - **P4 画像与预算（已实施）**：确定性画像（`tool_call_log` 聚合）、`prompt_budget.py` 总闸。
   - 验收：画像随给物/拒绝次数变化，且不调 LLM。
-- **P5（不实施，另起任务）**：长期召回读路径、BM25 路、实体图谱、PPR、动态阈值。见 §8.2/§14。
+- **P5 长期召回（已实施）**：`agent/retrieval.py`（BM25 char-2gram / 加权 RRF / 动态阈值 / 闭集实体链接 / 共现图 PPR / 去重）+ `agent/longterm.py`（三路候选 → 余弦阈值门 → RRF 排序 → 去重 → 预算截断 + 三道节流闸）+ 对话 prompt 的「你记得更早年间的事」板块 + `SERVER/tools/calibrate_longterm.py`。
+  - 验收：§11 的 F 组；实测结论是**只开向量路**（BM25/图/动态阈值默认关），数据见 §12。
 
 ## 11. 冒烟断言（`server/tests/smoke.py`）
 
@@ -365,8 +368,15 @@ P0 实施时同步注释段（`DIALOGUE_WINDOW_SIZE` / `CONVERSATION_WINDOW_CAPA
 - 前置不满足（NPC 没这个物品）：无副作用、`tool_call_log` 记 ok=0、本回合 `done.acts` 为空、回复走修正模板。
 - `reply=""` + `acts` 非空：`done.reply == ""`、`done.acts` 非空、`conversation.turns_json.speech == ""`。
 
-**F. 纯函数断言**
-- `midterm` 分数：两条手工条目，查询向量分别命中，验证「取最高分线索」与 `> 0.8` 严格判定。
+**F. 长期召回（P5）**
+- 手工两行 `longterm_memory` + 对应向量：命中主题的 query 返回 1 条且内容正确；无关主题返回空。
+- 同一 NPC 连续两次召回：第二次命中缓存（返回同一对象，不重算）。
+- TTL 过期但新增轮数不足：返回空（节流生效）；补足轮数后恢复。
+- 对话 prompt 出现「你记得更早年间的事」板块；`/api/debug/npc/{id}` 的 `longterm_recall.cached` 非空。
+
+**G. 纯函数断言**
+- `midterm` 分数：两条手工条目，查询向量分别命中，验证「取最高分线索」与 `> 0.55` 严格判定。
+- `retrieval`：BM25 只命中含查询词的文档；`rrf` 两路同分时名次靠前者胜；`dynamic_threshold` 单调且被夹在区间内；`dedupe` 吃掉包含关系与近重复。
 - `acts_text()`：每个工具 → 固定中文短句，未知工具回退空串。
 - `_turn_lines`：旧格式（`npc` 键）与新格式（`speech`+`acts`）渲染结果都非空且含动作描述。
 
@@ -388,7 +398,34 @@ P0 实施时同步注释段（`DIALOGUE_WINDOW_SIZE` / `CONVERSATION_WINDOW_CAPA
   分布：长拼接 query 下相关分中位数 0.66（min 0.40 / max 0.77），无关分中位数 0.42（min 0.24 / max 0.64）。**0.8 时召不回任何一条**——这不是"阈值偏高"，是功能完全关闭。落地取 0.55（召回 72% / 误报 6%）；偏好召回可降到 0.50（83% / 11%），偏好精度可用 0.65（44% / 0%）。
   另一个被数据推翻的预判：**单句 query 并不比长拼接好**（最佳 J 只有 +0.56，且高分区靠的是近乎逐字复述），长拼接的分布更紧、更稳，所以 query 构造保持不变。
   改 embedding 模型 / 线索 prompt / query 构造后必须重跑该脚本再定值。
-- **中期只覆盖最近 100 轮**（10 条 × 10 轮），更早的内容只有长期记忆且 v2 不读。
+- **长期召回阈值另测**（`server/tools/calibrate_longterm.py`，同一套真实后端，语料 = 6 条长期记忆、探针相关/无关各 18 条）。逐条二元判定：
+
+  | τ | 召回率 | 误报率 | J |
+  |---|---|---|---|
+  | 0.35 | 0.94 | 0.56 | +0.39 |
+  | 0.40 | 0.94 | 0.17 | +0.78 |
+  | **0.45** | **0.78** | **0.00** | **+0.78** |
+  | 0.50 | 0.56 | 0.00 | +0.56 |
+  | 0.55 | 0.33 | 0.00 | +0.33 |
+  | 0.65 | 0.06 | 0.00 | +0.06 |
+
+  分布：相关中位数 0.508（0.31~0.66）、无关中位数 0.366（0.22~0.44）。**比中期整体低一截**——长期条目是整段小说式摘要，query 只有 60~90 字，长度落差把余弦压下来；所以两个阈值各测各的，落地 0.45（误报 0、召回 0.78），0.40 可以多拿 3 个百分点召回但要付 17% 误报。
+
+- **三路混合实测无增益**（同一脚本，top-3，τ=0.45，正确条目命中 / 漏召 / 多带噪声）：
+
+  | 配置 | 命中 | 漏召 | 噪声 |
+  |---|---|---|---|
+  | 仅向量 τ=0.40 | 15/18 | 3 | 26 |
+  | 仅向量 τ=0.45 | 14/18 | 4 | 16 |
+  | 仅向量 τ=0.50 | 12/18 | 6 | 5 |
+  | +BM25(RRF) τ=0.45 | 14/18 | 4 | 19 |
+  | +BM25+实体图/PPR τ=0.45 | 14/18 | 4 | 19 |
+  | +实体图/PPR τ=0.45 | 14/18 | 4 | 16 |
+  | 动态阈值（夹 [0.35, 0.70]） | 17/18 | 1 | 36 |
+
+  结论：BM25 命中不变、噪声 +3；实体图/PPR 与纯向量**完全打平**；动态阈值在这套分布上算出来 ≈0.35，等于把阈值撤了（噪声 36）。所以三路代码保留、开关默认全关——语料只有几十条时，稀疏路与图路没有可捞的空间。语料涨到几百条以上再重测。
+
+- **中期只覆盖最近 100 轮**（10 条 × 10 轮），更早的内容只有长期记忆。
 - **长期只写不读**：`longterm` 集合没有查询方，索引写错不会立刻暴露 → debug 端点必须同时暴露 `longterm_memory` 行数与 `longterm` 集合 count，靠人工对账；`reconcile` 分集合校验是第二道保险。
 - **原文永久保留**：`conversation` 会随轮数增长（一轮约 300 字节，1000 轮 ≈ 300KB/NPC）。若将来需要清理，只能删「`turn_no <= last_longterm_turn` 且 `kind='turn'`」的行，不要动未归档区间。
 - **两次向量仍然是一次调用**：批量 `embed([message, midterm_query])`；若某个后端不支持批量，退化为两次调用，延迟 +30~80ms，可接受但要记录。

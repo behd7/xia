@@ -398,6 +398,7 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
             (await mem_store.pending_longterm_turns(db, npc_id))
             if mem_store else 0),
         "longterm_indexed": mem_store.longterm_indexed() if mem_store else 0,
+        "longterm_recall": mem_store.longterm.snapshot(npc_id) if mem_store else {},
         "relationship": rel,
         "profile": profile_text,
         "agenda": await agenda_mod.current(db, npc_id),
