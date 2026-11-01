@@ -207,6 +207,8 @@ CREATE TABLE IF NOT EXISTS conversation (
     turns_json TEXT NOT NULL,
     affinity_delta_total INTEGER NOT NULL DEFAULT 0
 );
+-- v2 账本列（kind/turn_no）不写在这里：旧库已有 conversation 表，CREATE IF NOT
+-- EXISTS 不会补列，只在 connect() 的迁移段 ALTER；引用新列的索引也必须建在那里。
 
 CREATE TABLE IF NOT EXISTS battle (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -241,6 +243,44 @@ CREATE TABLE IF NOT EXISTS longterm_memory (
 );
 CREATE INDEX IF NOT EXISTS idx_longterm_npc_ts ON longterm_memory(npc_id, ts_game);
 """
+
+
+def _backfill_ledger(conn: sqlite3.Connection) -> None:
+    """给 v2 之前的 conversation 行补 turn_no，并把游标停在「全部已归档」。
+
+    历史轮不能进窗口（否则老档一启动就把上百轮塞进 prompt），所以首次迁移时
+    游标取最大值；之后只给新增的 turn_no=0 行续编号，不重排已有编号——长期记忆
+    的 turn_range 依赖这个编号的单调性。
+    """
+
+    for npc_id, cursor in conn.execute(
+            "SELECT npc_id, turn_no FROM npc_state").fetchall():
+        pending = [r[0] for r in conn.execute(
+            "SELECT id FROM conversation WHERE npc_id = ? AND turn_no = 0"
+            " ORDER BY id", (npc_id,)).fetchall()]
+        if not pending:
+            continue
+        seq = int(cursor or 0)
+        if seq <= 0:
+            ids = [r[0] for r in conn.execute(
+                "SELECT id FROM conversation WHERE npc_id = ? ORDER BY id",
+                (npc_id,)).fetchall()]
+            for i, cid in enumerate(ids, 1):
+                conn.execute(
+                    "UPDATE conversation SET turn_no = ?, kind = 'turn' WHERE id = ?",
+                    (i, cid))
+            n = len(ids)
+            conn.execute(
+                "UPDATE npc_state SET turn_no = ?, last_midterm_turn = ?,"
+                " last_longterm_turn = ? WHERE npc_id = ?", (n, n, n, npc_id))
+        else:
+            for cid in pending:
+                seq += 1
+                conn.execute(
+                    "UPDATE conversation SET turn_no = ?, kind = 'turn' WHERE id = ?",
+                    (seq, cid))
+            conn.execute(
+                "UPDATE npc_state SET turn_no = ? WHERE npc_id = ?", (seq, npc_id))
 
 
 class Database:
@@ -282,6 +322,34 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_memory_source"
                 " ON memory(npc_id, source_memory_id)"
             )
+            # v2 记忆账本（docs/MEMORY-V2-PLAN.md §7）：conversation 补 kind/turn_no，
+            # npc_state 补三个轮号游标。索引必须建在补列之后——旧库还没这些列。
+            conv_cols = {r[1] for r in conn.execute("PRAGMA table_info(conversation)")}
+            if "kind" not in conv_cols:
+                conn.execute(
+                    "ALTER TABLE conversation ADD COLUMN kind TEXT NOT NULL DEFAULT 'turn'")
+            if "turn_no" not in conv_cols:
+                conn.execute(
+                    "ALTER TABLE conversation ADD COLUMN turn_no INTEGER NOT NULL DEFAULT 0")
+            state_cols = {r[1] for r in conn.execute("PRAGMA table_info(npc_state)")}
+            for col in ("turn_no", "last_midterm_turn", "last_longterm_turn"):
+                if col not in state_cols:
+                    conn.execute(
+                        f"ALTER TABLE npc_state ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+            lt_cols = {r[1] for r in conn.execute("PRAGMA table_info(longterm_memory)")}
+            for col, ddl in (
+                ("turn_range_start", "INTEGER NOT NULL DEFAULT 0"),
+                ("turn_range_end", "INTEGER NOT NULL DEFAULT 0"),
+                ("participants_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("poi", "TEXT NOT NULL DEFAULT ''"),
+                ("importance", "INTEGER NOT NULL DEFAULT 5"),
+            ):
+                if col not in lt_cols:
+                    conn.execute(f"ALTER TABLE longterm_memory ADD COLUMN {col} {ddl}")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_conversation_npc_kind_turn"
+                " ON conversation(npc_id, kind, turn_no)")
+            _backfill_ledger(conn)
             # Legacy npc table carried static personality columns (persona_json/speech_style/
             # waypoints_json) that runtime never reads — NPC_ROSTER supplies & overrides them.
             # Drop as dead data. DROP COLUMN needs SQLite >= 3.35; fail-open so a leftover

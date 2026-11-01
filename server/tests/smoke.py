@@ -27,10 +27,11 @@ _tmp = tempfile.mkdtemp(prefix="xia_smoke_")
 os.environ["DB_PATH"] = str(Path(_tmp) / "xia.db")
 os.environ["CHROMA_DIR"] = str(Path(_tmp) / "chroma")
 os.environ["SCHEDULER_ENABLED"] = "false"
-# 记忆分层的断言依赖这些值：显式 pin，避免被 server/.env 覆盖。
-os.environ["CONVERSATION_WINDOW_CAPACITY"] = "10"
-# 用较小的中期上限在 36 轮内验证 FIFO，不必跑到 110 轮。
-os.environ["MIDTERM_CAPACITY"] = "2"
+# 记忆账本的断言依赖这些值：显式 pin，避免被 server/.env 覆盖。
+os.environ["CONVERSATION_WINDOW_CAPACITY"] = "20"
+os.environ["MIDTERM_TURNS_PER_ENTRY"] = "10"
+# 用最小的中期上限在第 31 轮就验证 FIFO，不必跑到 110 轮。
+os.environ["MIDTERM_CAPACITY"] = "1"
 os.environ["MIDTERM_TOP_K"] = "3"
 os.environ["MIDTERM_MIN_SCORE"] = "0.45"
 os.environ["LONGTERM_TURN_INTERVAL"] = "36"
@@ -585,7 +586,7 @@ async def main() -> int:
                   and all(m["alive"] for m in st["mobs"]))
             check("W adds no LLM purpose", "world" not in CALLED)
 
-            print("\n== memory tiers: window -> midterm (memory only) ==")
+            print("\n== memory ledger: watermark -> midterm (memory only) ==")
             npc_window = 7
             conv_before = (await main_mod.db.fetch_one(
                 "SELECT COUNT(*) AS n FROM conversation WHERE npc_id = ?",
@@ -594,22 +595,27 @@ async def main() -> int:
             summary_calls = CALLED.count("dialogue_summary")
             check("llm context window covers longterm prompt",
                   settings.llm_num_ctx >= 16384)
-            for i in range(1, 12):
+            for i in range(1, 22):
                 status, _, done = await talk(c, npc_window, f"闲谈第{i}轮")
                 check(f"window talk {i} ok", status == 200 and done is not None)
             conv_after = (await main_mod.db.fetch_one(
-                "SELECT COUNT(*) AS n FROM conversation WHERE npc_id = ?",
-                (npc_window,)))["n"]
-            check("window keeps only the newest turn",
-                  conv_before == 0 and conv_after == 1)
+                "SELECT COUNT(*) AS n FROM conversation"
+                " WHERE npc_id = ? AND kind = 'turn'", (npc_window,)))["n"]
+            check("ledger keeps every turn (no delete at overflow)",
+                  conv_before == 0 and conv_after == 21)
             check("one LLM summary for the overflowing window",
                   CALLED.count("dialogue_summary") == summary_calls + 1)
             midterms = main_mod.mem_store.debug_midterms(npc_window)
-            check("midterm kept in memory",
+            check("midterm archived on the watermark",
                   len(midterms) == 1
                   and midterms[0]["summary"] == "闲谈第1轮起归档。"
                   and midterms[0]["clues"] == ["后山", "剑法"]
-                  and midterms[0]["turn_count"] == 10)
+                  and midterms[0]["turn_count"] == 10
+                  and midterms[0]["turn_range"] == [1, 10])
+            ledger = (await c.get(f"/api/debug/npc/{npc_window}")).json()["ledger"]
+            check("ledger cursors exposed",
+                  ledger["turn_no"] == 21 and ledger["last_midterm_turn"] == 10
+                  and ledger["window_turns"] == 11)
             midterm_rows = await main_mod.db.fetch_one(
                 "SELECT COUNT(*) AS n FROM memory WHERE npc_id = ? AND content = ?",
                 (npc_window, "闲谈第1轮起归档。"))
@@ -648,7 +654,7 @@ async def main() -> int:
                   "你想起一些旧事（只作参考，不要逐字复述）" not in unrelated_system)
 
             print("\n== 36 turns -> one longterm memory (async, isolated) ==")
-            for i in range(14, 37):
+            for i in range(24, 37):
                 status, _, done = await talk(c, npc_window, f"闲谈第{i}轮")
                 check(f"longterm talk {i} ok", status == 200 and done is not None)
             await main_mod.mem_store.wait_background()
@@ -658,8 +664,8 @@ async def main() -> int:
             check("one longterm memory for 36 turns",
                   len(long_rows) == 1 and long_rows[0]["turn_count"] == 36
                   and long_rows[0]["content"] == "三十六轮往来已归档。")
-            check("three midterm + one longterm summary calls",
-                  CALLED.count("dialogue_summary") == summary_calls + 4)
+            check("two midterm + one longterm summary calls",
+                  CALLED.count("dialogue_summary") == summary_calls + 3)
             check("longterm summary uses priority 3",
                   any(purpose == "dialogue_summary" and p == 3
                       for purpose, p in CALLS))
@@ -670,12 +676,15 @@ async def main() -> int:
             check("longterm does not write chroma",
                   main_mod.mem_store._coll.count() == chroma_before)
             conv_final = (await main_mod.db.fetch_one(
-                "SELECT COUNT(*) AS n FROM conversation WHERE npc_id = ?",
-                (npc_window,)))["n"]
-            check("window keeps turns 31-36", conv_final == 6)
+                "SELECT COUNT(*) AS n FROM conversation"
+                " WHERE npc_id = ? AND kind = 'turn'", (npc_window,)))["n"]
+            check("ledger keeps all 36 turns", conv_final == 36)
+            ledger = (await c.get(f"/api/debug/npc/{npc_window}")).json()["ledger"]
+            check("window holds turns 21-36 after two archives",
+                  ledger["last_midterm_turn"] == 20 and ledger["window_turns"] == 16)
             fifo = [m["summary"] for m in main_mod.mem_store.debug_midterms(npc_window)]
-            check("midterm capacity FIFO keeps newest two",
-                  fifo == ["闲谈第11轮起归档。", "闲谈第21轮起归档。"])
+            check("midterm capacity FIFO keeps newest one",
+                  fifo == ["闲谈第11轮起归档。"])
             check("longterm buffer drained",
                   main_mod.mem_store.pending_longterm_turns(npc_window) == 0)
             long_prompts = [
@@ -688,7 +697,7 @@ async def main() -> int:
                   and "闲谈第36轮" in long_prompt_text)
             debug = (await c.get(f"/api/debug/npc/{npc_window}")).json()
             check("debug exposes midterm and longterm",
-                  len(debug.get("midterm", [])) == 2
+                  len(debug.get("midterm", [])) == 1
                   and len(debug.get("longterm", [])) == 1
                   and debug.get("longterm_pending_turns") == 0)
 

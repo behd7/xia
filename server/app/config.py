@@ -77,9 +77,10 @@ class Settings(BaseSettings):
     element_disadvantage: float = 0.85      # 属性被克伤害倍率
     skill_upgrade_exp_rate: float = 0.05    # 招式升级费 = 升级经验 × 该值 × 招式等级
 
-    # Memory tiers (docs/DESIGN.md §6.6)
-    dialogue_window_size: int = 6           # 每轮回复平铺的最近对话轮数
-    conversation_window_capacity: int = 10  # conversation 超过此数即总结最早一批
+    # Memory tiers (docs/DESIGN.md §6.6 / docs/MEMORY-V2-PLAN.md)
+    dialogue_window_size: int = 8           # 每轮回复平铺的最近对话轮数
+    conversation_window_capacity: int = 20  # 窗口水位：超过即把最老一批归档为中期记忆
+    midterm_turns_per_entry: int = 10       # 每次中期总结覆盖的轮数
     midterm_capacity: int = 10              # 每 NPC 最多保留的中期条目数（FIFO）
     midterm_top_k: int = 3                  # 每轮最多注入的中期 summary 条数
     midterm_min_score: float = 0.45         # 线索余弦相似度阈值

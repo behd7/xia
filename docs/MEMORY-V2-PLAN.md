@@ -20,7 +20,7 @@
 
 | # | 决断 | 落地含义 |
 |---|---|---|
-| 1 | **总结后不删原文** | `conversation` 的 `kind='turn'` 行永久保留；被中期总结覆盖的轮通过 `turn_no > last_midterm_turn` **移出窗口**（不再进 prompt），但长期总结与复盘仍可读。**运行期没有任何 `DELETE`**；唯一的清理是 `new_game` 删 `kind='midterm'` 的派生摘要行 |
+| 1 | **总结后不删原文** | `conversation` 的 `kind='turn'` 行永久保留；被中期总结覆盖的轮通过 `turn_no > last_midterm_turn` **移出窗口**（不再进 prompt），但长期总结与复盘仍可读。运行期只有两类 `DELETE`：generation 失效时丢弃刚插入的那一轮、`new_game` 清 `kind='midterm'` 的派生摘要行；**原文永不删除** |
 | 2 | **长期只写不读** | v2 只做「生成 + 入库 + 建向量索引」，没有召回路径；读路径与它的节流参数整体推迟到 P5 |
 | 3 | **中期阈值 0.8** | `MIDTERM_MIN_SCORE=0.8`，命中判定 `score > 0.8`（严格大于）。为使 0.8 可成立，召回 query **必须是长拼接**（最近 12 条消息、≤2400 字），不能是玩家单句 |
 | 4 | **原地动作** | 工具集不含移动/跟随/带路；NPC 位置仍由日程确定性函数决定（架构约束 #2 不动） |
@@ -303,7 +303,7 @@ P0 实施时同步注释段（`DIALOGUE_WINDOW_SIZE` / `CONVERSATION_WINDOW_CAPA
 |---|---|
 | `server/app/config.py` | §8.1 参数 |
 | `server/app/db.py` | `tool_call_log` 建表、四张表补列、索引、回填 |
-| `server/app/agent/memory.py` | 账本游标读写、窗口/中期查询、中期条目入库与召回、冷却表、长期 worker 改从 DB 读、`longterm` 集合与分集合 `reconcile`、删掉 `_longterm_turns`；保留的唯一 `DELETE FROM conversation` 是 `new_game` 清 `kind='midterm'` |
+| `server/app/agent/memory.py` | 账本游标读写、窗口/中期查询、中期条目入库与召回、冷却表、长期 worker 改从 DB 读、`longterm` 集合与分集合 `reconcile`、删掉 `_longterm_turns`；`DELETE` 只剩两类（generation 失效丢弃刚插入的那一轮、`new_game` 清 `kind='midterm'`） |
 | `server/app/agent/rag.py` | `recent_turns` 改成「只取窗口内（`turn_no > last_midterm_turn`）」+ 新格式归一化；`embed_query` 改批量双向量 |
 | `server/app/agent/summary.py` | `_turn_lines` 支持 `speech/acts`；中期输入 10 轮、长期输入 36 轮不变 |
 | `server/app/agent/dialogue.py` | 一次 embed 两个 query、中期板块、acts 解析与执行编排、`done` 增 `acts`、`turn_id` |

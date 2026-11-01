@@ -37,6 +37,7 @@ class MidTerm:
     vectors: list[list[float]]
     ts_game: float
     turn_count: int
+    turn_range: tuple[int, int] | None = None
 
 
 @dataclass
@@ -164,7 +165,11 @@ class MemoryStore:
         affinity_delta: int = 0,
         generation: int,
     ) -> TurnOutcome:
-        """写入短期窗口；满窗生成中期内存摘要，攒满 36 轮入长期队列。
+        """写入账本一轮；窗口超水位时把最老一批归档成中期记忆。
+
+        账本模型（docs/MEMORY-V2-PLAN.md）：原文永不删除，窗口 = `turn_no >
+        last_midterm_turn` 的行；归档只推进游标，因此总结失败时游标不动，
+        同一批轮下一轮自然重试。
 
         generation 是对话开始时捕获的局代：新局 begin_reset 后旧回合直接丢弃，
         避免旧玩家的话本写进新局的中期/长期记忆。
@@ -176,15 +181,21 @@ class MemoryStore:
                             npc_id, generation, self._generation)
                 return TurnOutcome(stale=True)
             now_game = self.clock.now()
+            turn_no, last_mid = await self._ledger_cursor(db, npc_id)
+            turn_no += 1
+            await db.execute(
+                "UPDATE npc_state SET turn_no = ? WHERE npc_id = ?",
+                (turn_no, npc_id))
             conv_id = await db.execute(
-                "INSERT INTO conversation(npc_id, ts_game, turns_json, affinity_delta_total)"
-                " VALUES(?,?,?,?)",
+                "INSERT INTO conversation(npc_id, ts_game, turns_json,"
+                " affinity_delta_total, kind, turn_no) VALUES(?,?,?,?,'turn',?)",
                 (npc_id, now_game,
                  json.dumps({"user": user, "npc": npc, "place": place},
                             ensure_ascii=False),
-                 affinity_delta),
+                 affinity_delta, turn_no),
             )
             if generation != self._generation:
+                # 唯一允许的运行期删除：这一轮属于已作废的旧局，留着会被新局归档。
                 await db.execute("DELETE FROM conversation WHERE id = ?", (conv_id,))
                 return TurnOutcome(stale=True)
             self._longterm_turns.setdefault(npc_id, []).append({
@@ -192,19 +203,18 @@ class MemoryStore:
             })
 
             outcome = TurnOutcome()
-            row = await db.fetch_one(
-                "SELECT COUNT(*) AS n FROM conversation WHERE npc_id = ?", (npc_id,))
             capacity = max(1, settings.conversation_window_capacity)
-            if int(row["n"]) > capacity:
+            if turn_no - last_mid > capacity:
+                per = max(1, settings.midterm_turns_per_entry)
+                start, end = last_mid + 1, last_mid + per
                 rows = await db.fetch_all(
-                    "SELECT id, turns_json FROM conversation WHERE npc_id = ?"
-                    " ORDER BY id LIMIT ?",
-                    (npc_id, capacity),
+                    "SELECT turns_json FROM conversation WHERE npc_id = ?"
+                    " AND kind = 'turn' AND turn_no BETWEEN ? AND ?"
+                    " ORDER BY turn_no",
+                    (npc_id, start, end),
                 )
-                ids: list[int] = []
                 turns: list[dict] = []
                 for item in rows:
-                    ids.append(item["id"])
                     try:
                         data = json.loads(item["turns_json"])
                     except (TypeError, ValueError):
@@ -217,14 +227,14 @@ class MemoryStore:
                 result = await summary_mod.summarize_midterm(
                     self, npc_id, npc_name, player_name, place, turns)
                 stored = await self._store_midterm(
-                    npc_id, result, ts_game=now_game, generation=generation)
-                if ids:
-                    marks = ",".join("?" for _ in ids)
-                    await db.execute(
-                        f"DELETE FROM conversation WHERE id IN ({marks})", ids)
+                    npc_id, result, ts_game=now_game, generation=generation,
+                    turn_range=(start, end))
                 if not stored:
                     await db.execute("DELETE FROM conversation WHERE id = ?", (conv_id,))
                     return TurnOutcome(stale=True)
+                await db.execute(
+                    "UPDATE npc_state SET last_midterm_turn = ? WHERE npc_id = ?",
+                    (end, npc_id))
                 outcome.midterm_created = True
 
             if generation != self._generation:
@@ -242,8 +252,22 @@ class MemoryStore:
                 outcome.longterm_scheduled = True
             return outcome
 
+    async def _ledger_cursor(self, db: Database, npc_id: int) -> tuple[int, int]:
+        """读取该 NPC 的 (最新轮号, 已归档到的轮号)。"""
+        row = await db.fetch_one(
+            "SELECT turn_no, last_midterm_turn FROM npc_state WHERE npc_id = ?",
+            (npc_id,))
+        if row is None:
+            return 0, 0
+        return int(row["turn_no"] or 0), int(row["last_midterm_turn"] or 0)
+
+    async def reset_ledger(self, db: Database) -> None:
+        """新局：把窗口清零（游标前移），原文保留供长期归档与复盘。"""
+        await db.execute("UPDATE npc_state SET last_midterm_turn = turn_no")
+
     async def _store_midterm(self, npc_id: int, result: dict, *, ts_game: float,
-                             generation: int) -> bool:
+                             generation: int,
+                             turn_range: tuple[int, int] | None = None) -> bool:
         if generation != self._generation:
             return False
         clues = result.get("clues") or []
@@ -262,6 +286,7 @@ class MemoryStore:
         bucket.append(MidTerm(
             summary=result["summary"], clues=clues, vectors=vectors,
             ts_game=ts_game, turn_count=int(result.get("turn_count", 0)),
+            turn_range=turn_range,
         ))
         cap = max(1, settings.midterm_capacity)
         if len(bucket) > cap:
@@ -392,9 +417,27 @@ class MemoryStore:
     def debug_midterms(self, npc_id: int) -> list[dict]:
         return [
             {"summary": item.summary, "clues": item.clues,
-             "ts_game": item.ts_game, "turn_count": item.turn_count}
+             "ts_game": item.ts_game, "turn_count": item.turn_count,
+             "turn_range": list(item.turn_range) if item.turn_range else None}
             for item in self._midterms.get(npc_id, [])
         ]
+
+    async def ledger_view(self, db: Database, npc_id: int) -> dict:
+        """调试用：账本游标与窗口大小。"""
+        row = await db.fetch_one(
+            "SELECT turn_no, last_midterm_turn, last_longterm_turn"
+            " FROM npc_state WHERE npc_id = ?", (npc_id,))
+        if row is None:
+            return {"turn_no": 0, "last_midterm_turn": 0,
+                    "last_longterm_turn": 0, "window_turns": 0}
+        turn_no = int(row["turn_no"] or 0)
+        last_mid = int(row["last_midterm_turn"] or 0)
+        return {
+            "turn_no": turn_no,
+            "last_midterm_turn": last_mid,
+            "last_longterm_turn": int(row["last_longterm_turn"] or 0),
+            "window_turns": max(0, turn_no - last_mid),
+        }
 
     def pending_longterm_turns(self, npc_id: int) -> int:
         return len(self._longterm_turns.get(npc_id, []))

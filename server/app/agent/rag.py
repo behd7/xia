@@ -11,21 +11,28 @@ from ..db import Database
 
 
 async def recent_turns(db: Database, npc_id: int, n: int = 3) -> list[dict]:
-    """最近 n 条对话平铺为 {user, npc} 列表（DESIGN §6.4 最近 3 轮不走检索）。"""
+    """窗口内最近 n 轮平铺为 {user, npc} 列表（DESIGN §6.4 最近几轮不走检索）。
+
+    「窗口」= `turn_no > last_midterm_turn` 的原文轮：归档过的轮留在
+    conversation 里供长期总结与复盘，但不再进 prompt（docs/MEMORY-V2-PLAN.md）。
+    """
     rows = await db.fetch_all(
-        "SELECT turns_json FROM conversation WHERE npc_id = ? ORDER BY id DESC LIMIT ?",
-        (npc_id, n),
+        "SELECT turns_json FROM conversation WHERE npc_id = ? AND kind = 'turn'"
+        " AND turn_no > COALESCE((SELECT last_midterm_turn FROM npc_state"
+        " WHERE npc_id = ?), 0)"
+        " ORDER BY turn_no DESC LIMIT ?",
+        (npc_id, npc_id, n),
     )
     turns: list[dict] = []
     for r in reversed(rows):
         try:
             data = json.loads(r["turns_json"])
-            turns.append({
-                "user": data.get("user", ""),
-                "npc": data.get("npc", ""),
-            })
         except Exception:
             continue
+        turns.append({
+            "user": data.get("user", ""),
+            "npc": data.get("speech") or data.get("npc", ""),
+        })
     return turns
 
 

@@ -386,6 +386,7 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
         "heart": plan.get("heart", "") if plan else "",
         "deviation": deviation or {},
         "memories": memories,
+        "ledger": (await mem_store.ledger_view(db, npc_id)) if mem_store else {},
         "midterm": mem_store.debug_midterms(npc_id) if mem_store else [],
         "longterm": longterm,
         "longterm_pending_turns": (
@@ -550,6 +551,7 @@ async def new_game(req: NewGameReq) -> dict[str, Any]:
     if mem_store is not None:
         await mem_store.flush()  # 等旧局在跑的长期总结收尾/丢弃
         mem_store.reset_runtime()
+        await mem_store.reset_ledger(db)  # 窗口清零；原文与 longterm_memory 保留
     logger.info("new game: name=%s id=%s; world state reset, "
                 "midterm/longterm runtime cleared", name, p["id"])
     return {"player": await player_mod.api_dict(db, p)}
