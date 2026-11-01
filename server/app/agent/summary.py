@@ -55,9 +55,10 @@ def _turn_lines(player_name: str, turns: list[dict]) -> str:
     for turn in turns:
         place = _clip(turn.get("place", ""), 30)
         where = f"（{place}）" if place else ""
+        acts = "".join(f"（{_clip(act, 40)}）" for act in (turn.get("acts") or []) if act)
         lines.append(
             f"{player_name}{where}：{_clip(turn.get('user', ''), TURN_TEXT_MAX)}\n"
-            f"你：{_clip(turn.get('npc', ''), TURN_TEXT_MAX)}"
+            f"你：{_clip(turn.get('npc', ''), TURN_TEXT_MAX)}{acts}"
         )
     return "\n".join(lines) or "（无有效对话）"
 

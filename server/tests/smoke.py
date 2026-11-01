@@ -42,8 +42,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 FAIL = 0
 CALLED: list[str] = []
 CALLS: list[tuple[str, int | None]] = []
+STAGES: list[str | None] = []
 PROMPTS: list[tuple[str, list[dict]]] = []
 HEART_MODE = {"value": "ok"}
+# 动作层：需要让 stub 产出 acts 时临时设置；reply 为 None 时用默认台词。
+ACT_MODE: dict[str, object] = {"acts": None, "reply": None}
 
 
 def check(label: str, cond: bool) -> None:
@@ -89,14 +92,19 @@ async def main() -> int:
                         metadata=None, priority=None):
         CALLED.append(purpose)
         CALLS.append((purpose, priority))
+        STAGES.append((metadata or {}).get("stage"))
         PROMPTS.append((purpose, messages))
         if purpose == "dialogue":
             if "慢速对话" in messages[-1]["content"]:
                 GATE["reached"].set()
                 await GATE["release"].wait()
             end = "告辞" in messages[-1]["content"]
-            text = json.dumps({"reply": "阁下所问，某自有计较。",
-                               "affinity_delta": 2, "end": end}, ensure_ascii=False)
+            payload = {"affinity_delta": 2, "end": end}
+            reply = ACT_MODE.get("reply")
+            payload["reply"] = "阁下所问，某自有计较。" if reply is None else reply
+            if ACT_MODE.get("acts"):
+                payload["acts"] = ACT_MODE["acts"]
+            text = json.dumps(payload, ensure_ascii=False)
         elif purpose == "dialogue_summary":
             stage = (metadata or {}).get("stage")
             system = messages[0]["content"]
@@ -778,6 +786,93 @@ async def main() -> int:
             except ValueError:
                 empty_ok = True
             check("midterm parser rejects empty clues", empty_ok)
+
+            print("\n== action layer: give_item / 幂等 / 校验失败 / 沉默 ==")
+            from app.agent import actions as actions_mod
+            from app.game import player as player_act_mod
+            npc_act = 6
+            n_act = await npc_mod.by_id(main_mod.db, npc_act)
+            p_act = await player_act_mod.get(main_mod.db)
+            potion_name = potion["name"]
+
+            async def held(character_id: int) -> int:
+                row = await main_mod.db.fetch_one(
+                    "SELECT qty FROM character_inventory"
+                    " WHERE character_id = ? AND item_id = ?",
+                    (character_id, potion["id"]))
+                return int(row["qty"]) if row else 0
+
+            await main_mod.db.execute(
+                "INSERT OR REPLACE INTO character_inventory(character_id,"
+                " item_id, qty) VALUES(?,?,?)",
+                (n_act["character_id"], potion["id"], 2))
+            player_before = await held(p_act["character_id"])
+            chroma_act_before = main_mod.mem_store._coll.count()
+            ACT_MODE.update(acts=[{"tool": "give_item",
+                                   "args": {"item": potion_name, "count": 1}}])
+            status, events, done = await talk(c, npc_act, "这药你拿着")
+            ACT_MODE.update(acts=None)
+            check("action executes and is reported in done",
+                  status == 200 and done is not None
+                  and len(done.get("acts") or []) == 1
+                  and done["acts"][0]["tool"] == "give_item")
+            check("give_item moves one item to the player",
+                  await held(p_act["character_id"]) == player_before + 1
+                  and await held(n_act["character_id"]) == 1)
+            check("action writes one action memory",
+                  main_mod.mem_store._coll.count() == chroma_act_before + 1)
+            act_mem = await main_mod.db.fetch_one(
+                "SELECT COUNT(*) AS n FROM memory WHERE npc_id = ? AND kind = 'action'",
+                (npc_act,))
+            check("action memory row present", act_mem["n"] == 1)
+            logged = await main_mod.db.fetch_one(
+                "SELECT COUNT(*) AS n FROM tool_call_log WHERE npc_id = ?", (npc_act,))
+            check("tool call logged for idempotency", logged["n"] == 1)
+            conv_act = await main_mod.db.fetch_one(
+                "SELECT turns_json FROM conversation WHERE npc_id = ? AND kind = 'turn'"
+                " ORDER BY turn_no DESC LIMIT 1", (npc_act,))
+            check("conversation turn records the act",
+                  "give_item" in (conv_act or {}).get("turns_json", ""))
+
+            n_act = await npc_mod.by_id(main_mod.db, npc_act)
+            p_act = await player_act_mod.get(main_mod.db)
+            before_replay = await held(p_act["character_id"])
+            plan = [{"tool": "give_item", "args": {"item": potion_name, "count": 1}}]
+            rep1 = await actions_mod.execute(
+                main_mod.db, main_mod.mem_store, npc=n_act, player=p_act,
+                affinity=20, acts=plan, place="镇口", turn_id="idem-test")
+            after_first = await held(p_act["character_id"])
+            rep2 = await actions_mod.execute(
+                main_mod.db, main_mod.mem_store, npc=n_act, player=p_act,
+                affinity=20, acts=plan, place="镇口", turn_id="idem-test")
+            check("replaying the same turn has no extra side effects",
+                  rep1.ok and rep2.ok and after_first == before_replay + 1
+                  and await held(p_act["character_id"]) == after_first)
+
+            ACT_MODE.update(acts=[{"tool": "give_item",
+                                   "args": {"item": "不存在的药", "count": 1}}])
+            stage_before = len(STAGES)
+            status, events, done = await talk(c, npc_act, "再拿一包来")
+            ACT_MODE.update(acts=None)
+            check("invalid action is dropped and the reply is corrected",
+                  status == 200 and done is not None and done.get("acts") == []
+                  and any(event == "reset" for event, _ in events)
+                  and "act_correction" in STAGES[stage_before:])
+
+            ACT_MODE.update(acts=[{"tool": "refuse", "args": {"reason": "今日不便"}}],
+                            reply="")
+            status, events, done = await talk(c, npc_act, "把剑给我")
+            ACT_MODE.update(acts=None, reply=None)
+            check("NPC can act without speaking",
+                  status == 200 and done is not None and done["reply"] == ""
+                  and len(done.get("acts") or []) == 1)
+            conv_act = await main_mod.db.fetch_one(
+                "SELECT turns_json FROM conversation WHERE npc_id = ? AND kind = 'turn'"
+                " ORDER BY turn_no DESC LIMIT 1", (npc_act,))
+            silent = json.loads(conv_act["turns_json"])
+            check("silent turn stores empty speech with its act",
+                  silent.get("speech") == "" and silent["acts"]
+                  and silent["acts"][0]["tool"] == "refuse")
 
             print("\n== new_game vs in-flight dialogue (generation barrier) ==")
             npc_race = 2

@@ -204,6 +204,8 @@ class MemoryStore:
         place: str,
         affinity_delta: int = 0,
         generation: int,
+        acts: list[dict] | None = None,
+        turn_id: str = "",
     ) -> TurnOutcome:
         """写入账本一轮；窗口超水位时把最老一批归档成中期记忆。
 
@@ -230,7 +232,9 @@ class MemoryStore:
                 "INSERT INTO conversation(npc_id, ts_game, turns_json,"
                 " affinity_delta_total, kind, turn_no) VALUES(?,?,?,?,'turn',?)",
                 (npc_id, now_game,
-                 json.dumps({"user": user, "npc": npc, "place": place},
+                 json.dumps({"user": user, "speech": npc, "npc": npc,
+                             "place": place, "acts": acts or [],
+                             "turn_id": turn_id},
                             ensure_ascii=False),
                  affinity_delta, turn_no),
             )
@@ -302,6 +306,8 @@ class MemoryStore:
                 "user": data.get("user", ""),
                 "npc": data.get("speech") or data.get("npc", ""),
                 "place": data.get("place", ""),
+                "acts": [str(act.get("text") or "") for act in
+                         (data.get("acts") or []) if isinstance(act, dict)],
             })
         return turns
 

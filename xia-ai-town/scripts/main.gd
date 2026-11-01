@@ -927,6 +927,20 @@ func _render_dialogue_footer(mode: String) -> void:
 	inbox.add_child(send)
 	input.grab_focus()
 
+# 动作气泡：done.acts 是 [{tool, text}]，拼成一句括注贴在 NPC 台词后面。
+func _acts_note(data: Dictionary) -> String:
+	var acts: Array = data.get("acts", [])
+	if acts.is_empty():
+		return ""
+	var parts: Array[String] = []
+	for act in acts:
+		var text := str((act as Dictionary).get("text", "")).strip_edges()
+		if not text.is_empty():
+			parts.append(text)
+	if parts.is_empty():
+		return ""
+	return "（%s）" % "；".join(parts)
+
 func _append_talk(who: String, text: String) -> void:
 	if text.is_empty():
 		return
@@ -998,15 +1012,17 @@ func send_talk(message: String, clear_input: bool = false) -> void:
 		return
 	var data: Dictionary = turn.done if not (turn.done as Dictionary).is_empty() else response.data
 	var reply := str(data.get("reply", ""))
+	var acts_note := _acts_note(data)
 	if turn.label == null:
-		_append_talk(dialogue_name, reply)
+		_append_talk(dialogue_name, reply if acts_note.is_empty() else (reply + "\n" + acts_note))
 	elif is_instance_valid(turn.label):
 		# done.reply is authoritative (retry/reset may have shifted the visible text)
-		turn.label.text = reply
+		turn.label.text = reply if acts_note.is_empty() else (reply + "\n" + acts_note)
 		_scroll_talk()
-	_log("talk npc=%d ok end=%s affinity=%d reply_chars=%d fallback=%s" % [
+	_log("talk npc=%d ok end=%s affinity=%d reply_chars=%d acts=%d fallback=%s" % [
 		npc_id, str(data.get("end", false)), int(data.get("affinity", -1)),
-		reply.length(), str(data.get("fallback", false))])
+		reply.length(), (data.get("acts", []) as Array).size(),
+		str(data.get("fallback", false))])
 	if data.has("player"):
 		_apply_player(data.player)
 	if data.has("affinity"):

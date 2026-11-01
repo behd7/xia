@@ -242,6 +242,21 @@ CREATE TABLE IF NOT EXISTS longterm_memory (
     created_at_real REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_longterm_npc_ts ON longterm_memory(npc_id, ts_game);
+
+-- 行动层（docs/DESIGN.md §6.14）：(turn_id, call_index) 唯一，(turn_id, call_index)
+-- 已执行过就回放结果、不再触发副作用。
+CREATE TABLE IF NOT EXISTS tool_call_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    turn_id TEXT NOT NULL,
+    call_index INTEGER NOT NULL,
+    npc_id INTEGER NOT NULL,
+    tool TEXT NOT NULL,
+    args_json TEXT NOT NULL DEFAULT '{}',
+    ok INTEGER NOT NULL DEFAULT 1,
+    result_json TEXT NOT NULL DEFAULT '{}',
+    created_at_real REAL NOT NULL,
+    UNIQUE(turn_id, call_index)
+);
 """
 
 

@@ -32,6 +32,8 @@ async def recent_turns(db: Database, npc_id: int, n: int = 3) -> list[dict]:
         turns.append({
             "user": data.get("user", ""),
             "npc": data.get("speech") or data.get("npc", ""),
+            "acts": [{"tool": act.get("tool", ""), "text": act.get("text", "")}
+                     for act in (data.get("acts") or []) if isinstance(act, dict)],
         })
     return turns
 

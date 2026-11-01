@@ -150,9 +150,11 @@ v2 只有中期一个可选板块（≤120 字），不需要独立预算模块�
 | 工具 | 参数 | 前置校验 | 副作用 | 入忆 |
 |---|---|---|---|---|
 | `give_item` | `item`(名), `count`(1~3) | NPC 持有该物品且数量够 | 双方 `character_inventory` 增减 | importance 4 |
-| `take_item` | `item`, `count` | 玩家持有且 NPC 好感 ≥ 档位门槛 | 反向增减 | importance 5 |
-| `teach_skill` | `skill`(名) | NPC 会该招式、玩家已习同源功法、好感门槛 | 写 `character_skill`（等级 1）或不满足时失败 | importance 6 |
+| `take_item` | `item`, `count` | 玩家持有且好感 ≥ 50 | 反向增减 | importance 5 |
+| `teach_art` | `art`(功法名) | NPC 正在练这门、好感 ≥ 70、玩家没学过、同源且不压级 | 走 `arts.switch_art` 写 `character_skill` | importance 6 |
 | `refuse` | `reason`(≤20 字) | 无 | 仅生成措辞，不改状态 | importance 3 |
+
+> P3 实施修订（2026-11-01）：原计划的 `teach_skill` 改为 `teach_art`。本项目的招式由功法等级自动授予，单独"教一招"等于空操作；真正可教的是功法。属性相冲（需散功）或上限压级时工具**直接拒绝**，因为工具无法替玩家确认散功——DESIGN §15 已把"NPC 自主散功"列为风险。
 
 - 一切效果走现有服务端函数（`inventory` / `skills`），**不给 NPC 开侧门**；好感仍只由 `affinity_delta` 与反思改，工具不能直接写 `npc_state.affinity`。
 - `wait` / `stop` 不单独做工具：沉默 = `reply=""` 且 `acts=[]`；收住话头 = 现有 `end=true`。
@@ -170,7 +172,7 @@ parse → 校验全部 acts（白名单 / 参数 schema / 前置条件）
 ```
 
 - **副作用与重试隔离**：动作一旦执行成功，禁止重试整轮。现有「解析失败 → 重试整轮」必须发生在执行之前；执行之后的修正只允许重生成文本。
-- **幂等**：`tool_call_log(turn_id, call_index)` 唯一约束；重入时命中即回放结果、跳过副作用。`turn_id` 每轮一个 uuid，同时写进 `turns_json` 便于对账。
+- **幂等**：`tool_call_log(turn_id, call_index)` 唯一约束；回放发生在**校验之前**——副作用已经发生、世界状态变了，再校验必然失败（东西已经给出去）。`turn_id` 每轮一个 uuid，同时写进 `turns_json` 便于对账。
 - 工具内部**禁止再调 LLM**（会破延迟预算）；需要模型判断的东西留在生成里。
 
 ### 6.4 动作如何进记忆

@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from collections.abc import AsyncIterator
 
 from ..config import settings
@@ -21,6 +22,7 @@ from ..game import player as player_mod
 from ..game import schedule as schedule_mod
 from ..game import world as world_mod
 from ..game import world_state as world_state_mod
+from . import actions as acts_mod
 from . import agenda as agenda_mod
 from . import events as events_mod
 from . import mood as mood_mod
@@ -41,19 +43,64 @@ def shichen(clock) -> str:
 
 
 def _parse(result_text: str) -> dict:
-    """解析 LLM 的 JSON 输出；失败抛异常由调用方走重试/兜底。"""
+    """解析 LLM 的 JSON 输出；失败抛异常由调用方走重试/兜底。
+
+    `reply` 可以为空（只行动或沉默），`acts` 可以省略（只说话）；但两者不能都空，
+    否则视为解析失败走重试。
+    """
     data = json.loads(strip_fence(result_text))
-    if not isinstance(data, dict) or "reply" not in data:
-        raise ValueError("missing reply")
+    if not isinstance(data, dict):
+        raise ValueError("not an object")
+    acts = data.get("acts")
+    if acts is None:
+        acts = []
+    if not isinstance(acts, list):
+        raise ValueError("acts must be a list")
+    reply = str(data.get("reply") or "").strip()
+    clean_acts = [act for act in acts if isinstance(act, dict)]
+    if not reply and not clean_acts:
+        raise ValueError("empty reply")
     return {
-        "reply": str(data.get("reply", "")) or "……",
-        "affinity_delta": int(data.get("affinity_delta", 0)),
+        "reply": reply,
+        "affinity_delta": int(data.get("affinity_delta", 0) or 0),
         "end": bool(data.get("end", False)),
+        "acts": clean_acts,
     }
 
 
 def _fallback(n: dict) -> dict:
-    return {"reply": f"{n['name']}沉吟片刻，不置可否。", "affinity_delta": 0, "end": False}
+    return {"reply": f"{n['name']}沉吟片刻，不置可否。", "affinity_delta": 0,
+            "end": False, "acts": []}
+
+
+async def _correct_after_reject(mem_store, msgs: list[dict], result: dict,
+                                report) -> str | None:
+    """动作被拒后的一次「改口」：只重生成文本，输出里的 acts 一律丢弃。
+
+    这是前台唯一允许的额外调用（仍用 dialogue purpose，不新增 purpose），
+    只在动作合法性校验失败时触发；执行的副作用永不重跑。
+    """
+    try:
+        cr = await mem_store.llm.chat(
+            "dialogue",
+            [
+                *msgs,
+                {"role": "assistant", "content": json.dumps(
+                    {"reply": result.get("reply", ""), "acts": result.get("acts", [])},
+                    ensure_ascii=False)},
+                {"role": "user", "content": (
+                    f"（旁白：{report.observation}你没能做成那件事。"
+                    "只说一句符合眼下情形的话，不要再带任何动作。）")},
+            ],
+            json_format=True, temperature=0.3,
+            metadata={"stage": "act_correction", "error": report.error},
+        )
+        data = json.loads(strip_fence(cr.text))
+        reply = str((data or {}).get("reply") or "").strip()
+        return reply or None
+    except Exception:
+        logger.exception("act correction failed")
+        return None
 
 
 _REPLY_KEY = re.compile(r'"reply"\s*:\s*"')
@@ -165,7 +212,9 @@ def _build_messages(p, n, affinity, memories, turns, impression, now_str, place,
         f"你想起一些旧事（只作参考，不要逐字复述）：\n{midterm_lines}\n"
         if midterm_lines else ""
     )
-    turn_lines = "\n".join(f"{p['name']}：{t['user']}\n你：{t['npc']}" for t in turns) or "（尚无可聊）"
+    turn_lines = "\n".join(
+        f"{p['name']}：{t['user']}\n你：{t['npc']}{acts_mod.acts_text(t.get('acts') or [], '你')}"
+        for t in turns) or "（尚无可聊）"
     events_line = f"近年附近发生的事：\n{events_text}\n" if events_text else ""
     heart_line = f"你眼下挂心的事：{heart}\n" if heart else ""
     agenda_line = ""
@@ -191,9 +240,11 @@ def _build_messages(p, n, affinity, memories, turns, impression, now_str, place,
         f"你们最近的往来：\n{turn_lines}\n"
         f"{heart_line}{agenda_line}{examples_line}{mood_line}"
         f"此刻{now_str}，你正在{place}。\n"
-        f"以你的口吻应答{p['name']}（≤80字）。并给出这次你与{p['name']}的关系变化"
+        f"{acts_mod.PROMPT_SPECS}\n"
+        f"以你的口吻应答{p['name']}（≤80字，也可以不作声）。并给出这次你与{p['name']}的关系变化"
         "（-2~+3整数）、是否想就此收住话头（BOOL）。\n"
-        '仅输出JSON，不要输出其他文字：{"reply":"...","affinity_delta":0,"end":false}\n'
+        '仅输出JSON，不要输出其他文字：{"reply":"...","acts":[],'
+        '"affinity_delta":0,"end":false}\n'
         "不要复述上面的设定，只在相关或你想推进话题时提起。\n"
         "不知道的事就岔开、装糊涂或反问，不要编造新人物、新宝物、新门派。"
     )
@@ -285,6 +336,8 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
 
     result: dict | None = None
     attempts = 0
+    turn_id = uuid.uuid4().hex
+    last_msgs: list[dict] = []
     for temperature in (0.7, 0.3):  # 校验 -> 重试一次(temperature 0.3)
         attempts += 1
         raw: list[str] = []
@@ -297,6 +350,7 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
                 speech_examples=n.get("speech_examples", []), heart=heart,
                 events_text=events_text, midterm_summaries=midterm_summaries,
             )
+            last_msgs = msgs
             async for chunk in mem_store.llm.chat_stream(
                     purpose, msgs, json_format=True, temperature=temperature,
                     metadata={"attempt": attempts, "temperature": temperature}):
@@ -314,6 +368,29 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
     if result is None:
         result = _fallback(n)
         yield "token", {"text": result["reply"]}
+
+    # 动作：先全量校验再执行，失败只「改口」一次。副作用永不进重试路径——
+    # 一旦执行成功就不能再重跑整轮（docs/MEMORY-V2-PLAN.md §6.3）。
+    executed: list[dict] = []
+    if result["acts"]:
+        if mem_store.generation != generation:
+            result["acts"] = []  # 新局已换，动作一律不执行
+        else:
+            report = await acts_mod.execute(
+                db, mem_store, npc=n, player=p, affinity=current_affinity,
+                acts=result["acts"], place=place, turn_id=turn_id)
+            if report.ok:
+                executed = report.acted
+            else:
+                logger.info("act batch rejected npc=%d turn=%s: %s",
+                            npc_id, turn_id, report.error)
+                corrected = await _correct_after_reject(
+                    mem_store, last_msgs, result, report)
+                if corrected:
+                    yield "reset", {}
+                    yield "token", {"text": corrected}
+                    result["reply"] = corrected
+                result["acts"] = []
 
     stale = mem_store.generation != generation
     outcome = None
@@ -347,6 +424,7 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
             user=message, npc=result["reply"], npc_name=n["name"],
             player_name=p["name"], place=place,
             affinity_delta=delta, generation=generation,
+            acts=executed, turn_id=turn_id,
         )
         stale = outcome.stale
         end = result["end"] if not stale else False
@@ -358,6 +436,7 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
                                        "attempts": attempts, "end": end,
                                        "summarized": summarized,
                                        "longterm_scheduled": longterm_scheduled,
+                                       "acts": [a["tool"] for a in executed],
                                        "stale": stale})
 
     player_payload = await player_mod.api_dict(db, p)
@@ -370,6 +449,7 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
         "reply": result["reply"], "affinity": new_affinity,
         "end": end, "player": player_payload,
         "fallback": fallback_used, "place": place, "stale": stale,
+        "acts": [{"tool": act["tool"], "text": act["text"]} for act in executed],
     }
 
 
