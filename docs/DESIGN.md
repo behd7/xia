@@ -45,7 +45,7 @@
 | 客户端 | Godot 4 + GDScript（`xia-ai-town/`）；原 `client/` Phaser 前端已删除 |
 | Agent 后端 | Python FastAPI（单进程，承载游戏逻辑 + NPC 智能体） |
 | 存储 | SQLite（游戏状态 + 记忆记录，WAL 模式，记忆的 SSOT）+ ChromaDB（向量索引，PersistentClient 本地目录） |
-| 向量检索 | **ChromaDB**：单集合 `memories`（cosine 空间）存 embedding 做 ANN 检索；记忆正文与元数据仍在 SQLite，Chroma 为可全量重建的派生索引（**v2 增加第二个集合 `longterm`**，只索引 `longterm_memory`、只写不读，见 [`MEMORY-V2-PLAN.md`](MEMORY-V2-PLAN.md)） |
+| 向量检索 | **ChromaDB** 两个集合（cosine 空间）做 ANN：`memories` 索引 `memory` 表、`longterm` 索引 `longterm_memory`（只写不读）；记忆正文与元数据仍在 SQLite，Chroma 是可全量重建的派生索引，见 [`MEMORY-V2-PLAN.md`](MEMORY-V2-PLAN.md) |
 | 对话模型 | Ollama `qwen3:4b-instruct`（Q4 量化，禁用思考模式） |
 | 向量模型 | Ollama `qwen3-embedding:0.6b`（Q8 量化，1024 维，向量归一化后存库） |
 | 美术 | Godot 原生程序绘制像素地图、人物与纸墨 UI，无外部图片依赖，后期可替换 |
@@ -351,14 +351,12 @@
 
 ### 6.3 记忆流（Memory Stream）
 
-> **v2 目标（2026-11-01 定稿，未实施）**：记忆改为「每个人物一本账」，见 [`MEMORY-V2-PLAN.md`](MEMORY-V2-PLAN.md)。
-> 与下文 v1 描述的差异只有五条：① 短期窗口容量 20，按绝对轮号 `npc_state.turn_no` 计算，**总结后不删原文**，只把已归档的轮移出窗口；② 中期条目入库（`conversation.kind='midterm'`，clues+向量进 `turns_json`），重启不再丢失；③ 中期召回 query 改为最近 12 条消息拼接（≤2400 字）、阈值 0.8、`top_k=1`、同一条 5 轮冷却；④ 长期改为从 SQLite 原文总结（不用内存缓冲）、写 `longterm_memory` + 独立 Chroma 集合 `longterm`，**v2 只写不读**；⑤ 新增行动层：NPC 可调用原地工具，副作用即时入忆（`kind='action'`）。
-> 本节以下内容与 §6.4/§6.6/§8 仍描述 **v1 现状**，v2 各阶段落地时逐条回改。
+记忆是「每个人物一本账」：短期与中期都是 `conversation` 表的行，用 `kind` 区分、用绝对轮号 `turn_no` 排序；长期在独立表。窗口 = `turn_no > last_midterm_turn`，**归档只推进游标、不删原文**（原文要留给长期总结与复盘）。实现见 `docs/MEMORY-V2-PLAN.md`（已实施）。
 
 `memory` 表每条记忆：
 
 ```
-{ npc_id, 游戏时间戳, kind: event|reflection|gossip,
+{ npc_id, 游戏时间戳, kind: event|action|reflection|gossip,
   content: 自然语言一句话,
   participants: [玩家/其他NPC], poi: 地点,
   importance: 1~10, embedding: float32[1024]（存 Chroma，不入 SQLite） }
@@ -366,30 +364,31 @@
 
 **三层分工**：
 
-- 短期：`conversation` 表，每 NPC 独立窗口（默认 10 轮），最近 `DIALOGUE_WINDOW_SIZE`（默认 6）轮直接平铺进 prompt；
-- 中期：`MemoryStore._midterms` 进程内列表，每 NPC 最多 10 条 `summary + 3~6 条线索`（不入库、不进 Chroma），窗口溢出时生成；
-- 长期：`longterm_memory` 表，每 36 轮原始对话后台总结成 1 条（不写 `memory`/Chroma，暂不参与对话/RAG/反思/关系/八卦）。
+- 短期：`conversation.kind='turn'`，`turn_no > last_midterm_turn` 的行即窗口（水位 `CONVERSATION_WINDOW_CAPACITY`=20），其中最近 `DIALOGUE_WINDOW_SIZE`（8）轮直接平铺进 prompt；
+- 中期：`conversation.kind='midterm'`，窗口越过水位时把最老 `MIDTERM_TURNS_PER_ENTRY`（10）轮归档成 1 条 `summary + 3~6 条线索`（线索向量随行序列化在 `turns_json`），每 NPC 最多 `MIDTERM_CAPACITY`（10）条；重启保留；
+- 长期：`longterm_memory` 表，每 36 轮原始对话后台总结成 1 条，并写入独立的 Chroma 集合 `longterm`；**只写不读**，不参与对话/RAG/反思/关系/八卦。
 
-`memory` 表本身继续只存 event（战斗/大额消费/拜师等即时事件）、reflection、gossip。
+`npc_state` 由三个游标驱动：`turn_no`（已发生轮数）、`last_midterm_turn`（窗口下界）、`last_longterm_turn`（已归档到长期的轮号）。游标只在写库成功后推进，所以总结失败会自动在下一轮重试。
 
 **事件入忆规则（"与我有关"的判定）**：
 
 1. **直接交互**：送礼、切磋 → 把玩家动作合成为一条消息，复用 `dialogue.talk`
    （`purpose="gift"/"spar"`、`pause=False`）生成 NPC 感受与好感变化，并把这条
    特殊对话写入 `conversation` 窗口，**不即时入忆**；购买（≥100 两）仍即时入忆
-   一条。普通对话每轮也只进同一窗口；该 NPC 的窗口条数超过
-   `CONVERSATION_WINDOW_CAPACITY`（默认 10）时，按 §6.6 把最早一批
-   （即 `CONVERSATION_WINDOW_CAPACITY` 轮）总结为一条**中期记忆**（纯内存），不再落 event；
+   一条。普通对话每轮也只进同一窗口；窗口越过水位时按 §6.6 把最老一批归档成一条
+   **中期记忆**，不再落 event；
 2. **同场目击**：玩家战斗、大额消费（≥100两）等显著事件 → 发生时处于同一 POI 的 NPC 各自入忆一条（importance 按事件类型定值）；
-3. **八卦传播**：见 §6.9，NPC 间扩散玩家事迹。
+3. **行动**：NPC 通过工具给出的物品/功法、或明确回绝，执行当时就写一条 `kind=action`（§6.14），不等总结；
+4. **八卦传播**：见 §6.9，NPC 间扩散玩家事迹。
 
-记忆内容示例（`memory` 表只列 event/reflection/gossip；对话/送礼/切磋的归纳在中期内存/长期表，不在此列）：
+记忆内容示例（`memory` 表只列 event/action/reflection/gossip；对话/送礼/切磋的归纳在中期/长期）：
 
 - event: `[酉时·铁匠铺] 秦侠客一掷二百两买下精钢剑，这小子手头真宽裕。`（importance 3，大额消费即时入忆）
+- action: `[午时·铁匠铺] 你把一包小回春散递给了秦侠客。`（importance 4，工具执行当时入忆）
 - gossip: `[午时·镇口] 王大柱跟我说，秦侠客在后山崖把黑旋风给办了。`（importance 5）
 - reflection: `这秦侠客一月来寻我三次，回回问剑，习剑之心比传闻里坚定，资质也不差。`（importance 8）
-- midterm（纯内存，不落库）: `与秦侠客聊过后山黑旋风，他似有除害之意。`（线索：后山、黑旋风）
-- longterm（`longterm_memory`，不进 Chroma）: `秦侠客近来常来问剑，先送药后切磋，性子倔，倒是个可教之才。`（每 36 轮后台总结）
+- midterm（`conversation.kind='midterm'`）: `与秦侠客聊过后山黑旋风，他似有除害之意。`（线索：后山、黑旋风）
+- longterm（`longterm_memory` + Chroma 集合 `longterm`）: `秦侠客近来常来问剑，先送药后切磋，性子倔，倒是个可教之才。`（每 36 轮后台总结，只写不读）
 
 ### 6.4 RAG 检索
 
@@ -403,9 +402,9 @@ recency: 半衰期 = 3 游戏日
 
 检索分两步：Chroma 以输入 embedding 查询（`where {"npc_id": id}` 过滤）取**相似度 top20**，再在应用侧算三因子综合分重排取 **top 6** 送入 prompt——Chroma 只算向量相似度，recency/importance 加权必须自己排。历史对话最近 `DIALOGUE_WINDOW_SIZE`（默认 6）轮直接平铺进 prompt（不走检索）。Chroma 集合只索引 `memory` 表（event/reflection/gossip）。
 
-**中期线索检索**：当前消息的 embedding 同时用于 Chroma RAG 与中期线索匹配。每条中期记忆的 3~6 条线索各有一个向量；取该条目最高分线索，按分数降序取 top-k（默认 3）且 ≥ `MIDTERM_MIN_SCORE`（默认 0.45），命中后把**完整 summary** 放进 prompt 的独立「你想起一些旧事」板块。中期只存内存、不进 Chroma；长期记忆暂不参与检索。
+**中期线索检索**：RAG 用本轮原话的向量；中期召回另用一个「最近 12 条消息拼接（≤2400 字，`MIDTERM_QUERY_MESSAGE_LIMIT`/`MIDTERM_QUERY_MAX_CHARS`）」的长 query 向量，两者由**一次批量 `embed` 调用**产出。每条中期记忆的 3~6 条线索各有一个向量；取该条目最高分线索，命中判定是 `> MIDTERM_MIN_SCORE`（0.8，严格大于），每回合最多注入 `MIDTERM_TOP_K`（1）条，同一条在 `MIDTERM_RECALL_COOLDOWN_TURNS`（5）轮内不重复注入。命中后把**完整 summary** 放进 prompt 的独立「你想起一些旧事」板块，不塞进「你们最近的往来」。
 
-> **v2 差异**（见 [`MEMORY-V2-PLAN.md`](MEMORY-V2-PLAN.md) §5）：RAG 用本轮消息向量、中期召回改用「最近 12 条消息拼接（≤2400 字）」的第二个向量，两者由**一次批量 `embed` 调用**产出；阈值 0.8（严格大于）、`top_k=1`、同一条 5 轮冷却；中期条目入库后从 `conversation` 读取，不再走 `MemoryStore._midterms`。
+> 阈值 0.8 只在长 query 下成立：它来自同类实现里「2400 字 query 对短线索」的配合，换成玩家单句（20~40 字）会几乎不命中。要调就调 `MIDTERM_MIN_SCORE`，不要改 query 构造。
 
 ### 6.5 好感度系统
 
@@ -459,22 +458,20 @@ recency: 半衰期 = 3 游戏日
 
 **轻情绪（`agent/mood.py` + `npc_mood` 表）**：只把一句语气描述注入 prompt，**不改好感、不参与任何结算**。送礼/切磋按 LLM 好感变化设情绪：delta<0 → `impatient`；delta>0 时送礼 `pleased`、玩家切磋获胜 `respectful`、玩家落败 `pleased`；delta=0 不改。对话 `end=true` 且好感 <30 → `impatient` 20 分。所有写入 best-effort，失败只打印。
 
-**输出处理**：reply 显示；好感 clamp 后更新；end=true 则对话结束并清当前议程。
-**失败策略**：JSON 解析失败→重试一次(temperature 0.3)→再失败用模板回复（"{NPC}沉吟片刻，不置可否。"，delta=0），永不阻塞游戏。
+**输出处理**：reply 显示（可为空 = 只行动/沉默）；`acts` 由服务端校验执行、渲染成动作括注（§6.14）；好感 clamp 后更新；end=true 则对话结束并清当前议程。
+**失败策略**：JSON 解析失败→重试一次(temperature 0.3)→再失败用模板回复（"{NPC}沉吟片刻，不置可否。"，delta=0），永不阻塞游戏。动作被合法性校验拒绝时不重试整轮，只做一次「改口」重生成（只取文本、丢弃 acts）。
 
 **流式输出（SSE）**：`POST /api/npc/{id}/talk` 返回 `text/event-stream`，事件序列 `start` → `token`* → `done`；重试或模板兜底前发 `reset`，客户端据此清空已显示的文字。模型仍只输出一个 JSON 对象，服务端边收边解码 `reply` 值（转义、代理对、UTF-8 分片都安全），`affinity_delta`/`end` 在流结束后解析，`done` 携带 `{reply, affinity, end, player, fallback, place}`。**流式路径不新增 LLM 调用**（M5 预算不变；送礼/切磋复用同一对话链路，见 §6.5）。Godot 的 `HTTPRequest` 会缓冲整包，客户端改用 `HTTPClient` 手动轮询读取（`api.gd::stream_request`）。
 
-**三层记忆与批总结**：普通对话每轮由 `MemoryStore.add_conversation_turn` 写入短期窗口（`conversation` 表）；送礼/切磋调用 `dialogue.talk` 复用同一链路，`user` 是合成的玩家动作，`npc` 是同一对话 prompt 生成的回复。窗口按 **NPC 独立**统计，超过 `CONVERSATION_WINDOW_CAPACITY`（默认 10）时，取最早一批（默认 `CONVERSATION_WINDOW_CAPACITY=10` 轮）一次 LLM 归纳成 **1 条中期记忆**：`summary`（≤120 字）+ 3~6 条可检索线索；只存 `MemoryStore._midterms` 进程内存（每 NPC 最多 `MIDTERM_CAPACITY=10` 条，FIFO），线索向量也只存内存，**不写 `memory`、不写 Chroma**，随后删除这批 `conversation` 记录。
+**三层记忆与批总结**：普通对话每轮由 `MemoryStore.add_conversation_turn` 按 `npc_state.turn_no` 递增写入账本（`conversation.kind='turn'`）；送礼/切磋调用 `dialogue.talk` 复用同一链路，`user` 是合成的玩家动作，`npc` 是同一对话 prompt 生成的回复。窗口按 **NPC 独立**统计：`turn_no - last_midterm_turn > CONVERSATION_WINDOW_CAPACITY`（20）时，取最老 `MIDTERM_TURNS_PER_ENTRY`（10）轮一次 LLM 归纳成 **1 条中期记忆**：`summary`（≤120 字）+ 3~6 条可检索线索，写进 `conversation.kind='midterm'`（线索向量随行序列化，每 NPC 最多 `MIDTERM_CAPACITY`=10 条 FIFO），成功后才把 `last_midterm_turn` 推进这批的末轮号。**原文不删除**，只是移到窗口之外。
 
-对话每轮把当前消息 embed 一次，同时用于 Chroma RAG 与中期线索匹配；命中线索时把该条目的完整 summary 放进 prompt 的「你想起一些旧事」独立板块（见 §6.4），不塞进「你们最近的往来」。
+对话每轮把「本轮原话」与「最近 12 条消息拼接」一次批量 embed：前者给 Chroma RAG，后者给中期线索匹配；命中时把该条目的完整 summary 放进 prompt 的「你想起一些旧事」独立板块（见 §6.4），不塞进「你们最近的往来」。
 
-长期：`MemoryStore` 另维护每 NPC 的原始轮缓冲（含送礼/切磋，重启清零）；累计 `LONGTERM_TURN_INTERVAL`（默认 36）轮时，取最早 36 轮投入单 worker 队列，用同一条 `dialogue_summary` purpose（显式 `priority=3`）串行总结成 1 条长期记忆，写入独立的 `longterm_memory` 表。每个任务带 `generation`；`new_game` 先 `begin_reset()` 递增局代，再 `flush()` 等旧任务收尾/丢弃，`reset_runtime()` 清中期/缓冲；shutdown 用 `shutdown()` 丢弃排队任务并让当前任务收尾。长期记忆**不写 `memory`/Chroma**，也不参与对话/RAG/反思/关系摘要/八卦；本期只生成与入库。
+长期：累计 `turn_no - last_longterm_turn >= LONGTERM_TURN_INTERVAL`（36）轮时，按轮号区间**从 SQLite 读原文**投入单 worker 队列，用同一条 `dialogue_summary` purpose（显式 `priority=3`）串行总结成 1 条长期记忆，写入独立的 `longterm_memory` 表（含 `turn_range_start/end`）并 upsert 到 Chroma 集合 `longterm`；成功后推进 `last_longterm_turn`。每个任务带 `generation`；`new_game` 先 `begin_reset()` 递增局代，再 `flush()` 等旧任务收尾/丢弃，`reset_runtime()` 清运行时、`reset_ledger()` 清中期派生行并把窗口归零；shutdown 用 `shutdown()` 丢弃排队任务并让当前任务收尾。长期记忆**不写 `memory`**、不参与对话/RAG/反思/关系摘要/八卦；本期只生成与入库。
 
-对话入口在开始时捕获 `mem_store.generation`；LLM 返回后若局代已变，跳过好感/议程/情绪/记忆写入，`done` 带 `stale=true`（Godot 忽略该字段）。送礼/切磋看到 `stale` 时也不扣物品/不记事件。新局与在途对话、长期 worker 的这类竞态由 generation 屏障兜底，不要用裸 `drain()` 或 fire-and-forget task 集合替代。长期 prompt 由 `LLM_NUM_CTX`（默认 20480）覆盖，避免 36 轮原文被 Ollama 默认上下文截断。
+对话入口在开始时捕获 `mem_store.generation`；LLM 返回后若局代已变，跳过好感/议程/情绪/记忆写入与工具执行，`done` 带 `stale=true`（Godot 忽略该字段）。送礼/切磋看到 `stale` 时也不扣物品/不记事件。新局与在途对话、长期 worker 的这类竞态由 generation 屏障兜底，不要用裸 `drain()` 或 fire-and-forget task 集合替代。长期 prompt 由 `LLM_NUM_CTX`（默认 20480）覆盖，避免 36 轮原文被 Ollama 默认上下文截断。
 
-两条总结都走「校验→重试一次(temperature 0.3)→模板兜底」链路，失败不阻塞玩法；中期兜底 `clues=[]`（该条暂不可检索），长期兜底用首尾玩家原话拼一句。中期与长期缓冲都在进程内，服务重启清零；短期窗口与 `longterm_memory` 持久化。大额消费等规则事件仍即时入忆（§6.3），不参与窗口计数。
-
-> **v2 差异**（见 [`MEMORY-V2-PLAN.md`](MEMORY-V2-PLAN.md) §4）：① `conversation` 永久保留原文，中期总结**不删除**、只推进 `last_midterm_turn` 把已归档的轮移出窗口；② 中期条目写进 `conversation.kind='midterm'`（clues+向量在 `turns_json`），重启保留；③ 长期素材从 SQLite 按 `turn_no` 区间读，删掉 `_longterm_turns` 内存缓冲，游标 `last_longterm_turn` 成功后才推进；④ 新增行动层：回合可只行动/沉默（`reply` 可为空），`acts` 由服务端校验执行，有副作用的动作立即写 `memory(kind='action')`，`done` 增补 `acts` 供客户端渲染动作气泡（§6.14）。
+两条总结都走「校验→重试一次(temperature 0.3)→模板兜底」链路，失败不阻塞玩法；中期兜底 `clues=[]`（该条暂不可检索），长期兜底用首尾玩家原话拼一句。中期与长期都在 SQLite，**服务重启不再丢**；大额消费等规则事件仍即时入忆（§6.3），不参与窗口计数。
 
 **[打听消息]** 是记忆系统的展示窗：NPC 会用自己检索到的记忆（含八卦）回答，答非所问或以讹传讹正是实验观察点。
 
@@ -482,7 +479,7 @@ recency: 半衰期 = 3 游戏日
 
 后台调度每 `scheduler_tick_real`（默认 60s）巡检，`scheduler_enabled=false` 可整体关闭：
 
-> 中期记忆不写 `memory`，长期记忆也完全隔离，因此对话本身不再直接增加反思素材；反思只由大额消费/战斗目击/已有反思/八卦触发。这是记忆分层后的预期，不要为恢复反思频率把每 10 轮对话写回 event。
+> 对话与中期/长期总结都不写 `memory`，所以反思素材来自规则事件、NPC 行动（`kind=action`）、已有反思与八卦。行动层让互动重新有了素材，这是设计意图；不要为凑频率把每 10 轮对话写回 event。
 
 - 触发：某 NPC 自上次反思后新增记忆 ≥`reflect_mem_threshold`（8），或新增记忆 >0 且距上次反思 ≥`reflect_interval_real`（360s）；另设 `scheduler_tick_real × 0.75` 冷却兼失败退避，避免 60s 巡检抖动成每两拍才反思；
 - 素材：取该 NPC 最近 `reflection_take_n`（30）条记忆；少于 `reflection_min_memories`（3）条直接跳过；
@@ -495,7 +492,7 @@ recency: 半衰期 = 3 游戏日
 ### 6.8 关系演化
 
 - `relationship(npc_id, target_kind, target_id)` 为每对 (NPC, 对象) 维护一段 LLM 滚动摘要（≤`relationship_max_chars`，默认 100 字）；`target_kind=player` 时 `target_id` 为玩家名，`target_kind=npc` 时为对方 NPC 名；
-- **素材边界**：对话/中期/长期都不进关系摘要，`relationship` 只统计 `memory` 的 event/gossip/reflection。分层后关系摘要更新会变稀疏，这是长期记忆完全隔离的预期结果；要恢复需单独设计（例如把 `longterm_memory` 计入素材），不要恢复每 10 轮 event；
+- **素材边界**：对话/中期/长期都不进关系摘要，`relationship` 只统计 `memory` 的 event/action/gossip/reflection（行动层让"给过东西/回绝过"这类事实也进摘要）；
 - 触发更新：`updated_at`（现实时间）以来，与该对象相关的 event/gossip 新增 ≥`relationship_update_events`（5），或提及该对象的 reflection ≥`relationship_mention_reflections`（3）；material 取 events[:20] + reflections[:10]；
 - 更新 = 旧摘要 + 新增事件列表 → LLM 压缩为新摘要；失败时用"旧摘要；最近两条事件"截断兜底；
 - 摘要进对话 prompt 的"你对{玩家}的印象"，是长程关系记忆的压缩载体——防止历史对话无限膨胀；
@@ -579,15 +576,16 @@ NPC 额外保留：`role`、`home_poi/work_poi`、`affinity`、`persona`、记�
 
 ### 6.14 行动层（NPC 工具调用）
 
-一轮对话对 NPC 不只是说话，也可以是**行动**。v1 落地范围与执行细节见 [`MEMORY-V2-PLAN.md`](MEMORY-V2-PLAN.md) §6，本节只定设计边界。
+一轮对话对 NPC 不只是说话，也可以是**行动**。实现见 `server/app/agent/actions.py`，落地细节与阶段记录见 [`MEMORY-V2-PLAN.md`](MEMORY-V2-PLAN.md) §6。
 
 - **契约**：仍是一次 `format:"json"` 调用，输出扩一个 `acts` 数组：`{"reply":"…","acts":[{"tool":"give_item","args":{…}}],"affinity_delta":0,"end":false}`。`reply` 可为空（只行动/沉默），`acts` 可为空（只说话）。**不引入原生 function calling**：4B + Ollama 原生 tools 不稳，且与 `format:"json"` 互斥。
-- **v1 工具集（四个，全部原地）**：`give_item`、`take_item`、`teach_skill`、`refuse`。**不含移动/跟随/带路**——NPC 位置仍只由日程确定性函数决定（架构约束 #2），要做 `follow` 必须先设计「日程相位平移」，不能新增位置同步。
-- **原子性与安全阀**：所有 act 先全量校验（白名单 / 参数 schema / 前置条件）再执行，任一失败则一个都不执行并把原因作为 observation 回填、让模型改口一次；**动作一旦执行成功就禁止重试整轮**（现有「解析失败重试一次」只能发生在执行之前），`tool_call_log(turn_id, call_index)` 唯一约束做幂等。
-- **不得开侧门**：工具效果一律走既有服务端函数（`inventory` / `skills` / 商店），不直接写 `npc_state.affinity`、不改日程、不跨地图、内部不调 LLM。
-- **入忆**：有副作用（物品/技艺转移）的动作在执行的同一写序内落 `memory(kind='action', importance 3~6)` 并推 `recent_events`（目击扩散），不等 36 轮总结；这会让反思与八卦重新获得素材，是设计意图。
+- **v1 工具集（四个，全部原地）**：`give_item`、`take_item`、`teach_art`、`refuse`。**不含移动/跟随/带路**——NPC 位置仍只由日程确定性函数决定（架构约束 #2），要做 `follow` 必须先设计「日程相位平移」，不能新增位置同步。`teach_art` 只教功法且要求同源、不压级：属性相冲需要散功，工具不能替玩家确认。
+- **原子性与安全阀**：所有 act 先全量校验（白名单 / 参数 / 前置条件）再执行，任一失败则一个都不执行并把原因作为 observation 回填、让模型改口一次；**动作一旦执行成功就禁止重试整轮**（「解析失败重试一次」只能发生在执行之前），`tool_call_log(turn_id, call_index)` 唯一约束做幂等，且回放发生在校验之前。
+- **不得开侧门**：工具效果一律走既有服务端函数（`inventory` / `arts`），不直接写 `npc_state.affinity`、不改日程、不跨地图、内部不调 LLM。
+- **入忆**：有副作用的动作在执行的同一写序内落 `memory(kind='action', importance 3~6)` 并推 `recent_events`（目击扩散），不等 36 轮总结；行动是反思与关系摘要的正式素材。
 - **计数**：一回合 = 一个 `turn_no`，与内部 act 数无关；acts/obs 不占窗口。
-- **客户端**：`done` 增补 `acts: [{tool, text}]`，`reply` 为空时渲染动作气泡（决断：允许 NPC 沉默）。
+- **客户端**：`done` 增补 `acts: [{tool, text}]`，`reply` 为空时渲染动作气泡（允许 NPC 沉默）。
+
 
 ---
 
@@ -715,39 +713,43 @@ character_inventory(character_id, item_id, qty, equipped_slot NULL,
 > 后续如需按图推进，把 kv 键改成 `world.stage:{map_id}`，不要用一个全局 stage 继承
 > 另一张图的断岳刀进度。
 
-memory(id, npc_id, ts_game,           -- 游戏时钟；只存 event/reflection/gossip
-       kind,                           -- event|reflection|gossip
+memory(id, npc_id, ts_game,           -- 游戏时钟；只存 event/action/reflection/gossip
+       kind,                           -- event|action|reflection|gossip
        content, participants_json, poi, map_id, importance,
        created_at_real,                -- 现实时间：关系摘要水位线
        source_memory_id NULL)          -- gossip 恒指向根记忆，防重复转述
 relationship(npc_id, target_kind,     -- player|npc
              target_id, summary, updated_at)  -- updated_at 为现实时间
 
-conversation(id, npc_id, ts_game, turns_json, affinity_delta_total)
-             -- 短期窗口；turns_json={user,npc,place}；超过容量即总结为中期记忆（纯内存）并删最早一批
-longterm_memory(id, npc_id, ts_game, content, turn_count, created_at_real)
-             -- 每 36 轮原始对话后台总结；不写 memory/Chroma，不参与反思/关系/八卦/RAG
+conversation(id, npc_id, ts_game, turns_json, affinity_delta_total, kind, turn_no)
+             -- 账本：kind='turn' 是原文轮，kind='midterm' 是中期摘要；
+             -- 窗口 = kind='turn' AND turn_no > last_midterm_turn；原文永不删除
+             -- turn 行 turns_json={user, speech, npc, acts, place, turn_id}
+             -- midterm 行 turns_json={summary, clues, clue_vectors, turn_range, turn_count}
+longterm_memory(id, npc_id, ts_game, content, turn_count, created_at_real,
+                turn_range_start, turn_range_end, participants_json, poi, importance)
+             -- 每 36 轮原文后台总结；写独立 Chroma 集合 longterm；本期只写不读
+tool_call_log(id, turn_id, call_index, npc_id, tool, args_json, ok, result_json,
+              created_at_real, ts_game)   -- UNIQUE(turn_id, call_index)：动作幂等与回放
 battle(id, player_id, target_kind, target_id, state_json, active, created_at)
 llm_log(id, purpose, model, in_tokens, out_tokens, ms, ok, created_at)
 kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=游戏日、gift_count:{npc_id}:{game_day} 等
 ```
 
-**中期记忆不落库**：`MemoryStore._midterms`（summary+线索+线索向量）与 `_longterm_turns`（36 轮原始轮缓冲）都是进程内结构，服务重启清零；短期窗口与 `longterm_memory` 持久化。`new_game` 同样只清中期/缓冲/附近事件，不清 `conversation`/`longterm_memory`。
+**账本游标**：`npc_state.turn_no`（已发生轮数）、`last_midterm_turn`（窗口下界）、`last_longterm_turn`（已归档到长期的轮号）。三个游标只在写库成功后推进，所以中期/长期总结失败会自动在下一轮重试。中期与长期都持久化，**重启不丢**；`new_game` 删 `kind='midterm'` 的派生行并把 `last_midterm_turn` 推平到 `turn_no`（窗口归零），原文与 `longterm_memory` 保留。
 
-> **v2 目标表结构**（见 [`MEMORY-V2-PLAN.md`](MEMORY-V2-PLAN.md) §7，落地时替换本节）：
-> `conversation` 增 `kind`（`turn`|`midterm`）与 `turn_no`；中期条目就是 `kind='midterm'` 的行，`turns_json={summary, clues, clue_vectors, turn_range}`，**原文不删**，窗口 = `turn_no > last_midterm_turn`。
-> `npc_state` 增 `turn_no` / `last_midterm_turn` / `last_longterm_turn` 三个游标；
-> `longterm_memory` 增 `turn_range_start/end`、`participants_json`、`poi`、`importance`；
-> 新增 `tool_call_log(turn_id, call_index, tool, args_json, ok, result_json, UNIQUE(turn_id,call_index))` 做动作幂等；
-> Chroma 新增集合 `longterm`（索引 `longterm_memory`，v2 只写不读），`memories` 语义不变（新增 `kind='action'`）。
+**Chroma 两个集合**（PersistentClient 本地目录，都是 `hnsw:space=cosine`）：
 
-**Chroma 集合 `memories`**（PersistentClient 本地目录，`hnsw:space=cosine`）：
+| 集合 | 索引来源 | 用途 |
+|---|---|---|
+| `memories` | `memory` 表（event/action/reflection/gossip） | 对话/搭话的 RAG，`where {"npc_id": id}` 过滤 |
+| `longterm` | `longterm_memory` 表 | 本期只写不读；`reconcile` 按集合分别校验，「表行数 vs 集合 count」是唯一对账手段 |
 
-- id = memory.id；document = content；embedding = Ollama 1024 维（L2 归一化）；metadata = {npc_id, kind, importance, ts_game, poi}；
-- **Chroma 只索引 `memory` 表**（event/reflection/gossip）；中期线索向量只在 `MemoryStore` 内存，`longterm_memory` 不进 Chroma（v2 改为第二个集合 `longterm`，只写不读，`reconcile` 分集合校验）；
+- id = 行 id；document = content；embedding = Ollama 1024 维（L2 归一化）；metadata 见各集合；
+- 中期条目的线索向量**不进 Chroma**，随 `conversation.turns_json` 以 base64 float32 存 SQLite——重启后无需重新嵌入即可召回；
 - 写入顺序：SQLite 落库分配 id → 同一写锁内 Chroma upsert（先 SQLite 后 Chroma）；
-- 索引是**派生数据**：换 embedding 模型或索引损坏时，删集合从 SQLite 全量重嵌入重建——SQLite 不存向量正是为了留这条退路；
-- Chroma 元数据不支持排序与列表值，反思（按时间取最近 30 条）、八卦/关系（按参与人过滤）等查询走 SQLite，Chroma 只做 ANN。
+- 索引是**派生数据**：换 embedding 模型或索引损坏时，删该集合从 SQLite 全量重嵌入重建——SQLite 不存向量正是为了留这条退路；
+- Chroma 元数据不支持排序与列表值，反思（按时间取最近 30 条）、八卦/关系（按参与人过滤）、中期召回（按轮号取最近 `MIDTERM_CAPACITY` 条）都走 SQLite，Chroma 只做 ANN。
 
 索引：`memory(npc_id, ts_game)`、`memory(npc_id, importance)`、`memory(source_memory_id)`（`idx_memory_source`）。WAL 模式 + 单写队列（asyncio.Lock）避免后台反思与对话写冲突。`source_memory_id` 由 `connect()` 幂等迁移补列，旧库无需重建。
 
@@ -761,7 +763,7 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=�
 | GET | `/api/game/state` | 玩家全量状态+游戏时钟+`map_id`+`art`（当前功法/属性/上限/等级/瓶颈/已学招式）+`learned_arts`+`npcs` 花名册（id/slug/name/role/好感/当前 poi/锚点/`paused_until`）+`world`（`stage/artifact_acquired/announced_at_game/announcement/premise`） |
 | GET | `/api/npcs/state` | 日程推算全量参数：`clock/map_id/sense_radius/greet_threshold/phases/pacing/gather_anchor` + 每人 `home_to_work/work_to_gather/pos/poi/affinity/paused_until/greet_ready/heart/deviation`（只返回当前地图 NPC） |
 | POST | `/api/npc/{id}/greet` | 主动搭话：`{greet,reply,affinity}` 或 `{greet:false,reason:affinity|cooldown|paused}`；无存档 409、查无此人 404 |
-| POST | `/api/npc/{id}/talk` | SSE `text/event-stream`：`{message}` → `start`/`token`/`reset`/`done` 事件，`done` 含 `{reply, affinity, end, player, fallback, place}`（LLM 生成，RAG 检索记忆；仍为单次 LLM 调用） |
+| POST | `/api/npc/{id}/talk` | SSE `text/event-stream`：`{message}` → `start`/`token`/`reset`/`done` 事件，`done` 含 `{reply, acts, affinity, end, player, fallback, place, stale}`（LLM 生成，RAG + 中期召回；仍为单次 LLM 调用，`acts` 在流结束后执行） |
 | POST | `/api/npc/{id}/gift` | `{item_id}` |
 | POST | `/api/npc/{id}/challenge` | 请求切磋 → 进入战斗 |
 | POST | `/api/npc/{id}/apprentice` | 请求拜入正式门派（南风城；条件校验+仪式台词）；武馆学艺走 `/api/game/art/learn` |
@@ -780,7 +782,7 @@ kv(k, v)  -- 全局：时钟偏移、初始化标记、gossip_pair:{min}:{max}=�
 | POST | `/api/battle/start` | `{target_type: mob, target_id}` 野外怪物战斗；NPC 切磋经 `/api/npc/{id}/challenge` |
 | POST | `/api/battle/action` | `{action: attack|skill|item|flee, id?}` → 结算后全量战况 |
 | GET | `/api/battle/state` | 断线重入 |
-| GET | `/api/debug/npc/{id}` | **实验观察**：好感、反思计数与 `seconds_since_reflection`、关系摘要、最近 50 条记忆（含 `source_memory_id`）、当前日程 `{phase,poi,pos,paused}`、世界立场 `world{stage,stance,knowledge,stage2}`、`agenda`、`mood`、`speech_examples`、`heart`、`deviation`、`character`（等级/功法/属性/装备/招式） |
+| GET | `/api/debug/npc/{id}` | **实验观察**：好感、反思计数与 `seconds_since_reflection`、关系摘要、`profile`（行动画像）、最近 50 条记忆（含 `source_memory_id`）、`ledger{turn_no,last_midterm_turn,last_longterm_turn,window_turns}`、`midterm`、`longterm`、`longterm_pending_turns`、`longterm_indexed`、当前日程 `{phase,poi,pos,paused}`、世界立场 `world{stage,stance,knowledge,stage2}`、`agenda`、`mood`、`speech_examples`、`heart`、`deviation`、`character`（等级/功法/属性/装备/招式） |
 | GET | `/api/health` | 含 Ollama 连通性检查 |
 
 战斗响应含 log 数组（逐条结算文本），客户端按序播放浮字/震动动画；每条伤害日志含 `element_counter: advantage|disadvantage|neutral` 与最终倍率，用于战斗 UI 显示“克制/被克”。
@@ -882,7 +884,7 @@ Xia/
 | M4 反思与传播 | 反思、关系摘要、八卦、主动搭话、确定性日程 | 隔天 NPC 主动提起你昨天的事 | ✅ 已实现（确定性冒烟覆盖反思→关系→八卦→搭话链路与暂停恢复；Godot 四阶段冒烟全绿。真实 4B 长时观察按 `docs/M4-PLAN.md` §7.2 复现） |
 | M5 世界公设与感知 | 后山公设/立场/知识分层、断岳刀世界事件、对话议程/口癖/轻情绪、每日心事与日程偏离、附近事件感知 | 取刀后全镇知晓但拜师规则不变；议程不重复、偏离两端一致 | ✅ 已实现（W/B/A/C 四包分次提交；`docs/M5-PLAN.md`） |
 | M6 功法境界与南风城 | 功法属性/上限、同源转换与散功、属性克制、NPC 角色卡同构、清溪镇后山深处、南风城两派与城主 | 同源换功保留等级、异源归 1；NPC 与玩家同一套角色卡；清溪镇练到 15 后可去南风城 | 🚧 Phase A/B 已实现（功法/角色卡/三馆学艺/NPC 同构）；Phase C 待续，见 `docs/M6-PLAN.md` |
-| M7 记忆 v2 与行动层 | 人物账本（`turn_no` 游标）、中期入库、长期归档 + `longterm` 向量集合、NPC 工具调用与动作入忆 | NPC 记得 100 轮前的旧事（中期回想）；会主动给物/教招/拒绝，并在之后提起 | 📝 设计定稿未实施，见 [`MEMORY-V2-PLAN.md`](MEMORY-V2-PLAN.md)（P0–P4；编号暂定，排在 M6 Phase C 之后） |
+| M7 记忆 v2 与行动层 | 人物账本（`turn_no` 游标）、中期入库、长期归档 + `longterm` 向量集合、NPC 工具调用与动作入忆 | NPC 记得 100 轮前的旧事（中期回想）；会主动给物/教传/拒绝，并在之后提起 | ✅ 已实现（P0–P4，见 [`MEMORY-V2-PLAN.md`](MEMORY-V2-PLAN.md)） |
 
 每个里程碑结束产出可玩 build + 一段实验观察记录（debug API 截图/数据）。
 
@@ -913,19 +915,20 @@ Xia/
 | PLAN_ENABLED | true | 每日心事/日程偏离总开关 |
 | PLAN_DEVIATION_SHIFT_SEC | 1200 | 偏离阶段平移上限（游戏秒）= 20 游戏分钟 |
 | PLAN_HEART_MAX_CHARS | 60 | 心事字数上限 |
-| DIALOGUE_WINDOW_SIZE | 6 | 每轮回复平铺的最近对话轮数（v2 改 8） |
-| CONVERSATION_WINDOW_CAPACITY | 10 | conversation 超过 N 条即把最早 N 轮总结为一条中期记忆（纯内存）（v2 改 20，且不删原文、只移出窗口） |
+| DIALOGUE_WINDOW_SIZE | 8 | 每轮回复平铺的最近对话轮数 |
+| CONVERSATION_WINDOW_CAPACITY | 20 | 窗口水位：`turn_no - last_midterm_turn` 超过它就把最老一批归档（原文不删） |
+| MIDTERM_TURNS_PER_ENTRY | 10 | 每次中期总结覆盖的轮数 |
 | MIDTERM_CAPACITY | 10 | 每 NPC 最多保留的中期条目数（FIFO） |
-| MIDTERM_TOP_K | 3 | 每轮最多注入的中期 summary 条数（v2 改 1） |
-| MIDTERM_MIN_SCORE | 0.45 | 中期线索余弦相似度阈值（v2 改 0.8，且 query 改为 12 条消息拼接） |
-| MIDTERM_TURNS_PER_ENTRY | — | v2 新增：每次中期总结的轮数（10） |
-| MIDTERM_RECALL_COOLDOWN_TURNS | — | v2 新增：同一条中期的最短重投间隔（5 轮） |
-| MIDTERM_QUERY_MESSAGE_LIMIT | — | v2 新增：中期召回 query 拼接的消息条数（12） |
-| MIDTERM_QUERY_MAX_CHARS | — | v2 新增：中期召回 query 字数上限（2400） |
-| MEMORY_CONTEXT_MAX_CHARS | — | v2 新增：记忆注入总预算（1500，P4 预算闸生效） |
-| PROFILE_MAX_PERSONS | — | v2 新增：人物画像人数上限（2，P4） |
-| PROFILE_MAX_CHARS | — | v2 新增：人物画像字数上限（400，P4） |
+| MIDTERM_TOP_K | 1 | 每轮最多注入的中期 summary 条数 |
+| MIDTERM_MIN_SCORE | 0.8 | 中期线索余弦相似度阈值（严格大于） |
+| MIDTERM_RECALL_COOLDOWN_TURNS | 5 | 同一条中期的最短重投间隔（轮） |
+| MIDTERM_QUERY_MESSAGE_LIMIT | 12 | 中期召回 query 拼接的消息条数 |
+| MIDTERM_QUERY_MAX_CHARS | 2400 | 中期召回 query 字数上限 |
+| MEMORY_CONTEXT_MAX_CHARS | 1500 | 记忆注入总预算（中期 + 画像，按优先级装填） |
+| PROFILE_MAX_PERSONS | 2 | 人物画像人数上限 |
+| PROFILE_MAX_CHARS | 400 | 人物画像字数上限 |
 | LONGTERM_TURN_INTERVAL | 36 | 每累计 N 轮原始对话触发一次长期总结 |
+| LONGTERM_IMPORTANCE | 5 | 长期记忆条目的重要度（只写不读，固定值） |
 | MAX_LEVEL | 100 | 修为等级全局硬上限 |
 | ARTLESS_LEVEL_CAP | 15 | 未习功法“凡体”的等级上限 |
 | ELEMENT_ADVANTAGE | 1.20 | 属性克制伤害倍率 |
@@ -953,10 +956,10 @@ Xia/
 - 4B 模型 JSON 输出不稳 → format:json + 重试 + 模板兜底，永不阻塞玩法（§7.3）；
 - 对话延迟 2~5s（4B Q4 本地推理）→ 前端"…"指示 + 记忆检索与 prompt 组装并行；每 10 轮多一次中期总结与线索嵌入，每 36 轮多一次后台长期总结（不占前台等待）；
 - 长对话上下文膨胀 → 只平铺最近 `dialogue_window_size` 轮，长程信息靠中期 summary+线索、长期记忆表与关系摘要承载；
-- 中期记忆/36 轮缓冲只在进程内存 → 重启丢失；短期窗口与 `longterm_memory` 持久化，接受该取舍。长期总结后台异步，进程退出时可能丢一批；
-- **v2 中期阈值 0.8 的命中率风险** → 0.8 只在「长 query（12 条消息拼接）+ 线索用词高度重合」下成立；短句 query 几乎不命中。P1 必须打印真实命中分数分布，连续 20 轮零命中就调低到 0.55~0.65（改配置，不改代码）；
-- **v2 原文永久保留** → `conversation` 不再删除，1000 轮约 300KB/NPC；将来清理只能删「`turn_no <= last_longterm_turn` 且 `kind='turn'`」，不要动未归档区间；
-- **v2 长期只写不读** → `longterm` 集合没有查询方，索引写错不会立刻暴露；debug 端点与 `reconcile` 必须同时暴露/校验「表行数 vs 集合 count」；
+- 中期与长期都在 SQLite → 重启不丢；长期总结后台异步，进程退出时**排队中的任务**可能丢一批，但游标未推进，重启后同一区间会自动重来；
+- **中期阈值 0.8 的命中率** → 0.8 只在「长 query（12 条消息拼接）+ 线索用词高度重合」下成立；短句 query 几乎不命中。要调就调 `MIDTERM_MIN_SCORE`（改配置，不改代码），并先看 debug/trace 里的命中分数；
+- **原文永久保留** → `conversation` 的 `kind='turn'` 行不再删除，1000 轮约 300KB/NPC；将来清理只能删「`turn_no <= last_longterm_turn` 且 `kind='turn'`」，不要动未归档区间；
+- **长期只写不读** → `longterm` 集合没有查询方，索引写错不会立刻暴露；debug 端点（`longterm_indexed`）与 `reconcile` 分集合校验是唯一的两道对账；
 - 线索匹配质量依赖 4B 模型 → `MIDTERM_MIN_SCORE`/`MIDTERM_TOP_K` 先给默认值，实测调；中期兜底 `clues=[]` 时该条暂不可检索；
 - 好感被 LLM 漂移 → 对话/送礼/切磋统一 clamp ±3；送礼价值与切磋胜负只作 prompt 上下文；
 - SQLite 写并发（对话 vs 后台反思）→ WAL + 单写队列；

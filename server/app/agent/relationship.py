@@ -61,7 +61,7 @@ async def maybe_update(db: Database, store, npc_id: int, target_kind: str, targe
     rows = await db.fetch_all(
         "SELECT id, content, kind, importance, participants_json, created_at_real"
         " FROM memory WHERE npc_id = ? AND created_at_real >= ?"
-        " AND kind IN ('event','gossip','reflection')"
+        " AND kind IN ('event','action','gossip','reflection')"
         " ORDER BY ts_game DESC LIMIT 200",
         (npc_id, since),
     )

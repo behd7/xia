@@ -1,8 +1,8 @@
 # 记忆架构 v2（人物账本）执行计划
 
-> 状态：**设计定稿（2026-11-01），未实施**。本文件取代 [`MEMORY-PLAN.md`](MEMORY-PLAN.md) 中关于「窗口删除」「中期纯内存」「长期完全隔离（不写向量）」三处描述；v1 的其余内容仍是当前代码事实。
+> 状态：**已实施（2026-11-01，P0–P4 四个 commit）**。本文档保留为执行记录；`docs/DESIGN.md` §2/§6.3/§6.4/§6.6/§6.14/§8/§13/§14/§15 与 `AGENTS.md` #11/#12 已同步为现行实现。
 >
-> 实施完成前，`docs/DESIGN.md` §6.3/§6.4/§6.6/§8 与 `AGENTS.md` #11 仍描述 v1 现状，**不要按本文件去改文档已描述的既有行为**，按下面的阶段拆分逐步落地并同步。
+> 本文件取代 [`MEMORY-PLAN.md`](MEMORY-PLAN.md) 中关于「窗口删除」「中期纯内存」「长期完全隔离（不写向量）」三处描述；v1 的其余内容仍是历史记录。
 >
 > 设计来源：`../MaiBot` 的 `src/maisaka/memory/*`（中期回想、启发式长期记忆、人物画像）与 `src/A_memorix/core/retrieval/*`（双路召回、动态阈值、PPR）。§14 记录了「照搬 / 改造 / 不搬」的逐项对照与理由。
 
@@ -318,15 +318,15 @@ P0 实施时同步注释段（`DIALOGUE_WINDOW_SIZE` / `CONVERSATION_WINDOW_CAPA
 
 ## 10. 阶段拆分（每个阶段独立可玩、独立 commit）
 
-- **P0 账本地基**：`conversation.kind/turn_no`、`npc_state` 三游标、`longterm_memory` 补列、索引与回填、窗口查询改子查询、删掉运行期的窗口删除（只保留 `new_game` 清 `kind='midterm'`）、debug 暴露游标。
-  - 验收：现有冒烟全绿（窗口断言改为「不做删除，只移出窗口」）；老库能启动、游标回填正确。
-- **P1 中期回想**：中期条目入库（`kind='midterm'`）、双向量嵌入、`midterm_query` 长拼接、阈值 0.8 + 严格大于、`top_k=1`、冷却去重、prompt 板块。
-  - 验收：§11 的 A/B 两组断言 + 命中分数打印。
-- **P2 长期归档**：worker 改从 DB 读、`longterm_memory` 写 `turn_range`、Chroma `longterm` 集合与分集合 `reconcile`、游标推进。
-  - 验收：§11 的 C/D 组；重启后 `longterm` 与中期条目都仍在（v2 中期入库，不再清零）、长期最近那条已在 Chroma 里。
-- **P3 行动层**：`actions.py`、契约扩 `acts`、4 个工具、`tool_call_log` 幂等、原子校验与修正回合、动作入忆与 `recent_events`、总结渲染、客户端动作气泡。
+- **P0 账本地基（已实施）**：`conversation.kind/turn_no`、`npc_state` 三游标、`longterm_memory` 补列、索引与回填、窗口查询改子查询、删掉运行期的窗口删除（只保留 generation 失效丢弃与本轮新局清理）、debug 暴露游标。
+  - 验收：现有冒烟全绿（窗口断言改为「不做删除，只移出窗口」）；老库能启动、游标回填正确（已用旧库夹具手验）。
+- **P1 中期回想（已实施）**：中期条目入库（`kind='midterm'`）、双向量嵌入、`midterm_query` 长拼接、阈值 0.8 + 严格大于、`top_k=1`、冷却去重、prompt 板块。
+  - 验收：§11 的 A/B 两组断言。
+- **P2 长期归档（已实施）**：worker 改从 DB 读、`longterm_memory` 写 `turn_range`、Chroma `longterm` 集合与分集合 `reconcile`、游标推进。
+  - 验收：§11 的 C/D 组；重启后 `longterm` 与中期条目都仍在、长期最近那条已在 Chroma 里。
+- **P3 行动层（已实施）**：`actions.py`、契约扩 `acts`、4 个工具、`tool_call_log` 幂等、原子校验与修正回合、动作入忆与 `recent_events`、总结渲染、客户端动作气泡。
   - 验收：§11 的 E 组。
-- **P4 画像与预算**：确定性画像（`kind='action'` + `longterm_memory` 聚合）、`prompt_budget.py` 总闸。
+- **P4 画像与预算（已实施）**：确定性画像（`tool_call_log` 聚合）、`prompt_budget.py` 总闸。
   - 验收：画像随给物/拒绝次数变化，且不调 LLM。
 - **P5（不实施，另起任务）**：长期召回读路径、BM25 路、实体图谱、PPR、动态阈值。见 §8.2/§14。
 
