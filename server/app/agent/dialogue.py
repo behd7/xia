@@ -27,6 +27,8 @@ from . import agenda as agenda_mod
 from . import events as events_mod
 from . import mood as mood_mod
 from . import npc as npc_mod
+from . import profile as profile_mod
+from . import prompt_budget as budget_mod
 from . import rag as rag_mod
 from . import relationship as relationship_mod
 from . import trace as trace_mod
@@ -205,13 +207,19 @@ def _build_messages(p, n, affinity, memories, turns, impression, now_str, place,
                     world_brief: str = "", agenda: dict | None = None,
                     mood_text: str = "", speech_examples: list[str] | None = None,
                     heart: str = "", events_text: str = "",
-                    midterm_summaries: list[str] | None = None) -> list[dict]:
+                    midterm_summaries: list[str] | None = None,
+                    profile_text: str = "") -> list[dict]:
     mem_lines = "\n".join(m["content"] for m in memories[: settings.rag_top_k]) or "（暂无）"
     midterm_lines = "\n".join(f"- {s}" for s in (midterm_summaries or []))
     midterm_block = (
-        f"你想起一些旧事（只作参考，不要逐字复述）：\n{midterm_lines}\n"
+        f"你想起一些旧事（只作参考，不要逐字复述）：\n{midterm_lines}"
         if midterm_lines else ""
     )
+    # 中期与画像共享一个总预算（docs/MEMORY-V2-PLAN.md §5.3）：中期优先级更高。
+    extra_memory = budget_mod.fit_blocks(
+        [("midterm", midterm_block), ("profile", profile_text)],
+        settings.memory_context_max_chars)
+    extra_block = f"{extra_memory}\n" if extra_memory else ""
     turn_lines = "\n".join(
         f"{p['name']}：{t['user']}\n你：{t['npc']}{acts_mod.acts_text(t.get('acts') or [], '你')}"
         for t in turns) or "（尚无可聊）"
@@ -235,7 +243,7 @@ def _build_messages(p, n, affinity, memories, turns, impression, now_str, place,
         f"{_warmth(affinity, p['name'])}\n"
         + (f"你对{p['name']}的印象：{impression}\n" if impression else "")
         + f"你记得的一些事：\n{mem_lines}\n"
-        f"{midterm_block}"
+        f"{extra_block}"
         f"{events_line}"
         f"你们最近的往来：\n{turn_lines}\n"
         f"{heart_line}{agenda_line}{examples_line}{mood_line}"
@@ -319,6 +327,7 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
         db, mem_store, npc_id, message, settings=settings, qvec=qvec)
     midterms = await mem_store.recall_midterm(db, npc_id, midterm_qvec)
     midterm_summaries = [m.summary for m in midterms]
+    profile_text = await profile_mod.build(db, npc_id, p["name"], now_game)
     if trace is not None:
         await trace_mod.span(trace, "retrieve", input_=message,
                              output=[{k: m.get(k) for k in
@@ -332,6 +341,7 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
                              metadata={"threshold": settings.midterm_min_score,
                                        "top_k": settings.midterm_top_k})
         await trace_mod.span(trace, "recent_turns", output=turns)
+        await trace_mod.span(trace, "profile", output={"text": profile_text})
         await trace_mod.span(trace, "relationship", output={"summary": impression})
 
     result: dict | None = None
@@ -349,6 +359,7 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
                 agenda=agenda, mood_text=mood_text,
                 speech_examples=n.get("speech_examples", []), heart=heart,
                 events_text=events_text, midterm_summaries=midterm_summaries,
+                profile_text=profile_text,
             )
             last_msgs = msgs
             async for chunk in mem_store.llm.chat_stream(

@@ -32,6 +32,7 @@ from .agent import greet as greet_mod
 from .agent import memory as memory_mod
 from .agent import mood as mood_mod
 from .agent import npc as npc_mod
+from .agent import profile as profile_mod
 from .agent import scheduler as scheduler_mod
 from .agent import trace as trace_mod
 
@@ -359,6 +360,10 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
     rel = await db.fetch_all("SELECT * FROM relationship WHERE npc_id = ?", (npc_id,))
     now_game = clock.now()
     now_real = time.time()
+    player_row = await player_mod.get(db)
+    player_name = str((player_row or {}).get("name", ""))
+    profile_text = (await profile_mod.build(db, npc_id, player_name, now_game)
+                    if player_name else "")
     deviation = await plan_mod.deviation_for(db, npc_id, now_game)
     plan = await plan_mod.plan_for(db, npc_id, now_game)
     kind, _, _ = schedule_mod.phase_at(
@@ -394,6 +399,7 @@ async def npc_debug(npc_id: int) -> dict[str, Any]:
             if mem_store else 0),
         "longterm_indexed": mem_store.longterm_indexed() if mem_store else 0,
         "relationship": rel,
+        "profile": profile_text,
         "agenda": await agenda_mod.current(db, npc_id),
         "mood": await mood_mod.current(db, npc_id, now_real),
         "speech_examples": n.get("speech_examples", []),

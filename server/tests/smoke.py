@@ -874,6 +874,36 @@ async def main() -> int:
                   silent.get("speech") == "" and silent["acts"]
                   and silent["acts"][0]["tool"] == "refuse")
 
+            print("\n== 人物画像（确定性聚合，不调 LLM）与注入预算 ==")
+            from app.agent import profile as profile_mod
+            from app.agent import prompt_budget as budget_mod
+            now_g = main_mod.mem_store.clock.now()
+            profile_text = await profile_mod.build(
+                main_mod.db, npc_act, p_act["name"], now_g)
+            check("profile aggregates action counts",
+                  "给过他 2 回东西" in profile_text
+                  and "回绝过他 1 回" in profile_text)
+            calls_before = len(CALLED)
+            status, _, done = await talk(c, npc_act, "近来可好？")
+            check("profile injection costs no extra LLM call",
+                  status == 200 and len(CALLED) == calls_before + 1)
+            dialogue_prompts = [m for purpose, m in PROMPTS if purpose == "dialogue"]
+            profile_prompt = (dialogue_prompts[-1][0]["content"]
+                              if dialogue_prompts else "")
+            check("profile block injected into the dialogue prompt",
+                  "打过的交道" in profile_prompt and "给过他 2 回东西" in profile_prompt)
+            check("NPC without actions has no profile block",
+                  await profile_mod.build(main_mod.db, 1, p_act["name"], now_g) == "")
+            check("budget drops the lower-priority block first",
+                  budget_mod.fit_blocks([("a", "甲" * 10), ("b", "乙" * 10)], 12)
+                  == "甲" * 10)
+            check("budget truncates only the top block",
+                  budget_mod.fit_blocks([("a", "甲" * 20), ("b", "乙")], 10)
+                  == "甲" * 10)
+            dbg_profile = (await c.get(f"/api/debug/npc/{npc_act}")).json()
+            check("debug exposes the profile",
+                  "给过他" in dbg_profile.get("profile", ""))
+
             print("\n== new_game vs in-flight dialogue (generation barrier) ==")
             npc_race = 2
             GATE["reached"].clear()

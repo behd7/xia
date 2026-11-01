@@ -89,6 +89,10 @@ class Settings(BaseSettings):
     midterm_query_max_chars: int = 2400     # 召回 query 字数上限
     longterm_turn_interval: int = 36        # 每累计 N 轮原始对话触发一次长期总结
     longterm_importance: int = 5            # 长期记忆条目的重要度（v2 只写不读，固定值）
+    # 注入预算（P4）：中期 + 画像共享一个总闸，按优先级装填
+    memory_context_max_chars: int = 1500
+    profile_max_persons: int = 2            # Xia 是单玩家，留 2 只为将来 NPC 互评
+    profile_max_chars: int = 400
 
     # RAG (docs/DESIGN.md §6.4)
     recency_half_life: float = 3.0

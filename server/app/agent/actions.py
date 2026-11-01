@@ -250,9 +250,10 @@ async def _run_one(db: Database, mem_store, *, npc: dict, player: dict,
     acted = {"tool": tool, "text": text, "ok": True}
     await db.execute(
         "INSERT INTO tool_call_log(turn_id, call_index, npc_id, tool, args_json,"
-        " ok, result_json, created_at_real) VALUES(?,?,?,?,?,1,?,?)",
+        " ok, result_json, created_at_real, ts_game) VALUES(?,?,?,?,?,1,?,?,?)",
         (turn_id, call_index, npc["id"], tool, _dump_args(plan),
-         json.dumps(acted, ensure_ascii=False), time.time()),
+         json.dumps(acted, ensure_ascii=False), time.time(),
+         mem_store.clock.now()),
     )
     await mem_store.add_memory(
         db, npc["id"], content=f"你{text}。", kind="action",

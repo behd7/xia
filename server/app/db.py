@@ -255,6 +255,7 @@ CREATE TABLE IF NOT EXISTS tool_call_log (
     ok INTEGER NOT NULL DEFAULT 1,
     result_json TEXT NOT NULL DEFAULT '{}',
     created_at_real REAL NOT NULL,
+    ts_game REAL NOT NULL DEFAULT 0,
     UNIQUE(turn_id, call_index)
 );
 """
@@ -361,6 +362,10 @@ class Database:
             ):
                 if col not in lt_cols:
                     conn.execute(f"ALTER TABLE longterm_memory ADD COLUMN {col} {ddl}")
+            tl_cols = {r[1] for r in conn.execute("PRAGMA table_info(tool_call_log)")}
+            if tl_cols and "ts_game" not in tl_cols:
+                conn.execute(
+                    "ALTER TABLE tool_call_log ADD COLUMN ts_game REAL NOT NULL DEFAULT 0")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_conversation_npc_kind_turn"
                 " ON conversation(npc_id, kind, turn_no)")
