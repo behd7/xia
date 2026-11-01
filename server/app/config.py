@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     midterm_turns_per_entry: int = 10       # 每次中期总结覆盖的轮数
     midterm_capacity: int = 10              # 每 NPC 最多保留的中期条目数（FIFO）
     midterm_top_k: int = 1                  # 每轮最多注入的中期 summary 条数
-    midterm_min_score: float = 0.8          # 线索余弦相似度阈值（严格大于）
+    midterm_min_score: float = 0.55         # 线索余弦阈值；由 tools/calibrate_midterm.py 实测标定（严格大于）
     midterm_recall_cooldown_turns: int = 5  # 同一条中期的最短重投间隔（轮）
     midterm_query_message_limit: int = 12   # 召回 query 拼接的消息条数
     midterm_query_max_chars: int = 2400     # 召回 query 字数上限

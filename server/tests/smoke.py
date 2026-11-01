@@ -33,7 +33,7 @@ os.environ["MIDTERM_TURNS_PER_ENTRY"] = "10"
 # 用最小的中期上限在第 31 轮就验证 FIFO，不必跑到 110 轮。
 os.environ["MIDTERM_CAPACITY"] = "1"
 os.environ["MIDTERM_TOP_K"] = "3"
-os.environ["MIDTERM_MIN_SCORE"] = "0.45"
+os.environ["MIDTERM_MIN_SCORE"] = "0.55"
 os.environ["LONGTERM_TURN_INTERVAL"] = "36"
 
 # 把 server 根（含 `app` 包）放进 path，保证从任意 cwd 都能跑。

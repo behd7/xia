@@ -402,9 +402,9 @@ recency: 半衰期 = 3 游戏日
 
 检索分两步：Chroma 以输入 embedding 查询（`where {"npc_id": id}` 过滤）取**相似度 top20**，再在应用侧算三因子综合分重排取 **top 6** 送入 prompt——Chroma 只算向量相似度，recency/importance 加权必须自己排。历史对话最近 `DIALOGUE_WINDOW_SIZE`（默认 6）轮直接平铺进 prompt（不走检索）。Chroma 集合只索引 `memory` 表（event/reflection/gossip）。
 
-**中期线索检索**：RAG 用本轮原话的向量；中期召回另用一个「最近 12 条消息拼接（≤2400 字，`MIDTERM_QUERY_MESSAGE_LIMIT`/`MIDTERM_QUERY_MAX_CHARS`）」的长 query 向量，两者由**一次批量 `embed` 调用**产出。每条中期记忆的 3~6 条线索各有一个向量；取该条目最高分线索，命中判定是 `> MIDTERM_MIN_SCORE`（0.8，严格大于），每回合最多注入 `MIDTERM_TOP_K`（1）条，同一条在 `MIDTERM_RECALL_COOLDOWN_TURNS`（5）轮内不重复注入。命中后把**完整 summary** 放进 prompt 的独立「你想起一些旧事」板块，不塞进「你们最近的往来」。
+**中期线索检索**：RAG 用本轮原话的向量；中期召回另用一个「最近 12 条消息拼接（≤2400 字，`MIDTERM_QUERY_MESSAGE_LIMIT`/`MIDTERM_QUERY_MAX_CHARS`）」的长 query 向量，两者由**一次批量 `embed` 调用**产出。每条中期记忆的 3~6 条线索各有一个向量；取该条目最高分线索，命中判定是 `> MIDTERM_MIN_SCORE`（0.55，严格大于），每回合最多注入 `MIDTERM_TOP_K`（1）条，同一条在 `MIDTERM_RECALL_COOLDOWN_TURNS`（5）轮内不重复注入。命中后把**完整 summary** 放进 prompt 的独立「你想起一些旧事」板块，不塞进「你们最近的往来」。
 
-> 阈值 0.8 只在长 query 下成立：它来自同类实现里「2400 字 query 对短线索」的配合，换成玩家单句（20~40 字）会几乎不命中。要调就调 `MIDTERM_MIN_SCORE`，不要改 query 构造。
+> 阈值是**实测标定**的，不是抄来的：`server/tools/calibrate_midterm.py` 用真实对话后端 + `qwen3-embedding:0.6b` 跑了 6 组中期归档 × 相关/无关各 18 条探针，长拼接 query 下相关分中位数 0.66、无关 0.42；**0.8 时召回率 0**，0.50 时召回 83%/误报 11%，0.55 时召回 72%/误报 6%。换 embedding 模型或改 query 构造后必须重跑该脚本再定值。
 
 ### 6.5 好感度系统
 
@@ -920,7 +920,7 @@ Xia/
 | MIDTERM_TURNS_PER_ENTRY | 10 | 每次中期总结覆盖的轮数 |
 | MIDTERM_CAPACITY | 10 | 每 NPC 最多保留的中期条目数（FIFO） |
 | MIDTERM_TOP_K | 1 | 每轮最多注入的中期 summary 条数 |
-| MIDTERM_MIN_SCORE | 0.8 | 中期线索余弦相似度阈值（严格大于） |
+| MIDTERM_MIN_SCORE | 0.55 | 中期线索余弦阈值（严格大于；由 `server/tools/calibrate_midterm.py` 实测标定） |
 | MIDTERM_RECALL_COOLDOWN_TURNS | 5 | 同一条中期的最短重投间隔（轮） |
 | MIDTERM_QUERY_MESSAGE_LIMIT | 12 | 中期召回 query 拼接的消息条数 |
 | MIDTERM_QUERY_MAX_CHARS | 2400 | 中期召回 query 字数上限 |
@@ -957,7 +957,7 @@ Xia/
 - 对话延迟 2~5s（4B Q4 本地推理）→ 前端"…"指示 + 记忆检索与 prompt 组装并行；每 10 轮多一次中期总结与线索嵌入，每 36 轮多一次后台长期总结（不占前台等待）；
 - 长对话上下文膨胀 → 只平铺最近 `dialogue_window_size` 轮，长程信息靠中期 summary+线索、长期记忆表与关系摘要承载；
 - 中期与长期都在 SQLite → 重启不丢；长期总结后台异步，进程退出时**排队中的任务**可能丢一批，但游标未推进，重启后同一区间会自动重来；
-- **中期阈值 0.8 的命中率** → 0.8 只在「长 query（12 条消息拼接）+ 线索用词高度重合」下成立；短句 query 几乎不命中。要调就调 `MIDTERM_MIN_SCORE`（改配置，不改代码），并先看 debug/trace 里的命中分数；
+- **中期阈值依赖 embedding 模型** → 0.55 是用 `qwen3-embedding:0.6b` 实测出来的（0.8 时召回率为 0）；换模型、改线索 prompt 或改 query 构造后，必须重跑 `server/tools/calibrate_midterm.py` 再定值，别拍脑袋；
 - **原文永久保留** → `conversation` 的 `kind='turn'` 行不再删除，1000 轮约 300KB/NPC；将来清理只能删「`turn_no <= last_longterm_turn` 且 `kind='turn'`」，不要动未归档区间；
 - **长期只写不读** → `longterm` 集合没有查询方，索引写错不会立刻暴露；debug 端点（`longterm_indexed`）与 `reconcile` 分集合校验是唯一的两道对账；
 - 线索匹配质量依赖 4B 模型 → `MIDTERM_MIN_SCORE`/`MIDTERM_TOP_K` 先给默认值，实测调；中期兜底 `clues=[]` 时该条暂不可检索；

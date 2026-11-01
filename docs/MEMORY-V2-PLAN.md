@@ -22,7 +22,7 @@
 |---|---|---|
 | 1 | **总结后不删原文** | `conversation` 的 `kind='turn'` 行永久保留；被中期总结覆盖的轮通过 `turn_no > last_midterm_turn` **移出窗口**（不再进 prompt），但长期总结与复盘仍可读。运行期只有两类 `DELETE`：generation 失效时丢弃刚插入的那一轮、`new_game` 清 `kind='midterm'` 的派生摘要行；**原文永不删除** |
 | 2 | **长期只写不读** | v2 只做「生成 + 入库 + 建向量索引」，没有召回路径；读路径与它的节流参数整体推迟到 P5 |
-| 3 | **中期阈值 0.8** | `MIDTERM_MIN_SCORE=0.8`，命中判定 `score > 0.8`（严格大于）。为使 0.8 可成立，召回 query **必须是长拼接**（最近 12 条消息、≤2400 字），不能是玩家单句 |
+| 3 | **中期阈值先定 0.8，实测后改 0.55** | 命中判定 `score > 阈值`（严格大于）。为使阈值可成立，召回 query **必须是长拼接**（最近 12 条消息、≤2400 字），不能是玩家单句。实测见 §12：0.8 下召回率 0，最终落地 `MIDTERM_MIN_SCORE=0.55` |
 | 4 | **原地动作** | 工具集不含移动/跟随/带路；NPC 位置仍由日程确定性函数决定（架构约束 #2 不动） |
 | 5 | **`reply` 允许为空** | 一个回合可以只行动或沉默；`done` 增补 `acts` 供客户端渲染动作气泡 |
 | 6 | **长期间隔 36** | 与现有 `LONGTERM_TURN_INTERVAL` 和 MaiBot 一致；与中期 10 条一档不要求整除，重叠用 `turn_range` 精确表达 |
@@ -119,7 +119,7 @@ score = max(dot(midterm_qvec, cue_vec) for cue_vec in entry.vectors)
 规则：
 
 - 每条中期取**最高分线索**作为该条分数（不要平均——一条强线索就够）。
-- `score > MIDTERM_MIN_SCORE`（0.8）才算命中；只取分数最高的一条（`MIDTERM_TOP_K=1`）。
+- `score > MIDTERM_MIN_SCORE`（实测落地 0.55）才算命中；只取分数最高的一条（`MIDTERM_TOP_K=1`）。
 - **冷却去重**：`MemoryStore._recalled_at[npc_id][midterm_id] = turn_no`，`turn_no - 上次 < MIDTERM_RECALL_COOLDOWN_TURNS(5)` 就跳过该条。这是 MaiBot「已注入身份去重」的等价物；**不设「历史累计最多 N 条」配额**（那会把功能在第 N 次命中后永久关掉）。
 - 注入：prompt 现有板块「你想起一些旧事（只作参考，不要逐字复述）」，一条 summary，≤120 字。
 - 未命中：整块不出现，不留空行。
@@ -270,7 +270,7 @@ conversation_window_capacity: int = 20   # 10 -> 20（只影响窗口水位与�
 midterm_turns_per_entry: int = 10        # 新：每次中期总结的轮数
 midterm_capacity: int = 10               # 不变
 midterm_top_k: int = 1                   # 3 -> 1
-midterm_min_score: float = 0.8           # 0.45 -> 0.8（决断 3）
+midterm_min_score: float = 0.55          # 实测标定（见 §12），0.8 时召回率为 0
 midterm_recall_cooldown_turns: int = 5   # 新：同一条中期的最短重投间隔
 midterm_query_message_limit: int = 12    # 新：召回 query 拼接的消息条数
 midterm_query_max_chars: int = 2400      # 新：召回 query 字数上限
@@ -320,7 +320,7 @@ P0 实施时同步注释段（`DIALOGUE_WINDOW_SIZE` / `CONVERSATION_WINDOW_CAPA
 
 - **P0 账本地基（已实施）**：`conversation.kind/turn_no`、`npc_state` 三游标、`longterm_memory` 补列、索引与回填、窗口查询改子查询、删掉运行期的窗口删除（只保留 generation 失效丢弃与本轮新局清理）、debug 暴露游标。
   - 验收：现有冒烟全绿（窗口断言改为「不做删除，只移出窗口」）；老库能启动、游标回填正确（已用旧库夹具手验）。
-- **P1 中期回想（已实施）**：中期条目入库（`kind='midterm'`）、双向量嵌入、`midterm_query` 长拼接、阈值 0.8 + 严格大于、`top_k=1`、冷却去重、prompt 板块。
+- **P1 中期回想（已实施）**：中期条目入库（`kind='midterm'`）、双向量嵌入、`midterm_query` 长拼接、阈值严格大于（实测落地 0.55，见 §12）、`top_k=1`、冷却去重、prompt 板块。
   - 验收：§11 的 A/B 两组断言。
 - **P2 长期归档（已实施）**：worker 改从 DB 读、`longterm_memory` 写 `turn_range`、Chroma `longterm` 集合与分集合 `reconcile`、游标推进。
   - 验收：§11 的 C/D 组；重启后 `longterm` 与中期条目都仍在、长期最近那条已在 Chroma 里。
@@ -332,7 +332,7 @@ P0 实施时同步注释段（`DIALOGUE_WINDOW_SIZE` / `CONVERSATION_WINDOW_CAPA
 
 ## 11. 冒烟断言（`server/tests/smoke.py`）
 
-环境固定：`CONVERSATION_WINDOW_CAPACITY=20`、`MIDTERM_CAPACITY=2`、`MIDTERM_TOP_K=1`、`MIDTERM_MIN_SCORE=0.8`、`LONGTERM_TURN_INTERVAL=36`、`MIDTERM_RECALL_COOLDOWN_TURNS=5`。
+环境固定：`CONVERSATION_WINDOW_CAPACITY=20`、`MIDTERM_CAPACITY=1`、`MIDTERM_TOP_K=1`、`MIDTERM_MIN_SCORE=0.55`、`LONGTERM_TURN_INTERVAL=36`、`MIDTERM_RECALL_COOLDOWN_TURNS=5`。
 
 **A. 窗口 21 → 中期条目入库、原文不删**
 - 对 NPC 7 连说 21 轮。
@@ -372,7 +372,22 @@ P0 实施时同步注释段（`DIALOGUE_WINDOW_SIZE` / `CONVERSATION_WINDOW_CAPA
 
 ## 12. 边界与已知取舍
 
-- **0.8 命中率是最大风险**。0.8 只在「长 query（12 条拼接）+ 线索用词高度重合」时成立；短句 query 几乎不会命中。P1 必须打印实际命中分数分布（stub 与真实 Ollama 各一次），若真实对话中连续 20 轮零命中，把 `MIDTERM_MIN_SCORE` 调到 0.55~0.65（改配置即可，不改代码），并回写本文件。
+- **中期阈值必须实测，不能照抄**。`server/tools/calibrate_midterm.py` 用**真实对话后端 + 真实嵌入**打 6 组中期归档、每组 3 条相关 + 3 条无关探针，输出余弦分布与阈值扫描（recall / FPR / Youden J）。2026-11-01 的实测（`deepseek-flash` 生成线索 + `qwen3-embedding:0.6b` 嵌入，n=18/18）：
+
+  | τ | 召回率 | 误报率 | J |
+  |---|---|---|---|
+  | 0.40 | 1.00 | 0.50 | +0.50 |
+  | 0.45 | 0.83 | 0.17 | +0.67 |
+  | 0.50 | 0.83 | 0.11 | +0.72 |
+  | **0.55** | **0.72** | **0.06** | **+0.67** |
+  | 0.60 | 0.61 | 0.06 | +0.56 |
+  | 0.65 | 0.44 | 0.00 | +0.44 |
+  | 0.70 | 0.17 | 0.00 | +0.17 |
+  | 0.80 | **0.00** | 0.00 | 0.00 |
+
+  分布：长拼接 query 下相关分中位数 0.66（min 0.40 / max 0.77），无关分中位数 0.42（min 0.24 / max 0.64）。**0.8 时召不回任何一条**——这不是"阈值偏高"，是功能完全关闭。落地取 0.55（召回 72% / 误报 6%）；偏好召回可降到 0.50（83% / 11%），偏好精度可用 0.65（44% / 0%）。
+  另一个被数据推翻的预判：**单句 query 并不比长拼接好**（最佳 J 只有 +0.56，且高分区靠的是近乎逐字复述），长拼接的分布更紧、更稳，所以 query 构造保持不变。
+  改 embedding 模型 / 线索 prompt / query 构造后必须重跑该脚本再定值。
 - **中期只覆盖最近 100 轮**（10 条 × 10 轮），更早的内容只有长期记忆且 v2 不读。
 - **长期只写不读**：`longterm` 集合没有查询方，索引写错不会立刻暴露 → debug 端点必须同时暴露 `longterm_memory` 行数与 `longterm` 集合 count，靠人工对账；`reconcile` 分集合校验是第二道保险。
 - **原文永久保留**：`conversation` 会随轮数增长（一轮约 300 字节，1000 轮 ≈ 300KB/NPC）。若将来需要清理，只能删「`turn_no <= last_longterm_turn` 且 `kind='turn'`」的行，不要动未归档区间。
@@ -387,7 +402,6 @@ P0 实施时同步注释段（`DIALOGUE_WINDOW_SIZE` / `CONVERSATION_WINDOW_CAPA
 1. 中期板块与将来长期板块的文案是否合并成一个「你隐约记得的事」多子块——等 P5 有第二块再定。
 2. 人物画像的字段与模板（P4 再细化：给物/收物/教招/拒绝的次数、首次与最近时间）。
 3. 客户端动作气泡的呈现（逐条气泡 vs 一条合并系统行）。
-4. 中期阈值 0.8 的实测校准（见 §12 第一条）。
 
 ## 14. 与 MaiBot 的逐项对照（照搬 / 改造 / 不搬）
 
