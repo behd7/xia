@@ -1,0 +1,1449 @@
+{
+  "schema": 1,
+  "builder": "tools/build_hd2d_environment.py",
+  "builder_sha256": "1b55de94813ba6a0eb521c47a122c5cf68a46c5b73ad768d3c672e5c68f7289a",
+  "shell_builder_sha256": "b86109647e5dca4bd8f9d09e12d97bd7f9bddf5e4141338c6288c96283e1a27d",
+  "logical_scale": 0.0625,
+  "materials": {
+    "plaster": {
+      "texture": "materials/plaster",
+      "tint": [
+        1,
+        1,
+        1
+      ]
+    },
+    "wood": {
+      "texture": "materials/timber",
+      "tint": [
+        0.94,
+        0.94,
+        0.94
+      ]
+    },
+    "wood_light": {
+      "texture": "materials/joinery",
+      "tint": [
+        0.88,
+        0.87,
+        0.83
+      ]
+    },
+    "wood_recess": {
+      "texture": "materials/door_wood",
+      "tint": [
+        0.68,
+        0.7,
+        0.7
+      ]
+    },
+    "paper": {
+      "texture": "materials/window_paper",
+      "tint": [
+        0.78,
+        0.8,
+        0.77
+      ]
+    },
+    "bronze": {
+      "texture": "materials/stone",
+      "tint": [
+        0.65,
+        0.57,
+        0.39
+      ],
+      "flat_color": "958062",
+      "color_mix": 0.8
+    },
+    "roof": {
+      "texture": "materials/roof",
+      "tint": [
+        0.67,
+        0.74,
+        0.77
+      ]
+    },
+    "stone": {
+      "texture": "materials/stone",
+      "tint": [
+        0.72,
+        0.73,
+        0.69
+      ]
+    },
+    "iron": {
+      "texture": "materials/stone",
+      "tint": [
+        0.32,
+        0.36,
+        0.37
+      ]
+    },
+    "rock": {
+      "texture": "materials/rock",
+      "tint": [
+        0.86,
+        0.86,
+        0.82
+      ]
+    },
+    "earth": {
+      "texture": "materials/earth",
+      "tint": [
+        0.92,
+        0.88,
+        0.72
+      ]
+    },
+    "cloth": {
+      "texture": "materials/window_paper",
+      "tint": [
+        0.48,
+        0.58,
+        0.57
+      ]
+    },
+    "straw": {
+      "texture": "materials/wood",
+      "tint": [
+        0.72,
+        0.66,
+        0.42
+      ]
+    },
+    "foliage": {
+      "texture": "materials/pine_needles",
+      "tint": [
+        0.8,
+        0.94,
+        0.79
+      ],
+      "foliage": true
+    },
+    "bark": {
+      "texture": "materials/bark",
+      "tint": [
+        0.85,
+        0.83,
+        0.76
+      ]
+    },
+    "flower": {
+      "texture": "materials/window_paper",
+      "tint": [
+        0.83,
+        0.6,
+        0.6
+      ]
+    },
+    "moss": {
+      "texture": "materials/stone",
+      "tint": [
+        0.56,
+        0.64,
+        0.45
+      ]
+    },
+    "water": {
+      "texture": "materials/stone",
+      "tint": [
+        0.29,
+        0.48,
+        0.48
+      ],
+      "water": true
+    }
+  },
+  "texture_sha256": {
+    "materials/plaster": "ae0f953ab301c8ef8149b65392b1f31cd78addb0afe7f795d709a6b47a9f7938",
+    "materials/timber": "27266088d8b5659a60f4cf24560c2b40348bec402c99153a85da3c0c38c6c250",
+    "materials/joinery": "8cd043e29406dea26fbbdfc14cf6498014165c61353656b83d16f1468d4c786a",
+    "materials/door_wood": "49f8955bd2141b93476535e3b2b1227871daf6a69cadf07016c61c015f1b4d19",
+    "materials/window_paper": "fa23e233463fd0598de1af11dc8ee590c38d5639a6d7a65d37347219613c31d2",
+    "materials/stone": "5ca1914ab3ede472fd9409a30e19cbcd37ae1a5f8a9c3604b7b6fd1fe29a7cfc",
+    "materials/roof": "ff279770436137015562217db5502cbae732820c0da40487b3080cd0096db4ae",
+    "materials/rock": "50b65ce1a9b372ba577ae688de7200495cd96aa861bbac389b2e2f154625f577",
+    "materials/earth": "d97390909001b3bbb8cfe113f05108e4feb29272f4803788460ce8493642b111",
+    "materials/wood": "c661c4b4c44d80efb5871de8a5fc40d56b1e2f75c95e31de1f3dd20970fefa44",
+    "materials/pine_needles": "6c49cdb120dbfddb63d9fe26f35bbff847f78f3995a70e0f75ae7558978c63c1",
+    "materials/bark": "4f6bed1b73a077070dd7bcf146efa2070a0cf3e1bd1ba3da4acd368e7942381b"
+  },
+  "prop_keys": [
+    "pine",
+    "dead_tree",
+    "shrub",
+    "bramble",
+    "boulder",
+    "outcrop",
+    "well",
+    "fence",
+    "table",
+    "rack",
+    "lantern",
+    "bale",
+    "barrel",
+    "herbs",
+    "dummy",
+    "mat",
+    "pine2",
+    "cypress",
+    "bare_tree",
+    "dry_grass",
+    "mossy_boulder",
+    "slab",
+    "lichen_rock",
+    "log",
+    "stump",
+    "bamboo",
+    "thorn_bush",
+    "flower_shrub",
+    "puddle",
+    "cairn",
+    "wheel",
+    "firewood"
+  ],
+  "assets": {
+    "building/jianyang": {
+      "path": "buildings/jianyang.glb",
+      "geometry_sha256": "433e21d9fd16d6ff987975f83d93191952075748dc82361761d2dd67c0129812",
+      "mesh_count": 1,
+      "surface_count": 9,
+      "triangles": 1646,
+      "components": {
+        "jianyang_structure": {
+          "materials": [
+            "stone",
+            "plaster",
+            "paper",
+            "wood",
+            "wood_light",
+            "wood_recess",
+            "bronze",
+            "roof",
+            "iron"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -5.625,
+          5.625
+        ],
+        [
+          -3.75,
+          3.75
+        ],
+        [
+          0.0,
+          9.1875
+        ]
+      ],
+      "footprint": [
+        -80.0,
+        -48.0,
+        160,
+        96
+      ],
+      "title": "剑阳道馆",
+      "lanterns": [
+        [
+          -66.0,
+          56.0,
+          62
+        ],
+        [
+          66.0,
+          56.0,
+          62
+        ]
+      ]
+    },
+    "building/xuantie": {
+      "path": "buildings/xuantie.glb",
+      "geometry_sha256": "f12bd02cdd6d11d904c9f14acdfbfd70505632eb311fec158ef3b1461af305cf",
+      "mesh_count": 1,
+      "surface_count": 9,
+      "triangles": 1734,
+      "components": {
+        "xuantie_structure": {
+          "materials": [
+            "stone",
+            "plaster",
+            "paper",
+            "wood",
+            "wood_light",
+            "wood_recess",
+            "bronze",
+            "roof",
+            "iron"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -5.625,
+          5.625
+        ],
+        [
+          -3.75,
+          3.75
+        ],
+        [
+          0.0,
+          8.5625
+        ]
+      ],
+      "footprint": [
+        -80.0,
+        -48.0,
+        160,
+        96
+      ],
+      "title": "玄铁堂",
+      "lanterns": [
+        [
+          -66.0,
+          56.0,
+          62
+        ],
+        [
+          66.0,
+          56.0,
+          62
+        ]
+      ]
+    },
+    "building/yanyu": {
+      "path": "buildings/yanyu.glb",
+      "geometry_sha256": "0fda2f4daa5fe4992487f9566a1817eeb87c057e63a5e1c6fe1b5f73a83aded6",
+      "mesh_count": 1,
+      "surface_count": 9,
+      "triangles": 1674,
+      "components": {
+        "yanyu_structure": {
+          "materials": [
+            "stone",
+            "plaster",
+            "paper",
+            "wood",
+            "wood_light",
+            "wood_recess",
+            "bronze",
+            "roof",
+            "cloth"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -5.625,
+          5.625
+        ],
+        [
+          -3.75,
+          3.75
+        ],
+        [
+          0.0,
+          8.1875
+        ]
+      ],
+      "footprint": [
+        -80.0,
+        -48.0,
+        160,
+        96
+      ],
+      "title": "烟雨小筑",
+      "lanterns": [
+        [
+          -66.0,
+          56.0,
+          62
+        ],
+        [
+          66.0,
+          56.0,
+          62
+        ]
+      ]
+    },
+    "building/clinic": {
+      "path": "buildings/clinic.glb",
+      "geometry_sha256": "64e94ee86e0b15e2d7955ebb0d379f71dc7d024a0286567a17aaad199b994c1c",
+      "mesh_count": 1,
+      "surface_count": 8,
+      "triangles": 1752,
+      "components": {
+        "clinic_structure": {
+          "materials": [
+            "stone",
+            "plaster",
+            "paper",
+            "wood",
+            "wood_light",
+            "wood_recess",
+            "bronze",
+            "roof"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -4.625,
+          4.625
+        ],
+        [
+          -3.75,
+          3.75
+        ],
+        [
+          0.0,
+          7.6875
+        ]
+      ],
+      "footprint": [
+        -64.0,
+        -48.0,
+        128,
+        96
+      ],
+      "title": "药铺",
+      "lanterns": []
+    },
+    "building/smith": {
+      "path": "buildings/smith.glb",
+      "geometry_sha256": "a4ef2c412f6c6adeb9bdb3d2e55246d7f11ab1a57dcc1fa7d6fa66fde44d2b42",
+      "mesh_count": 1,
+      "surface_count": 9,
+      "triangles": 1542,
+      "components": {
+        "smith_structure": {
+          "materials": [
+            "stone",
+            "plaster",
+            "paper",
+            "wood",
+            "wood_light",
+            "wood_recess",
+            "bronze",
+            "roof",
+            "iron"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -4.625,
+          4.625
+        ],
+        [
+          -3.75,
+          3.75
+        ],
+        [
+          0.0,
+          8.25
+        ]
+      ],
+      "footprint": [
+        -64.0,
+        -48.0,
+        128,
+        96
+      ],
+      "title": "铁匠铺",
+      "lanterns": []
+    },
+    "building/temple": {
+      "path": "buildings/temple.glb",
+      "geometry_sha256": "181536bca2827a41f299090bd0b16079593b5b8749fb0544cb1809734992eb00",
+      "mesh_count": 1,
+      "surface_count": 10,
+      "triangles": 1686,
+      "components": {
+        "temple_structure": {
+          "materials": [
+            "stone",
+            "plaster",
+            "paper",
+            "wood",
+            "wood_light",
+            "wood_recess",
+            "bronze",
+            "roof",
+            "bark",
+            "moss"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -5.625,
+          5.625
+        ],
+        [
+          -4.25,
+          4.25
+        ],
+        [
+          0.0,
+          8.8125
+        ]
+      ],
+      "footprint": [
+        -80.0,
+        -56.0,
+        160,
+        112
+      ],
+      "title": "破庙",
+      "lanterns": []
+    },
+    "prop/dead_tree": {
+      "path": "props/dead_tree.glb",
+      "geometry_sha256": "da4f2e35961cc4f4ed1a2f194c288fee80f68f4d32e630d02cb9d1ec02b55498",
+      "mesh_count": 1,
+      "surface_count": 1,
+      "triangles": 204,
+      "components": {
+        "dead_tree": {
+          "materials": [
+            "bark"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -1.6825029850006104,
+          1.465147852897644
+        ],
+        [
+          -0.5148231983184814,
+          0.5630073547363281
+        ],
+        [
+          -0.10081179440021515,
+          5.879940986633301
+        ]
+      ],
+      "index": 1
+    },
+    "prop/shrub": {
+      "path": "props/shrub.glb",
+      "geometry_sha256": "b0f15f4f1967ed0467d4713eb4245d638f9efe50d26809188e77ec9556fa44d9",
+      "mesh_count": 1,
+      "surface_count": 2,
+      "triangles": 228,
+      "components": {
+        "shrub": {
+          "materials": [
+            "foliage",
+            "bark"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.8244477044813537,
+          0.8286639737497586
+        ],
+        [
+          -0.6634772446950421,
+          0.6131431316935265
+        ],
+        [
+          0.0,
+          1.326
+        ]
+      ],
+      "index": 2
+    },
+    "prop/bramble": {
+      "path": "props/bramble.glb",
+      "geometry_sha256": "6c865dbf75ca8eaf1c3b34a46446844554d1244cdca7927b1d76a11167e0ad85",
+      "mesh_count": 1,
+      "surface_count": 2,
+      "triangles": 288,
+      "components": {
+        "bramble": {
+          "materials": [
+            "foliage",
+            "bark"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.8244477044813537,
+          0.8286639737497586
+        ],
+        [
+          -0.6634772446950421,
+          0.6131431316935265
+        ],
+        [
+          0.0,
+          1.326
+        ]
+      ],
+      "index": 3
+    },
+    "prop/boulder": {
+      "path": "props/boulder.glb",
+      "geometry_sha256": "d1fc141aaaa54ccd6e5c9d9ee43bc74af170370da7733aa182afbfa9641febe6",
+      "mesh_count": 1,
+      "surface_count": 1,
+      "triangles": 52,
+      "components": {
+        "boulder": {
+          "materials": [
+            "rock"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.8822570103572627,
+          0.9868474715755928
+        ],
+        [
+          -0.6909729542317212,
+          0.6543838333394799
+        ],
+        [
+          0.04749999999999999,
+          1.1637499999999998
+        ]
+      ],
+      "index": 4
+    },
+    "prop/outcrop": {
+      "path": "props/outcrop.glb",
+      "geometry_sha256": "1a87dbb52ab1cf1489ac2127993c59cfde48e9c49770cf85252df82464b0b219",
+      "mesh_count": 1,
+      "surface_count": 1,
+      "triangles": 52,
+      "components": {
+        "outcrop": {
+          "materials": [
+            "rock"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.8822570103572627,
+          0.9868474715755928
+        ],
+        [
+          -0.6909729542317212,
+          0.6543838333394799
+        ],
+        [
+          0.07750000000000001,
+          1.89875
+        ]
+      ],
+      "index": 5
+    },
+    "prop/well": {
+      "path": "props/well.glb",
+      "geometry_sha256": "a77b78a46a96c4a8296d718c18504234ca0df54b566767bea81e340f8ee65fa1",
+      "mesh_count": 1,
+      "surface_count": 8,
+      "triangles": 354,
+      "components": {
+        "well": {
+          "materials": [
+            "stone",
+            "wood_recess",
+            "water",
+            "wood",
+            "wood_light",
+            "straw",
+            "roof",
+            "plaster"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -1.5625,
+          1.5625
+        ],
+        [
+          -1.5,
+          1.5
+        ],
+        [
+          0.0,
+          4.9375
+        ]
+      ],
+      "index": 6
+    },
+    "prop/fence": {
+      "path": "props/fence.glb",
+      "geometry_sha256": "5e0de7f76911b490dea2ac54dd5d525ea292a3c0cb1a43050db883f32b203c71",
+      "mesh_count": 1,
+      "surface_count": 2,
+      "triangles": 180,
+      "components": {
+        "fence": {
+          "materials": [
+            "wood",
+            "wood_light"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -1.375,
+          1.375
+        ],
+        [
+          -0.125,
+          0.125
+        ],
+        [
+          0.0,
+          1.4375
+        ]
+      ],
+      "index": 7
+    },
+    "prop/table": {
+      "path": "props/table.glb",
+      "geometry_sha256": "40bbb5d1c9531a1eed8fac14c58c9f496b95f2ba67ab171350ceef27e233ae85",
+      "mesh_count": 1,
+      "surface_count": 3,
+      "triangles": 200,
+      "components": {
+        "table": {
+          "materials": [
+            "wood_light",
+            "wood",
+            "stone"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -1.0625,
+          1.0625
+        ],
+        [
+          -1.125,
+          1.125
+        ],
+        [
+          0.0,
+          1.65
+        ]
+      ],
+      "index": 8
+    },
+    "prop/rack": {
+      "path": "props/rack.glb",
+      "geometry_sha256": "d3fcc41ab7ef797d2ad364b5ebdd69821d06e18f40f32f784eac34e6746e1427",
+      "mesh_count": 1,
+      "surface_count": 3,
+      "triangles": 240,
+      "components": {
+        "rack": {
+          "materials": [
+            "wood",
+            "wood_light",
+            "iron"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -1.4375,
+          1.4375
+        ],
+        [
+          -0.5,
+          0.5
+        ],
+        [
+          0.0,
+          3.3125
+        ]
+      ],
+      "index": 9
+    },
+    "prop/bale": {
+      "path": "props/bale.glb",
+      "geometry_sha256": "2808a46f78a75391241bf9bfa27e6e01a80de287aff9f3fc6ad4ad10552d3e57",
+      "mesh_count": 1,
+      "surface_count": 2,
+      "triangles": 108,
+      "components": {
+        "bale": {
+          "materials": [
+            "straw",
+            "wood_recess"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.7721045246417941,
+          0.7142360604886767
+        ],
+        [
+          -0.5416149853327953,
+          0.6419598073663519
+        ],
+        [
+          0.0625,
+          1.3125
+        ]
+      ],
+      "index": 11
+    },
+    "prop/barrel": {
+      "path": "props/barrel.glb",
+      "geometry_sha256": "8315ad9eaa269cd6be6020043fd97f89fb6e4cde16b77e61d2935782271576f3",
+      "mesh_count": 1,
+      "surface_count": 2,
+      "triangles": 108,
+      "components": {
+        "barrel": {
+          "materials": [
+            "wood_light",
+            "iron"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.5646898150444031,
+          0.5646898150444031
+        ],
+        [
+          -0.59375,
+          0.59375
+        ],
+        [
+          0.0625,
+          1.375
+        ]
+      ],
+      "index": 12
+    },
+    "prop/herbs": {
+      "path": "props/herbs.glb",
+      "geometry_sha256": "b030489baf17c1c85fb29ac9663b890da699bff2817bfe77b09dec42faa75b77",
+      "mesh_count": 1,
+      "surface_count": 3,
+      "triangles": 180,
+      "components": {
+        "herbs": {
+          "materials": [
+            "wood",
+            "foliage",
+            "straw"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.875,
+          0.875
+        ],
+        [
+          -0.5625,
+          0.5625
+        ],
+        [
+          0.0,
+          0.6775
+        ]
+      ],
+      "index": 13
+    },
+    "prop/dummy": {
+      "path": "props/dummy.glb",
+      "geometry_sha256": "5e375a51049d6cc6049d158e49475cb63bc328a956882b7d62fdcf7396871969",
+      "mesh_count": 1,
+      "surface_count": 4,
+      "triangles": 168,
+      "components": {
+        "dummy": {
+          "materials": [
+            "wood",
+            "straw",
+            "wood_light",
+            "stone"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -1.3125,
+          1.3125
+        ],
+        [
+          -0.375,
+          0.3792003367933634
+        ],
+        [
+          0.0,
+          3.1425
+        ]
+      ],
+      "index": 14
+    },
+    "prop/mat": {
+      "path": "props/mat.glb",
+      "geometry_sha256": "d5a6375568262a61a2607c0cfe26493bc5a1f321208a834ddeadc4d8ff205e23",
+      "mesh_count": 1,
+      "surface_count": 2,
+      "triangles": 36,
+      "components": {
+        "mat": {
+          "materials": [
+            "straw",
+            "cloth"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -1.0625,
+          1.0625
+        ],
+        [
+          -0.6875,
+          0.6875
+        ],
+        [
+          0.0,
+          0.08125
+        ]
+      ],
+      "index": 15
+    },
+    "prop/cypress": {
+      "path": "props/cypress.glb",
+      "geometry_sha256": "1cc5852ce99d763bc0032b5407ffdd49c4829544246ca5dce94db061b3ba2ac7",
+      "mesh_count": 1,
+      "surface_count": 2,
+      "triangles": 388,
+      "components": {
+        "cypress": {
+          "materials": [
+            "bark",
+            "foliage"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.8570229168411585,
+          1.0427912989158172
+        ],
+        [
+          -0.8621059506426598,
+          0.7496135967753788
+        ],
+        [
+          -0.0061419145204126835,
+          6.59
+        ]
+      ],
+      "index": 17
+    },
+    "prop/bare_tree": {
+      "path": "props/bare_tree.glb",
+      "geometry_sha256": "aea41bbbda1609828fc8e024658bef07bc4f18c38f6fe335f7404384513bd4f4",
+      "mesh_count": 1,
+      "surface_count": 1,
+      "triangles": 204,
+      "components": {
+        "bare_tree": {
+          "materials": [
+            "bark"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -1.6825029850006104,
+          1.465147852897644
+        ],
+        [
+          -0.5148231983184814,
+          0.5630073547363281
+        ],
+        [
+          -0.10081179440021515,
+          5.879940986633301
+        ]
+      ],
+      "index": 18
+    },
+    "prop/dry_grass": {
+      "path": "props/dry_grass.glb",
+      "geometry_sha256": "c88ea42140e832508f1c917abf4fbdd9621e5c307cd7cc05512bb75424996ab3",
+      "mesh_count": 1,
+      "surface_count": 1,
+      "triangles": 108,
+      "components": {
+        "dry_grass": {
+          "materials": [
+            "straw"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.5046247839927673,
+          0.4794481098651886
+        ],
+        [
+          -0.3824999928474426,
+          0.3726910352706909
+        ],
+        [
+          -0.029353700578212738,
+          0.8784521222114563
+        ]
+      ],
+      "index": 19
+    },
+    "prop/mossy_boulder": {
+      "path": "props/mossy_boulder.glb",
+      "geometry_sha256": "95f2bbf1e558bb2e955e2e3f2bd31bf75f33b244650732e7bee7012187de0143",
+      "mesh_count": 1,
+      "surface_count": 2,
+      "triangles": 96,
+      "components": {
+        "mossy_boulder": {
+          "materials": [
+            "rock",
+            "moss"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.8888056888807954,
+          0.980141933669534
+        ],
+        [
+          -0.6743171768481747,
+          0.6387553714642895
+        ],
+        [
+          0.04749999999999999,
+          1.1637499999999998
+        ]
+      ],
+      "index": 20
+    },
+    "prop/slab": {
+      "path": "props/slab.glb",
+      "geometry_sha256": "a79f216c6ea75c3f3ac6043b64511027cbc9d88097cfdb8ee8a6acbb7c60bc11",
+      "mesh_count": 1,
+      "surface_count": 1,
+      "triangles": 52,
+      "components": {
+        "slab": {
+          "materials": [
+            "rock"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.8879312734148459,
+          0.824693759304928
+        ],
+        [
+          -0.641764714183781,
+          0.6777704865224299
+        ],
+        [
+          0.024999999999999967,
+          0.6125
+        ]
+      ],
+      "index": 21
+    },
+    "prop/lichen_rock": {
+      "path": "props/lichen_rock.glb",
+      "geometry_sha256": "6af26b72dfb14ec7e07a74334757fb655dca95bfdaa64e3ff5054bd8bf0f56e0",
+      "mesh_count": 1,
+      "surface_count": 2,
+      "triangles": 96,
+      "components": {
+        "lichen_rock": {
+          "materials": [
+            "rock",
+            "moss"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.8816960499822896,
+          0.8441007139366038
+        ],
+        [
+          -0.6138476504017769,
+          0.6365991816014659
+        ],
+        [
+          0.04749999999999999,
+          1.1637499999999998
+        ]
+      ],
+      "index": 22
+    },
+    "prop/log": {
+      "path": "props/log.glb",
+      "geometry_sha256": "a11abcc5b68719ca2e96cf07d836546801218f4201474a8b63c2e936ea46a3b9",
+      "mesh_count": 1,
+      "surface_count": 2,
+      "triangles": 48,
+      "components": {
+        "log": {
+          "materials": [
+            "bark",
+            "wood_light"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.8861535787582397,
+          0.893750011920929
+        ],
+        [
+          -0.3748008906841278,
+          0.28137338161468506
+        ],
+        [
+          -0.0546649694442749,
+          0.5546649694442749
+        ]
+      ],
+      "index": 23
+    },
+    "prop/stump": {
+      "path": "props/stump.glb",
+      "geometry_sha256": "fdacb64a9482eec0ae5c9ab74a3ec757b8c037d5f7bbe09c1c298118aa1e9780",
+      "mesh_count": 1,
+      "surface_count": 2,
+      "triangles": 104,
+      "components": {
+        "stump": {
+          "materials": [
+            "bark",
+            "wood_light"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.5744319558143616,
+          0.4870322644710541
+        ],
+        [
+          -0.4512808322906494,
+          0.5744319558143616
+        ],
+        [
+          -0.14886389672756195,
+          0.7811420559883118
+        ]
+      ],
+      "index": 24
+    },
+    "prop/bamboo": {
+      "path": "props/bamboo.glb",
+      "geometry_sha256": "b03308b751ce1ce74386ce9a914c15f9e7a1a4bd2568908829efa636b48181d1",
+      "mesh_count": 1,
+      "surface_count": 2,
+      "triangles": 756,
+      "components": {
+        "bamboo": {
+          "materials": [
+            "foliage",
+            "moss"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -1.5746253285931897,
+          1.6189921241763106
+        ],
+        [
+          -0.7289302060972528,
+          0.4136285271923108
+        ],
+        [
+          -0.0027979877777397633,
+          4.813905239105225
+        ]
+      ],
+      "index": 25
+    },
+    "prop/thorn_bush": {
+      "path": "props/thorn_bush.glb",
+      "geometry_sha256": "e9ac0078e598f38b40ec2f0172576a2f7696662e602d15aaa369ec21ff3b4b93",
+      "mesh_count": 1,
+      "surface_count": 2,
+      "triangles": 288,
+      "components": {
+        "thorn_bush": {
+          "materials": [
+            "foliage",
+            "bark"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.8244477044813537,
+          0.8286639737497586
+        ],
+        [
+          -0.6634772446950421,
+          0.6131431316935265
+        ],
+        [
+          0.0,
+          1.326
+        ]
+      ],
+      "index": 26
+    },
+    "prop/flower_shrub": {
+      "path": "props/flower_shrub.glb",
+      "geometry_sha256": "45e5cef337b930a7f260877625dca2395c92764df8d048d38412351cf5e33cde",
+      "mesh_count": 1,
+      "surface_count": 3,
+      "triangles": 372,
+      "components": {
+        "flower_shrub": {
+          "materials": [
+            "foliage",
+            "bark",
+            "flower"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.8244477044813537,
+          0.8286639737497586
+        ],
+        [
+          -0.6634772446950421,
+          0.6131431316935265
+        ],
+        [
+          0.0,
+          1.34
+        ]
+      ],
+      "index": 27
+    },
+    "prop/puddle": {
+      "path": "props/puddle.glb",
+      "geometry_sha256": "5943a6332bcf1edad2a0da062d52bd5c5fa65281d42a0e784ee6c3d388d84be1",
+      "mesh_count": 1,
+      "surface_count": 2,
+      "triangles": 112,
+      "components": {
+        "puddle": {
+          "materials": [
+            "water",
+            "moss"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.928088872373562,
+          0.9411081714815718
+        ],
+        [
+          -0.5514847174830025,
+          0.5963536378022929
+        ],
+        [
+          0.0049999999999999975,
+          0.1225
+        ]
+      ],
+      "index": 28
+    },
+    "prop/cairn": {
+      "path": "props/cairn.glb",
+      "geometry_sha256": "0d38d66db7d427798b819e821c96345d81f497c31bf05039b9f93a76c9759668",
+      "mesh_count": 1,
+      "surface_count": 1,
+      "triangles": 176,
+      "components": {
+        "cairn": {
+          "materials": [
+            "stone"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.6454732074741826,
+          0.669624916470361
+        ],
+        [
+          -0.3666705850905774,
+          0.3836982711892
+        ],
+        [
+          -0.013750000000000012,
+          1.335
+        ]
+      ],
+      "index": 29
+    },
+    "prop/wheel": {
+      "path": "props/wheel.glb",
+      "geometry_sha256": "64aba02cbe8cb31987ec621081be5f167999736154dfcbdebc03b7f29ead117c",
+      "mesh_count": 1,
+      "surface_count": 3,
+      "triangles": 292,
+      "components": {
+        "wheel": {
+          "materials": [
+            "wood",
+            "wood_light",
+            "iron"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.927331268787384,
+          0.927331268787384
+        ],
+        [
+          -0.1875,
+          0.1875
+        ],
+        [
+          -0.052331261336803436,
+          1.8023312091827393
+        ]
+      ],
+      "index": 30
+    },
+    "prop/firewood": {
+      "path": "props/firewood.glb",
+      "geometry_sha256": "543531f6483a12c4247e51474ec2c0d56aade50f95e17f8695b3651ce95d0894",
+      "mesh_count": 1,
+      "surface_count": 2,
+      "triangles": 288,
+      "components": {
+        "firewood": {
+          "materials": [
+            "bark",
+            "wood_light"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.8828074932098389,
+          0.893750011920929
+        ],
+        [
+          -0.6561106443405151,
+          0.5719613432884216
+        ],
+        [
+          0.03673452138900757,
+          0.8382654786109924
+        ]
+      ],
+      "index": 31
+    },
+    "prop/lantern_post": {
+      "path": "props/lantern_post.glb",
+      "geometry_sha256": "7cbb3f5123491b553ee92e9710cb8796406cae7d38ba2623b82343940a24ba0d",
+      "mesh_count": 1,
+      "surface_count": 3,
+      "triangles": 44,
+      "components": {
+        "lantern_post": {
+          "materials": [
+            "stone",
+            "wood",
+            "wood_light"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -0.3125,
+          0.75
+        ],
+        [
+          -0.3125,
+          0.3125
+        ],
+        [
+          0.0,
+          4.875
+        ]
+      ]
+    },
+    "town/gate": {
+      "path": "props/gate.glb",
+      "geometry_sha256": "9bb5828c75ae6b6c1c673699b17e83f2db1a36e5f12738256abed741c29fa21f",
+      "mesh_count": 1,
+      "surface_count": 6,
+      "triangles": 520,
+      "components": {
+        "gate": {
+          "materials": [
+            "stone",
+            "wood",
+            "wood_recess",
+            "wood_light",
+            "roof",
+            "plaster"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -3.6875,
+          3.6875
+        ],
+        [
+          -1.875,
+          1.875
+        ],
+        [
+          0.0,
+          8.6875
+        ]
+      ]
+    }
+  },
+  "shared": {
+    "prop/pine": "props/pine.glb",
+    "prop/pine2": "props/pine.glb",
+    "prop/lantern": "props/lantern.png"
+  },
+  "review": "P3 environment batch; original TownLayout owns gameplay; eight-way NPC/monster production is separate"
+}

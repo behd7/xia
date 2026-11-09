@@ -4,6 +4,10 @@ const UI = preload("res://scripts/ui_kit.gd")
 const ApiClient = preload("res://scripts/api.gd")
 const WorldScene = preload("res://scripts/town_world.gd")
 const MapView = preload("res://scripts/town_map.gd")
+const Projector = preload("res://scripts/hd2d/projection.gd")
+
+@export var hd2d_enabled := false
+var world_presenter: Control
 
 var api: Node
 var world: Node2D
@@ -55,6 +59,9 @@ var dialogue_affinity: int = -1
 var dialogue_footer: Control
 
 func _ready() -> void:
+	var requested_view := OS.get_environment("XIA_WORLD_VIEW")
+	if requested_view in ["hd2d", "2d"]:
+		hd2d_enabled = requested_view == "hd2d"
 	theme = UI.make_theme()
 	api = ApiClient.new()
 	api.name = "Api"
@@ -66,7 +73,7 @@ func _ready() -> void:
 	timer.timeout.connect(refresh)
 	add_child(timer)
 	timer.start()
-	_log("client ready")
+	_log("client ready; world=%s; renderer=%s" % ["hd2d" if hd2d_enabled else "2d", RenderingServer.get_current_rendering_method()])
 	refresh()
 
 func _bind_inputs() -> void:
@@ -97,8 +104,10 @@ func _vbox(parent: Node, gap: int = 10) -> VBoxContainer:
 	return v
 
 func _build_scene() -> void:
+	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var background := ColorRect.new()
 	background.color = Color("9cae81")
+	background.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(background)
 	world_view = Control.new()
@@ -112,7 +121,14 @@ func _build_scene() -> void:
 	world = WorldScene.new()
 	world.name = "Town"
 	world.ui_font = theme.default_font
+	world.render_2d = not hd2d_enabled
 	world_view.add_child(world)
+	if hd2d_enabled:
+		world_presenter = load("res://scenes/hd2d/world_presenter.tscn").instantiate()
+		world_presenter.name = "WorldPresenter"
+		world_view.add_child(world_presenter)
+		world_presenter.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		world_presenter.setup(world)
 	var top := _panel(self, Vector2.ZERO, Vector2(size.x, 86), Color("f3f0e7"))
 	top.name = "Header"
 	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
@@ -140,6 +156,9 @@ func _build_scene() -> void:
 	header.add_child(VSeparator.new())
 	connection_label = UI.label("○  正在连接", 13, UI.MUTED)
 	header.add_child(connection_label)
+	if hd2d_enabled:
+		header.add_child(UI.button("视角 C", func():
+			if modal == null and not busy: world_presenter.toggle_camera_panel()))
 	var settings_button := UI.button("设置", open_settings)
 	settings_button.name = "ConnectionSettings"
 	header.add_child(settings_button)
@@ -244,6 +263,8 @@ func _process(delta: float) -> void:
 	var direction := Vector2.ZERO
 	if modal == null and not busy and not player.is_empty() and battle.is_empty():
 		direction = Input.get_vector("move_left", "move_right", "move_up", "move_down")
+		if hd2d_enabled:
+			direction = Projector.camera_relative_direction(direction, world_presenter.view.yaw)
 		var step := direction * 150.0 * minf(delta, 0.04)
 		var next: Vector2 = world.actor_pos + Vector2(step.x, 0)
 		if world.can_walk(next):
@@ -253,23 +274,41 @@ func _process(delta: float) -> void:
 			world.actor_pos = next
 	world.moving = direction.length_squared() > 0
 	world.walk_time += delta if world.moving else 0.0
-	world.scale = Vector2.ONE * zoom
-	var target: Vector2 = (world_view.size * 0.5 - (world.actor_pos + Vector2(0, -68)) * zoom).round()
-	world.position = (world.position.lerp(target, minf(delta * 8, 1))).round() if camera_initialized else target
-	camera_initialized = true
-	world.queue_redraw()
 	minimap.actor_pos = world.actor_pos
 	minimap.queue_redraw()
-	region_label.text = world.region_name()
-	var near: Dictionary = world.nearby()
-	context_label.text = "E  ·  %s" % near.get("name", "交互") if not near.is_empty() else "沿石径漫步，近前按 E 交互"
+	var game_seconds := 12.0 * 3600.0
 	if not clock.is_empty():
 		var sec: float = float(clock.get("game_sec", 0)) + (Time.get_ticks_msec() / 1000.0 - clock_received) * float(clock.get("time_scale", 60))
 		var hour := int(sec / 3600) % 24
 		var periods := ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"]
 		time_label.text = "%s时  %02d:%02d · 第 %d 日" % [periods[int((hour + 1) / 2) % 12], hour, int(sec / 60) % 60, int(sec / 86400) + 1]
 		world.tick_schedule(sec, dialogue_slug)
+		game_seconds = sec
 		_check_greet()
+	region_label.text = world.region_name()
+	var near: Dictionary = world.nearby()
+	context_label.text = "E  ·  %s" % near.get("name", "交互") if not near.is_empty() else "沿石径漫步，近前按 E 交互"
+	if hd2d_enabled:
+		var target_key := "npc/" + dialogue_slug if not dialogue_slug.is_empty() else ""
+		if target_key.is_empty() and not battle.is_empty():
+			var enemy: Dictionary = battle.get("enemy", {})
+			var mob_key := "mob/" + str(enemy.get("id", ""))
+			if world_presenter.view.population.has(mob_key):
+				target_key = mob_key
+			else:
+				for npc: Dictionary in world.npcs:
+					if str(npc.get("npc_id", "")) == str(enemy.get("id", "")):
+						target_key = "npc/" + str(npc.slug)
+		if target_key.is_empty() and near.get("kind", "") == "npc":
+			target_key = "npc/" + str(near.id)
+		world_presenter.update(world, int(zoom), game_seconds, delta, target_key, modal != null or busy or not battle.is_empty())
+	else:
+		world.scale = Vector2.ONE * zoom
+		var target: Vector2 = (world_view.size * 0.5 - (world.actor_pos + Vector2(0, -68)) * zoom).round()
+		world.position = (world.position.lerp(target, minf(delta * 8, 1))).round() if camera_initialized else target
+		camera_initialized = true
+		# Keep the original per-frame NPC drawing while the player stands still.
+		world.canvas.queue_redraw()
 	if toast_label.visible and Time.get_ticks_msec() / 1000.0 > toast_until:
 		toast_label.hide()
 	if direction != Vector2.ZERO and encounter_cooldown <= 0:
@@ -316,11 +355,33 @@ func _mark_greeted(slug: String, affinity: int) -> void:
 			if affinity != 0:
 				npc["affinity"] = affinity
 
+func _input(event: InputEvent) -> void:
+	# LineEdit consumes Esc before _unhandled_key_input. Preserve IME cancellation,
+	# then let Main apply the same modal/busy/battle rules with any UI focus.
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE:
+		var focus := get_viewport().gui_get_focus_owner()
+		if (focus is LineEdit or focus is TextEdit) and focus.has_ime_text():
+			focus.cancel_ime()
+			get_viewport().set_input_as_handled()
+		else:
+			_unhandled_key_input(event)
+		return
+	# Release/失焦 must clear a drag even if a native panel consumes the event.
+	if world_presenter and event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_MIDDLE and not event.pressed:
+		world_presenter.camera_dragging = false
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_WINDOW_FOCUS_OUT and world_presenter:
+		world_presenter.camera_dragging = false
+
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not event is InputEventKey or not event.pressed or event.echo:
 		return
 	if event.keycode == KEY_ESCAPE:
-		close_modal()
+		if modal == null and world_presenter and world_presenter.camera_panel.visible:
+			world_presenter.camera_panel.hide()
+		else:
+			close_modal()
 		get_viewport().set_input_as_handled()
 		return
 	if modal != null or busy:
@@ -331,10 +392,17 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_K: open_skills()
 		KEY_M: open_map()
 		KEY_E: interact()
+		KEY_C:
+			if world_presenter: world_presenter.toggle_camera_panel()
+		KEY_HOME:
+			if world_presenter: world_presenter.reset_camera()
 
 func _unhandled_input(event: InputEvent) -> void:
-	if modal == null and event is InputEventMouseButton and event.pressed:
-		# Integer zoom keeps every art pixel on a whole screen pixel.
+	if world_presenter and world_presenter.handle_event(event, modal != null or busy or not battle.is_empty()):
+		get_viewport().set_input_as_handled()
+		return
+	if modal == null and event is InputEventMouseButton and event.pressed and world_view.get_global_rect().has_point(event.position):
+		# Both renderers retain the same 1×/2×/3× reference-depth scale.
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			zoom = minf(zoom + 1.0, 3.0)
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
@@ -520,6 +588,9 @@ func close_modal() -> void:
 func _new_modal(title: String, subtitle: String, kind: String, width: float = 780.0) -> VBoxContainer:
 	_remove_modal()
 	modal_kind = kind
+	if world_presenter:
+		world_presenter.camera_dragging = false
+		world_presenter.camera_panel.hide()
 	modal = Control.new()
 	modal.name = "Modal"
 	modal.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)

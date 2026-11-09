@@ -1,0 +1,11 @@
+[gd_resource type="ShaderMaterial" format=3]
+
+[ext_resource type="Shader" path="res://scripts/hd2d/shaders/actor.gdshader" id="1_mkbq1"]
+[ext_resource type="Texture2D" path="res://assets/hd2d/characters/hero.png" id="2_d0fv6"]
+
+[resource]
+resource_name = "actor_body"
+render_priority = 0
+shader = ExtResource("1_mkbq1")
+shader_parameter/albedo_texture = ExtResource("2_d0fv6")
+shader_parameter/unshaded = null

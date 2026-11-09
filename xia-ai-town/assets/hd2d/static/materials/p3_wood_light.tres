@@ -1,0 +1,23 @@
+[gd_resource type="ShaderMaterial" format=3]
+
+[ext_resource type="Shader" path="res://scripts/hd2d/shaders/scenery.gdshader" id="1"]
+[ext_resource type="Texture2D" path="res://assets/hd2d/materials/joinery.png" id="2"]
+
+[resource]
+resource_name = "p3_wood_light"
+render_priority = 0
+shader = ExtResource("1")
+shader_parameter/albedo_texture = ExtResource("2")
+shader_parameter/tint = Color(0.88, 0.87, 0.83, 1)
+shader_parameter/uv_scale = null
+shader_parameter/flat_color = null
+shader_parameter/color_mix = null
+shader_parameter/fade_residue = 0.01
+shader_parameter/upright = null
+shader_parameter/foliage_sway = null
+shader_parameter/volume_foliage = null
+shader_parameter/vertex_color = null
+shader_parameter/sway = null
+shader_parameter/hanging = null
+shader_parameter/glow = null
+shader_parameter/water_motion = null

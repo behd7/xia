@@ -1,0 +1,36 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/hd2d/environment.gd" id="1"]
+
+[sub_resource type="CameraAttributesPractical" id="Resource_1"]
+resource_local_to_scene = true
+dof_blur_far_distance = 115.0
+dof_blur_far_transition = 30.0
+dof_blur_amount = 0.06
+
+[sub_resource type="Environment" id="Resource_2"]
+resource_local_to_scene = true
+background_mode = 1
+background_color = Color(0.6156863, 0.6666667, 0.6509804, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.6392157, 0.7294118, 0.8156863, 1)
+ambient_light_energy = 0.34
+reflected_light_source = 1
+tonemap_mode = 2
+fog_light_color = Color(0.6784314, 0.72156864, 0.7058824, 1)
+fog_density = 0.00025
+
+[node name="Lighting" type="Node3D"]
+script = ExtResource("1")
+attributes = SubResource("Resource_1")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Resource_2")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.52991927, 0.56745493, -0.63022256, 0, 0.7431448, 0.6691306, 0.8480481, -0.3545852, 0.39380676, 0, 0, 0)
+shadow_enabled = true
+shadow_bias = 0.06
+shadow_normal_bias = 1.0
+directional_shadow_mode = 1
+directional_shadow_max_distance = 115.0

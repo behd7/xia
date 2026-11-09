@@ -1,0 +1,9 @@
+[gd_resource type="StandardMaterial3D" format=3]
+
+[ext_resource type="Texture2D" path="res://assets/hd2d/materials/road.png" id="1"]
+
+[resource]
+resource_name = "town_ground"
+albedo_color = Color(0.78039217, 0.7411765, 0.6431373, 1)
+albedo_texture = ExtResource("1")
+texture_filter = 2

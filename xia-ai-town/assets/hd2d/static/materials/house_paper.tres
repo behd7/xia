@@ -1,0 +1,23 @@
+[gd_resource type="ShaderMaterial" format=3]
+
+[ext_resource type="Shader" path="res://scripts/hd2d/shaders/scenery.gdshader" id="1"]
+[ext_resource type="Texture2D" path="res://assets/hd2d/materials/window_paper.png" id="2"]
+
+[resource]
+resource_name = "house_paper"
+render_priority = 0
+shader = ExtResource("1")
+shader_parameter/albedo_texture = ExtResource("2")
+shader_parameter/tint = Color(0.78, 0.8, 0.77, 1)
+shader_parameter/uv_scale = null
+shader_parameter/flat_color = null
+shader_parameter/color_mix = null
+shader_parameter/fade_residue = null
+shader_parameter/upright = null
+shader_parameter/foliage_sway = null
+shader_parameter/volume_foliage = null
+shader_parameter/vertex_color = null
+shader_parameter/sway = null
+shader_parameter/hanging = null
+shader_parameter/glow = null
+shader_parameter/water_motion = null

@@ -1,0 +1,156 @@
+{
+  "schema": 2,
+  "builder": "tools/build_hd2d_house.py",
+  "builder_sha256": "b86109647e5dca4bd8f9d09e12d97bd7f9bddf5e4141338c6288c96283e1a27d",
+  "geometry_sha256": "ca5179c587c2e032e43da612b83e3aecffd70b50ab259be36332dfec78f0037c",
+  "origin": "footprint center at ground; Godot X/right Y/up Z/map-y",
+  "logical_scale": 0.0625,
+  "footprint": [
+    -96,
+    -64,
+    192,
+    128
+  ],
+  "materials": {
+    "plaster": {
+      "texture": "materials/plaster",
+      "tint": [
+        1,
+        1,
+        1
+      ]
+    },
+    "wood": {
+      "texture": "materials/timber",
+      "tint": [
+        0.94,
+        0.94,
+        0.94
+      ]
+    },
+    "wood_light": {
+      "texture": "materials/joinery",
+      "tint": [
+        0.88,
+        0.87,
+        0.83
+      ]
+    },
+    "wood_recess": {
+      "texture": "materials/door_wood",
+      "tint": [
+        0.68,
+        0.7,
+        0.7
+      ]
+    },
+    "paper": {
+      "texture": "materials/window_paper",
+      "tint": [
+        0.78,
+        0.8,
+        0.77
+      ]
+    },
+    "bronze": {
+      "texture": "materials/stone",
+      "tint": [
+        0.65,
+        0.57,
+        0.39
+      ],
+      "flat_color": "958062",
+      "color_mix": 0.8
+    },
+    "roof": {
+      "texture": "materials/roof",
+      "tint": [
+        0.67,
+        0.74,
+        0.77
+      ]
+    },
+    "stone": {
+      "texture": "materials/stone",
+      "tint": [
+        0.72,
+        0.73,
+        0.69
+      ]
+    },
+    "sign": {
+      "texture": "components/sign",
+      "tint": [
+        1,
+        1,
+        1
+      ]
+    }
+  },
+  "texture_sha256": {
+    "materials/plaster": "ae0f953ab301c8ef8149b65392b1f31cd78addb0afe7f795d709a6b47a9f7938",
+    "materials/timber": "27266088d8b5659a60f4cf24560c2b40348bec402c99153a85da3c0c38c6c250",
+    "materials/joinery": "8cd043e29406dea26fbbdfc14cf6498014165c61353656b83d16f1468d4c786a",
+    "materials/door_wood": "49f8955bd2141b93476535e3b2b1227871daf6a69cadf07016c61c015f1b4d19",
+    "materials/window_paper": "fa23e233463fd0598de1af11dc8ee590c38d5639a6d7a65d37347219613c31d2",
+    "materials/stone": "5ca1914ab3ede472fd9409a30e19cbcd37ae1a5f8a9c3604b7b6fd1fe29a7cfc",
+    "materials/roof": "ff279770436137015562217db5502cbae732820c0da40487b3080cd0096db4ae",
+    "components/sign": "966637457c07492ceda6e78c94b970512035f4ab1e1055e8ce8e033c1bc84907"
+  },
+  "components": {
+    "structure": {
+      "group": "inn/structure",
+      "materials": [
+        "stone",
+        "plaster",
+        "wood_recess",
+        "wood",
+        "wood_light",
+        "paper",
+        "bronze",
+        "sign",
+        "roof"
+      ]
+    }
+  },
+  "mesh_count": 1,
+  "surface_count": 9,
+  "triangles": 3196,
+  "lanterns": [
+    {
+      "local": [
+        -34,
+        79,
+        77
+      ],
+      "size": [
+        18,
+        24
+      ],
+      "group": "inn/lantern/0"
+    },
+    {
+      "local": [
+        34,
+        79,
+        77
+      ],
+      "size": [
+        18,
+        24
+      ],
+      "group": "inn/lantern/1"
+    }
+  ],
+  "probes": {
+    "rear_roof": {
+      "local": [
+        -64,
+        115.8,
+        -70
+      ],
+      "group": "inn/structure"
+    }
+  },
+  "review": "Single P1 candidate; gameplay footprint unchanged; requires real GPU and user visual approval"
+}

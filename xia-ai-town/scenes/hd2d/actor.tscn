@@ -1,0 +1,42 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/hd2d/actors.gd" id="1"]
+[ext_resource type="Material" path="res://assets/hd2d/static/materials/actor_body.tres" id="2"]
+[ext_resource type="Texture2D" path="res://assets/hd2d/characters/hero.png" id="3"]
+[ext_resource type="ArrayMesh" path="res://assets/hd2d/static/shadows/pose_0.res" id="4"]
+[ext_resource type="Script" path="res://scripts/hd2d/actor_shadow.gd" id="5"]
+[ext_resource type="Shader" path="res://scripts/hd2d/shaders/contact_shadow.gdshader" id="6"]
+
+[sub_resource type="ShaderMaterial" id="Resource_1"]
+render_priority = 0
+shader = ExtResource("6")
+
+[sub_resource type="PlaneMesh" id="Resource_2"]
+size = Vector2(1.05, 0.78)
+
+[node name="Actor" type="Node3D"]
+script = ExtResource("1")
+
+[node name="Sprite" type="Sprite3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1.2690182, 0, 0, 0, 1, 0, 1.4276454, 0)
+material_override = ExtResource("2")
+cast_shadow = 0
+pixel_size = 0.03125
+billboard = 2
+shaded = true
+alpha_cut = 1
+texture_filter = 0
+texture = ExtResource("3")
+hframes = 10
+vframes = 8
+
+[node name="BodyShadow" type="MeshInstance3D" parent="."]
+cast_shadow = 3
+mesh = ExtResource("4")
+script = ExtResource("5")
+
+[node name="ContactShadow" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.012, 0)
+material_override = SubResource("Resource_1")
+cast_shadow = 0
+mesh = SubResource("Resource_2")

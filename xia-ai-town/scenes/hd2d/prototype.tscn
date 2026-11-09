@@ -1,0 +1,416 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/hd2d/prototype.gd" id="1"]
+[ext_resource type="PackedScene" path="res://scenes/hd2d/prototype_view.tscn" id="2"]
+[ext_resource type="Theme" path="res://assets/hd2d/static/ui_theme.tres" id="3"]
+[ext_resource type="StyleBox" path="res://assets/hd2d/static/panel_20.tres" id="4"]
+
+[node name="HD2DPrototype" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+theme = ExtResource("3")
+script = ExtResource("1")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0.9529412, 0.9411765, 0.8980392, 1)
+
+[node name="WorldArea" type="Control" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+offset_top = 86.0
+offset_bottom = -98.0
+clip_contents = true
+
+[node name="WorldContainer" type="SubViewportContainer" parent="WorldArea"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+stretch = true
+
+[node name="WorldViewport" type="SubViewport" parent="WorldArea/WorldContainer"]
+handle_input_locally = false
+own_world_3d = true
+positional_shadow_atlas_size = 1024
+gui_disable_input = true
+size = Vector2i(1440, 716)
+render_target_update_mode = 4
+
+[node name="TownView3D" parent="WorldArea/WorldContainer/WorldViewport" instance=ExtResource("2")]
+
+[node name="Overlay" type="Control" parent="WorldArea"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="HeroLabel" type="Label" parent="WorldArea/Overlay"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "无名客 · 样板"
+mouse_filter = 2
+theme_override_colors/font_color = Color(0.94509804, 0.91764706, 0.84313726, 1)
+theme_override_colors/font_shadow_color = Color(0.1254902, 0.2, 0.17254902, 1)
+theme_override_constants/shadow_offset_x = 1
+theme_override_constants/shadow_offset_y = 1
+
+[node name="TargetLabel" type="Label" parent="WorldArea/Overlay"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+text = "同角色实例 · 非真实NPC"
+mouse_filter = 2
+theme_override_colors/font_color = Color(0.94509804, 0.91764706, 0.84313726, 1)
+theme_override_colors/font_shadow_color = Color(0.1254902, 0.2, 0.17254902, 1)
+theme_override_constants/shadow_offset_x = 1
+theme_override_constants/shadow_offset_y = 1
+
+[node name="Title" type="Label" parent="."]
+layout_mode = 2
+theme_override_font_sizes/font_size = 25
+text = "侠 · 清溪客栈   /   HD-2D · P1 视觉样板"
+offset_left = 24.0
+offset_top = 12.0
+
+[node name="Caption" type="Label" parent="."]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "离线独立样板，不连接后端、不修改存档；尚未替换主游戏"
+theme_override_colors/font_color = Color(0.47058824, 0.5019608, 0.47058824, 1)
+offset_left = 24.0
+offset_top = 51.0
+
+[node name="Actions" type="HBoxContainer" parent="."]
+layout_mode = 0
+offset_left = 760.0
+offset_top = 22.0
+
+[node name="Zoom1" type="Button" parent="Actions"]
+custom_minimum_size = Vector2(0, 42)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "1×"
+
+[node name="Zoom2" type="Button" parent="Actions"]
+custom_minimum_size = Vector2(0, 42)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "2×"
+
+[node name="Zoom3" type="Button" parent="Actions"]
+custom_minimum_size = Vector2(0, 42)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "3×"
+
+[node name="Camera" type="Button" parent="Actions"]
+custom_minimum_size = Vector2(0, 42)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "视角"
+
+[node name="Time" type="Button" parent="Actions"]
+custom_minimum_size = Vector2(0, 42)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "日夜"
+
+[node name="Occlusion" type="Button" parent="Actions"]
+custom_minimum_size = Vector2(0, 42)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "局部虚化"
+
+[node name="TestPanel" type="Button" parent="Actions"]
+custom_minimum_size = Vector2(0, 42)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "测试面板"
+
+[node name="Footer" type="VBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 24.0
+offset_top = -88.0
+offset_right = -24.0
+grow_horizontal = 2
+grow_vertical = 0
+
+[node name="MovementHint" type="Label" parent="Footer"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+text = "WASD / 方向键 随镜头移步 · 滚轮 1/2/3× · O 局部虚化 · T 双目标 · L 日夜 · Q 画质 · F 后期 · R 回门口 · B 面板"
+
+[node name="CameraHint" type="Label" parent="Footer"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "中键拖动 / C 视角面板 · Home 复位 · J 俯角预设 · F1 门前 / F2 屋后 / F3 西侧 / F4 东侧 · F12 截图"
+theme_override_colors/font_color = Color(0.47058824, 0.5019608, 0.47058824, 1)
+
+[node name="Status" type="Label" parent="Footer"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = ""
+theme_override_colors/font_color = Color(0.47058824, 0.5019608, 0.47058824, 1)
+
+[node name="TestPanel" type="PanelContainer" parent="."]
+visible = false
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -230.0
+offset_top = -180.0
+offset_right = 230.0
+offset_bottom = 180.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = ExtResource("4")
+
+[node name="Content" type="VBoxContainer" parent="TestPanel"]
+layout_mode = 2
+
+[node name="Title" type="Label" parent="TestPanel/Content"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 22
+text = "原生中文 / 面板禁行测试"
+
+[node name="Hint" type="Label" parent="TestPanel/Content"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "这里只测试输入，不能提交对话或伪造结算。"
+
+[node name="Input" type="LineEdit" parent="TestPanel/Content"]
+layout_mode = 2
+placeholder_text = "请输入中文；Esc 关闭"
+
+[node name="Scroll" type="ScrollContainer" parent="TestPanel/Content"]
+custom_minimum_size = Vector2(0, 180)
+layout_mode = 2
+
+[node name="Lines" type="VBoxContainer" parent="TestPanel/Content/Scroll"]
+layout_mode = 2
+
+[node name="Line00" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 00"
+
+[node name="Line01" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 01"
+
+[node name="Line02" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 02"
+
+[node name="Line03" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 03"
+
+[node name="Line04" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 04"
+
+[node name="Line05" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 05"
+
+[node name="Line06" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 06"
+
+[node name="Line07" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 07"
+
+[node name="Line08" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 08"
+
+[node name="Line09" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 09"
+
+[node name="Line10" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 10"
+
+[node name="Line11" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 11"
+
+[node name="Line12" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 12"
+
+[node name="Line13" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 13"
+
+[node name="Line14" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 14"
+
+[node name="Line15" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 15"
+
+[node name="Line16" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 16"
+
+[node name="Line17" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 17"
+
+[node name="Line18" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 18"
+
+[node name="Line19" type="Label" parent="TestPanel/Content/Scroll/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "清溪山麓 · 长面板滚动测试 19"
+
+[node name="Close" type="Button" parent="TestPanel/Content"]
+custom_minimum_size = Vector2(0, 42)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "关闭"
+
+[node name="CameraPanel" type="PanelContainer" parent="."]
+visible = false
+layout_mode = 1
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -342.0
+offset_top = 98.0
+offset_right = -24.0
+grow_horizontal = 0
+
+[node name="Content" type="VBoxContainer" parent="CameraPanel"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Title" type="Label" parent="CameraPanel/Content"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 20
+text = "透视视角 · 仅样板"
+
+[node name="Readout" type="Label" parent="CameraPanel/Content"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+text = ""
+
+[node name="PitchLabel" type="Label" parent="CameraPanel/Content"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "高低俯角  30°—65°"
+theme_override_colors/font_color = Color(0.47058824, 0.5019608, 0.47058824, 1)
+
+[node name="PitchSlider" type="HSlider" parent="CameraPanel/Content"]
+custom_minimum_size = Vector2(280, 28)
+layout_mode = 2
+focus_mode = 0
+min_value = 30.0
+max_value = 65.0
+step = 0.5
+value = 38.0
+
+[node name="YawLabel" type="Label" parent="CameraPanel/Content"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "左右方位  −180°—180°"
+theme_override_colors/font_color = Color(0.47058824, 0.5019608, 0.47058824, 1)
+
+[node name="YawSlider" type="HSlider" parent="CameraPanel/Content"]
+custom_minimum_size = Vector2(280, 28)
+layout_mode = 2
+focus_mode = 0
+min_value = -180.0
+max_value = 180.0
+step = 1.0
+value = 30.0
+
+[node name="FovLabel" type="Label" parent="CameraPanel/Content"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "垂直视场角  30°—40°"
+theme_override_colors/font_color = Color(0.47058824, 0.5019608, 0.47058824, 1)
+
+[node name="FovSlider" type="HSlider" parent="CameraPanel/Content"]
+custom_minimum_size = Vector2(280, 28)
+layout_mode = 2
+focus_mode = 0
+min_value = 30.0
+max_value = 40.0
+step = 0.5
+value = 35.0
+
+[node name="Hint" type="Label" parent="CameraPanel/Content"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "中键旋转；WASD 始终相对镜头方向移动"
+theme_override_colors/font_color = Color(0.47058824, 0.5019608, 0.47058824, 1)
+
+[node name="Buttons" type="HBoxContainer" parent="CameraPanel/Content"]
+layout_mode = 2
+
+[node name="Reset" type="Button" parent="CameraPanel/Content/Buttons"]
+custom_minimum_size = Vector2(0, 42)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "视角复位"
+
+[node name="Close" type="Button" parent="CameraPanel/Content/Buttons"]
+custom_minimum_size = Vector2(0, 42)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "收起"
