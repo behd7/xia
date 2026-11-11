@@ -72,11 +72,11 @@ func hud_matches(data: Dictionary) -> void:
 	check(app.mp_bar.value == float(p.mp) and app.mp_bar.max_value == float(p.mp_max), "MP HUD synchronized")
 	check(app.gold_label.text.contains(str(int(p.gold))) and app.character_meta.text.contains(str(int(p.level))), "gold/level HUD synchronized")
 
-func escape() -> void:
+func escape(keep_focus: bool = false) -> void:
 	# Real Godot key dispatch reaches Control._unhandled_key_input; focus must not
 	# consume Esc in a LineEdit. WASD tests below likewise use Input.parse_input_event.
 	var focus: Control = root.gui_get_focus_owner()
-	if focus != null:
+	if focus != null and not keep_focus:
 		focus.release_focus()
 	var key := InputEventKey.new()
 	key.keycode = KEY_ESCAPE
@@ -126,6 +126,32 @@ func movement() -> void:
 	await escape()
 	check(app.modal == null, "Esc closes ordinary panel")
 
+func presentation() -> void:
+	check(app.hd2d_enabled == (OS.get_environment("XIA_WORLD_VIEW") == "hd2d"), "selected world presentation")
+	if not app.hd2d_enabled:
+		check(app.world.canvas != null, "legacy canvas initialized independently from state")
+		return
+	var presenter = app.world_presenter
+	var view = presenter.view
+	check(app.world.canvas == null and not app.world.render_2d, "HD-2D state never creates/bakes a legacy canvas")
+	check(view.full_map and view.population.size() == 7 + app.world.mobs.filter(func(m): return m.alive).size(), "all seven NPCs and live server mobs instantiated")
+	check(not app.world.can_walk(Vector2(512, 320)) and not app.world.can_walk(Vector2(1200, 410)), "full gameplay obstacles retained outside the P1 fixture")
+	check(view.hero.sprite.hframes == 10 and view.hero.sprite.vframes == 8, "approved eighty-frame player in real Main")
+	for npc: Dictionary in app.world.npcs:
+		var actor = view.population.get("npc/" + str(npc.slug))
+		var expected_sheet := "res://assets/hd2d/actors/%s.png" % str(npc.slug) if FileAccess.file_exists("res://assets/hd2d/actors/%s.png" % str(npc.slug)) else "res://assets/characters/%s.png" % str(npc.name)
+		check(actor != null and actor.logical_position.is_equal_approx(npc.pos) and actor.sheet.resource_path == expected_sheet, "NPC identity/position: " + str(npc.slug))
+	var font_size: int = app.character_name.get_theme_font_size("font_size")
+	for dimensions: Vector2i in [Vector2i(1100, 720), Vector2i(1920, 1080), Vector2i(1440, 900)]:
+		root.size = dimensions
+		await pause(0.1)
+		check(presenter.viewport.size == Vector2i(app.world_view.size), "native HD-2D framebuffer after resize: " + str(dimensions))
+		check(presenter.overlay.size == app.world_view.size and app.character_name.get_theme_font_size("font_size") == font_size, "overlay/HUD remains native after resize")
+	app.zoom = 3
+	await pause()
+	check(view.zoom == 3 and app.character_name.get_theme_font_size("font_size") == font_size, "world zoom leaves HUD unchanged")
+	app.zoom = 2
+
 func base() -> void:
 	check(app.player.is_empty() and app.modal_kind == "new_game", "empty database opens first-game form")
 	check(app.online and not app.clock.is_empty() and not app.world.mobs.is_empty(), "backend connection, clock and mobs loaded")
@@ -133,6 +159,15 @@ func base() -> void:
 	name_input.text = "联调侠客"
 	await click("踏入江湖")
 	check(app.modal == null and app.player.name == "联调侠客", "new-game callback creates character")
+	# Keep the actual native LineEdit focus: Esc must still reach Main.
+	app.open_dialogue("zhang_mantou")
+	await pause()
+	var input: LineEdit = app.modal.find_child("DialogueInput", true, false)
+	check(input.has_focus(), "dialogue native input owns keyboard focus")
+	if app.hd2d_enabled:
+		check(app.world_presenter.view.current_target == "npc/zhang_mantou", "dialogue binds the real current target")
+	await escape(true)
+	check(app.modal == null and app.dialogue_slug.is_empty(), "Esc closes focused dialogue and releases schedule freeze")
 	hud_matches(await state())
 	check(app.player.gold == 100 and app.player.level == 1, "new character default economy/level")
 	check(app.world_info.get("premise", []).size() == 4, "world premise loaded from game state")
@@ -341,6 +376,8 @@ func _run() -> void:
 	root.add_child(app)
 	await settle()
 	check(app.api.base_url == address, "API points only at isolated backend")
+	if mode == "base":
+		await presentation()
 	match mode:
 		"base": await base()
 		"advanced": await advanced()

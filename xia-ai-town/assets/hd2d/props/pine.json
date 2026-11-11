@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "builder": "tools/build_hd2d_tree.py",
+  "builder_sha256": "d2e0278626a2aefe842bdf5cde858bb69352ffae59c9926c1610b1a01149b6a4",
+  "geometry_sha256": "b4d4768353c4d9fc717e6f6f27bd3570c2e855d7f072302732a2ad44bee7977b",
+  "logical_scale": 0.0625,
+  "mesh_count": 2,
+  "surface_count": 2,
+  "triangles": 6336,
+  "materials": {
+    "bark": {
+      "texture": "materials/bark",
+      "tint": [
+        0.89,
+        0.9,
+        0.86
+      ]
+    },
+    "needles": {
+      "texture": "materials/pine_needles",
+      "tint": [
+        0.81,
+        0.87,
+        0.73
+      ]
+    }
+  },
+  "texture_sha256": {
+    "materials/bark": "4f6bed1b73a077070dd7bcf146efa2070a0cf3e1bd1ba3da4acd368e7942381b",
+    "materials/pine_needles": "6c49cdb120dbfddb63d9fe26f35bbff847f78f3995a70e0f75ae7558978c63c1"
+  },
+  "components": {
+    "trunk": {
+      "material": "bark",
+      "volume_foliage": false
+    },
+    "crown": {
+      "material": "needles",
+      "volume_foliage": true
+    }
+  },
+  "bough_count": 14,
+  "origin": "root foot; Godot X/right Y/up Z/map-y",
+  "review": "Single P1 rooted pine with closed bough volumes; no whole-tree cards; requires real GPU and visual approval"
+}

@@ -1,0 +1,11 @@
+[gd_resource type="StandardMaterial3D" format=3]
+
+[ext_resource type="Texture2D" path="res://assets/hd2d/materials/stone.png" id="1"]
+
+[resource]
+resource_name = "scenic_road_bed"
+vertex_color_use_as_albedo = true
+albedo_color = Color(0.39215687, 0.44313726, 0.40784314, 1)
+albedo_texture = ExtResource("1")
+roughness = 0.92
+texture_filter = 2

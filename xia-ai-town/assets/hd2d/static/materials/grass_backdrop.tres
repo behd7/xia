@@ -1,0 +1,9 @@
+[gd_resource type="StandardMaterial3D" format=3]
+
+[ext_resource type="Texture2D" path="res://assets/hd2d/materials/grass.png" id="1"]
+
+[resource]
+resource_name = "grass_backdrop"
+albedo_texture = ExtResource("1")
+uv1_scale = Vector3(60, 50, 1)
+texture_filter = 2

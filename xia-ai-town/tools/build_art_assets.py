@@ -385,7 +385,14 @@ def build_ui_panel(path: Path) -> Image.Image:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true", help="validate sources without writing")
+    parser.add_argument("--hd2d", action="store_true", help="build only the new P1 HD-2D assets")
+    parser.add_argument("--preview-dir", type=Path, help="HD-2D only: write review sheets outside assets/")
     args = parser.parse_args()
+    if args.hd2d:
+        from build_hd2d_assets import build
+        return build(ROOT, args.check, args.preview_dir)
+    if args.preview_dir:
+        parser.error("--preview-dir requires --hd2d")
 
     props_atlas = build_props()
     parts_atlas = build_parts("建筑.png", PART_CELL)

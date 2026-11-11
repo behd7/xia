@@ -143,3 +143,4 @@ static func suggest_non_excluded_port_from_output(text: String, start: int, span
 		if not advanced:
 			return p
 	return start
+

@@ -4,12 +4,13 @@
 Usage (from the repo root):
     server/.venv/bin/python xia-ai-town/tools/smoke_test.py
 Optional: GODOT_BIN=/path/to/godot. No requests go to port 8080.
-Only the two smoke_test files are added to the source tree. All runtime writes,
-logs, fixtures, copied project resources and user:// data live under TemporaryDirectory.
+Use --hd2d to exercise the same Main through its 3D presenter (headless logic).
+All runtime writes, logs, fixtures, copied resources and user:// data are disposable.
 """
 from __future__ import annotations
 
 import os
+import argparse
 from pathlib import Path
 import re
 import shutil
@@ -73,6 +74,12 @@ def fixture(db: Path, mode: str) -> None:
                 "UPDATE npc_state SET affinity=80 WHERE npc_id IN "
                 "(SELECT id FROM npc WHERE role='master' AND sect_id='jianyang')"
             )
+            # Make the deterministic greeting fixture eligible without changing
+            # production NPC rules or the saved game used by the client.
+            conn.execute(
+                "UPDATE npc_state SET affinity=80 WHERE npc_id IN "
+                "(SELECT id FROM npc WHERE name='张馒头')"
+            )
         elif mode == "defeat":
             # Enemy acts first and agi=0 makes dodge exactly zero. One hit must kill.
             conn.execute(
@@ -102,6 +109,9 @@ def stage_project(destination: Path) -> None:
 
 
 def run() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--hd2d', action='store_true', help='exercise the real Main with its HD-2D presenter (headless logic only)')
+    args = parser.parse_args()
     godot = shutil.which(os.environ.get("GODOT_BIN", "/usr/bin/godot"))
     if not godot:
         raise RuntimeError("Godot executable missing; set GODOT_BIN")
@@ -129,6 +139,7 @@ def run() -> int:
             "XDG_DATA_HOME": str(scratch / "data"),
             "XDG_CONFIG_HOME": str(scratch / "config"), "XDG_CACHE_HOME": str(scratch / "cache"),
             "XDG_STATE_HOME": str(scratch / "state"), "XIA_SMOKE_ROOT": str(scratch),
+            "XIA_WORLD_VIEW": "hd2d" if args.hd2d else "2d",
         })
         for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
             Path(env[key]).mkdir()

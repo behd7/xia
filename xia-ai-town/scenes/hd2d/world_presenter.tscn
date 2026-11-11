@@ -1,0 +1,121 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scripts/hd2d/world_presenter.gd" id="1"]
+[ext_resource type="PackedScene" path="res://scenes/hd2d/town_view.tscn" id="2"]
+[ext_resource type="Script" path="res://scripts/world_overlay.gd" id="3"]
+
+[node name="WorldPresenter" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("1")
+
+[node name="WorldContainer" type="SubViewportContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="WorldViewport" type="SubViewport" parent="WorldContainer"]
+handle_input_locally = false
+own_world_3d = true
+positional_shadow_atlas_size = 1024
+gui_disable_input = true
+size = Vector2i(1440, 716)
+render_target_update_mode = 4
+
+[node name="TownView3D" parent="WorldContainer/WorldViewport" instance=ExtResource("2")]
+
+[node name="WorldOverlay" type="Control" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("3")
+
+[node name="CameraPanel" type="PanelContainer" parent="."]
+visible = false
+custom_minimum_size = Vector2(360, 0)
+layout_mode = 0
+offset_left = 330.0
+offset_top = 24.0
+offset_right = 690.0
+offset_bottom = 24.0
+
+[node name="Content" type="VBoxContainer" parent="CameraPanel"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Title" type="Label" parent="CameraPanel/Content"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "行走视角"
+
+[node name="Readout" type="Label" parent="CameraPanel/Content"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.47058824, 0.5019608, 0.47058824, 1)
+theme_override_font_sizes/font_size = 13
+
+[node name="FovLabel" type="Label" parent="CameraPanel/Content"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "视野"
+
+[node name="FovSlider" type="HSlider" parent="CameraPanel/Content"]
+custom_minimum_size = Vector2(320, 24)
+layout_mode = 2
+focus_mode = 0
+min_value = 30.0
+max_value = 40.0
+step = 0.5
+value = 35.0
+
+[node name="PitchLabel" type="Label" parent="CameraPanel/Content"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "俯角"
+
+[node name="PitchSlider" type="HSlider" parent="CameraPanel/Content"]
+custom_minimum_size = Vector2(320, 24)
+layout_mode = 2
+focus_mode = 0
+min_value = 30.0
+max_value = 65.0
+step = 0.5
+value = 38.0
+
+[node name="YawLabel" type="Label" parent="CameraPanel/Content"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "方位"
+
+[node name="YawSlider" type="HSlider" parent="CameraPanel/Content"]
+custom_minimum_size = Vector2(320, 24)
+layout_mode = 2
+focus_mode = 0
+min_value = -180.0
+max_value = 180.0
+step = 0.5
+value = 30.0
+
+[node name="Reset" type="Button" parent="CameraPanel/Content"]
+custom_minimum_size = Vector2(0, 42)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "视角复位  Home"
+
+[node name="Hint" type="Label" parent="CameraPanel/Content"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.47058824, 0.5019608, 0.47058824, 1)
+theme_override_font_sizes/font_size = 12
+text = "中键拖动旋转 · C 收起"
