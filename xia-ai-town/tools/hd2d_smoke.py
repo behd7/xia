@@ -69,6 +69,7 @@ def run(argv: list[str] | None = None, *, private_display: dict | None = None,
     parser.add_argument('--display-driver', choices=['wayland','x11'], default='x11')
     parser.add_argument('--duration', type=float, default=0, help='0: interactive until window closes')
     parser.add_argument('--ime', action='store_true', help='opt-in real Rime composition/Esc check for --background --game; private input method only')
+    parser.add_argument('--scene-review', action='store_true', help='scene/HUD regression only; use --game, hides NPCs and mobs in disposable harness')
     parser.add_argument('--game', action='store_true', help='P2 real-client regression with a disposable backend; use --background')
     parser.add_argument('--baseline', action='store_true', help='original 2D world under the same P1 diagnostic HUD')
     parser.add_argument('--no-vsync', action='store_true', help='diagnose presentation stalls; caps at 120 FPS and records this separately')
@@ -86,6 +87,10 @@ def run(argv: list[str] | None = None, *, private_display: dict | None = None,
         parser.error('--yaw must be between -180 and 180')
     if not math.isfinite(args.fov) or not 30 <= args.fov <= 40:
         parser.error('--fov must be between 30 and 40')
+    if args.scene_review and not args.game:
+        parser.error('--scene-review requires --game')
+    if args.scene_review and args.ime:
+        parser.error('--scene-review excludes dialogue; run --game --ime separately')
     if args.ime and not args.game:
         parser.error('--ime requires --game')
     gpu_probe = args.probe or args.actor_probe or args.environment_probe

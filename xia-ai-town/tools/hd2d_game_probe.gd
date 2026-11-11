@@ -13,6 +13,10 @@ var last_sample := 0.0
 var frames: FileAccess
 var samples: FileAccess
 var finishing := false
+var scene_review := OS.get_environment("XIA_HD2D_SCENE_REVIEW") == "1"
+var review_light := 0
+const Layout = preload("res://scripts/hd2d/scenic_layout.gd")
+const CameraLimits = preload("res://scripts/hd2d/camera_limits.gd")
 
 class ProbeInput extends Node:
 	var probe
@@ -38,6 +42,7 @@ func _run() -> void:
 	root.size = Vector2i(1440, 900)
 	app = load("res://scenes/hd2d/game.tscn").instantiate()
 	root.add_child(app)
+	RenderingServer.viewport_set_measure_render_time(app.world_presenter.viewport.get_viewport_rid(), true)
 	var listener := ProbeInput.new()
 	listener.probe = self
 	root.add_child(listener)
@@ -54,6 +59,10 @@ func _drawn() -> void:
 func _process(_delta: float) -> bool:
 	if app == null or finishing or samples == null:
 		return false
+	if scene_review:
+		app.world.npcs.clear()
+		app.world.mobs.clear()
+		app.clock = {"game_sec": [43200.0, 64800.0, 79200.0][review_light], "time_scale": 0.0}
 	var now := Time.get_ticks_usec()
 	var seconds := (now - started) / 1000000.0
 	if seconds > 3:
@@ -124,7 +133,14 @@ func snapshot() -> Dictionary:
 		var input = app.modal.find_child("DialogueInput", true, false)
 		if input != null:
 			input_text = input.text
-	return {"sliders": sliders, "ime": DisplayServer.ime_get_text(), "input_text": input_text, "seconds": (Time.get_ticks_usec() - started) / 1000000.0, "position": [app.world.actor_pos.x, app.world.actor_pos.y],
+	var footprint := CameraLimits.ground_rect(view.camera, Vector2(view.get_viewport().size))
+	var hero_frame: Rect2 = view.hero.occlusion_rect(view.camera)
+	return {"camera_ground_enclosed": Layout.SCENERY_BOUNDS.grow(-31).encloses(footprint),
+		"hero_on_screen": Rect2(Vector2.ZERO, Vector2(view.get_viewport().size)).encloses(hero_frame),
+		"fog_enabled": view.lighting.environment.fog_enabled,
+		"sliders": sliders, "ime": DisplayServer.ime_get_text(), "input_text": input_text, "seconds": (Time.get_ticks_usec() - started) / 1000000.0, "position": [app.world.actor_pos.x, app.world.actor_pos.y],
+		"hero_height": view.hero.position.y, "ground_height": Layout.height_at(app.world.actor_pos) / 16.0,
+		"camera_depth": -view.camera.to_local(view.hero.global_position).z, "foreground_clip": view.foreground_clip_depth,
 		"zoom": app.zoom, "pitch": view.pitch, "yaw": view.yaw, "fov": view.fov, "actor_direction": view.hero.facing,
 		"camera_panel": app.world_presenter.camera_panel.visible, "occlusion_enabled": view.occlusion.enabled,
 		"scroll": app.modal.find_child("ContentScroll", true, false).scroll_vertical if app.modal != null else 0,
@@ -135,7 +151,9 @@ func snapshot() -> Dictionary:
 		"window": [root.size.x, root.size.y], "viewport": [view.get_viewport().size.x, view.get_viewport().size.y],
 		"rendered_frames": rendered_frames, "static_memory": Performance.get_monitor(Performance.MEMORY_STATIC),
 		"video_memory": Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED),
-		"draw_calls": Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)}
+		"draw_calls": Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
+		"gpu_ms": RenderingServer.viewport_get_measured_render_time_gpu(app.world_presenter.viewport.get_viewport_rid()),
+		"cpu_ms": RenderingServer.viewport_get_measured_render_time_cpu(app.world_presenter.viewport.get_viewport_rid())}
 
 func handle_key(key: Key) -> void:
 	if key == KEY_F12:
@@ -144,15 +162,39 @@ func handle_key(key: Key) -> void:
 	if app.modal != null or app.busy:
 		return
 	match key:
-		KEY_F1: app.world.actor_pos = Vector2(512, 422)
-		KEY_F2: app.world.actor_pos = Vector2(512, 240)
-		KEY_F3: app.world.actor_pos = Vector2(128, 375)
-		KEY_F4: app.world.actor_pos = Vector2(792, 440)
+		KEY_L:
+			if scene_review: review_light = (review_light + 1) % 3
+		KEY_0:
+			if scene_review: app.world.actor_pos = app._walkable_position(Layout.GATE_AT - Vector2(0, 44))
+		KEY_1:
+			if scene_review:
+				app.world.actor_pos = app._walkable_position(Vector2(8, 8))
+				app.zoom = 3
+				app.world_presenter.view.set_pitch(65)
+				app.world_presenter.view.set_yaw(30)
+		KEY_6:
+			if scene_review: app.world.actor_pos = app._walkable_position(Vector2(76, 76))
+		KEY_7:
+			if scene_review: app.world.actor_pos = app._walkable_position(Vector2(1524, 76))
+		KEY_8:
+			if scene_review: app.world.actor_pos = app._walkable_position(Vector2(76, 884))
+		KEY_9:
+			if scene_review: app.world.actor_pos = app._walkable_position(Vector2(1524, 884))
+		KEY_F1: app.world.actor_pos = Vector2(672, 604)
+		KEY_F2: app.world.actor_pos = Vector2(672, 412)
+		KEY_F3: app.world.actor_pos = Vector2(184, 502)
+		KEY_F4: app.world.actor_pos = Vector2(832, 624)
 		KEY_F5:
 			for npc: Dictionary in app.world.npcs:
 				if npc.slug == "zhang_mantou":
 					app.world.actor_pos = app._walkable_position(npc.pos + Vector2(0, 25))
 		KEY_F7: app.world_presenter.view.occlusion.enabled = not app.world_presenter.view.occlusion.enabled
+		KEY_F8:
+			if scene_review: app.world.actor_pos = Vector2(1304, 448)
+		KEY_F10:
+			if scene_review: app.world.actor_pos = Vector2(272, 232)
+		KEY_F11:
+			if scene_review: app.world.actor_pos = Vector2(1310, 768)
 		KEY_F9: app.world.show_bubble("zhang_mantou", "清溪路远，客官慢行。", 1.5)
 		KEY_F6:
 			for mob: Dictionary in app.world.mobs:
@@ -174,7 +216,7 @@ func finish() -> void:
 	var data := snapshot()
 	data.merge({"device": RenderingServer.get_video_adapter_name(), "backend": RenderingServer.get_current_rendering_method(),
 		"duration": data.seconds, "distance": distance, "input_events": input_events, "quality": app.world_presenter.view.quality,
-		"scope": "P2 real Main + disposable backend; SSE fixture replaces model only; NOT P5"})
+		"scope": "Scenic full Main + disposable backend; NPC/mob presentation excluded; NOT P5" if scene_review else "P2 real Main + disposable backend; SSE fixture replaces model only; NOT P5"})
 	var report := FileAccess.open(output.path_join("metrics.json"), FileAccess.WRITE)
 	report.store_string(JSON.stringify(data))
 	print("HD2D_GAME_DONE ", JSON.stringify(data))

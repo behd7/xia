@@ -22,6 +22,7 @@ var frame := -1
 var last_position := Vector2.ZERO
 var initialized := false
 var logical_position := Vector2.ZERO
+var scenic_terrain := false
 var moving := false
 var pitch := Projector.PITCH
 var yaw := 0.0
@@ -140,7 +141,7 @@ func sync(at: Vector2, delta: float, forced_direction: int = -1) -> void:
 		shadow_direction = Projector.camera_relative_direction(Vector2(-sin(facing*PI/4.0), cos(facing*PI/4.0)), yaw)
 	body_shadow.set_pose(walk_index, shadow_direction)
 	logical_position = at
-	position = Projector.point(at)
+	position = Projector.point(at, preload("res://scripts/hd2d/scenic_layout.gd").height_at(at) if scenic_terrain else 0.0)
 	last_position = at
 	initialized = true
 

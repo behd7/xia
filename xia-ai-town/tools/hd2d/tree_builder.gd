@@ -20,14 +20,14 @@ static func _material(scenery: Node3D, key: String, spec: Dictionary) -> ShaderM
 	scenery.materials[cache_key] = material
 	return material
 
-static func build(scenery: Node3D, at: Vector2, index: int) -> void:
+static func build(scenery: Node3D, at: Vector2, index: int, elevation: float = 0.0) -> void:
 	var group := StringName("prop/tree/%d" % index)
 	var data: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(ROOT+"props/pine.json"))
 	assert(data.schema == 1 and is_equal_approx(float(data.logical_scale), Projector.SCALE))
 	var source: PackedScene = load(ROOT+"props/pine.glb")
 	var tree := source.instantiate(PackedScene.GEN_EDIT_STATE_INSTANCE) as Node3D
 	tree.name = "松树%d_叶簇体积" % index
-	tree.position = Projector.point(at)
+	tree.position = Projector.point(at, elevation)
 	tree.rotation.y = deg_to_rad(index*43.0)
 	scenery.add_child(tree)
 	var parts := tree.find_children("*", "MeshInstance3D", true, false)

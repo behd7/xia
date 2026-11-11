@@ -50,25 +50,25 @@ static func screen_relative_direction(direction: Vector2, yaw: float) -> Vector2
 	var back := ground_back(yaw)
 	return Vector2(direction.dot(Vector2(side.x, side.z)), direction.dot(Vector2(back.x, back.z)))
 
-static func configure(camera: Camera3D, pixels: Vector2, zoom: int, focus: Vector2, pitch: float = PITCH, yaw: float = YAW, orthogonal: bool = false, fov: float = FOV, reference: Vector2 = Vector2.INF) -> void:
+static func configure(camera: Camera3D, pixels: Vector2, zoom: int, focus: Vector2, pitch: float = PITCH, yaw: float = YAW, orthogonal: bool = false, fov: float = FOV, reference: Vector2 = Vector2.INF, focus_height: float = 0.0, reference_height: float = 0.0) -> void:
 	camera.projection = Camera3D.PROJECTION_ORTHOGONAL if orthogonal else Camera3D.PROJECTION_PERSPECTIVE
 	camera.keep_aspect = Camera3D.KEEP_HEIGHT
 	camera.size = maxf(pixels.y, 1.0) * SCALE / zoom
 	camera.fov = clampf(fov, MIN_FOV, MAX_FOV)
 	camera.near = 0.1
 	camera.far = 240.0
-	var center := point(focus)
+	var center := point(focus, focus_height)
 	var unit := SCALE / zoom
 	var side := right(yaw)
 	var back := ground_back(yaw)
 	var elevation := deg_to_rad(pitch)
 	# Snap only the displayed camera, at the reference-depth pixel density.
 	# Perspective cannot put every depth on the same integer pixel grid.
-	center = side * snappedf(center.dot(side), unit) + back * (snappedf(center.dot(back) * sin(elevation), unit) / sin(elevation))
+	center = side * snappedf(center.dot(side), unit) + back * (snappedf(center.dot(back) * sin(elevation), unit) / sin(elevation)) + Vector3.UP * center.y
 	var toward_camera := Vector3.UP * sin(elevation) + back * cos(elevation)
 	var distance := 100.0
 	if not orthogonal:
-		var reference_point := point(focus if reference == Vector2.INF else reference)
+		var reference_point := point(focus if reference == Vector2.INF else reference, reference_height)
 		# KEEP_HEIGHT makes fov vertical. At the player's foot depth, one world
 		# logical pixel spans zoom screen pixels horizontally, independent of FOV.
 		var reference_depth := camera.size / (2.0 * tan(deg_to_rad(camera.fov) * 0.5))

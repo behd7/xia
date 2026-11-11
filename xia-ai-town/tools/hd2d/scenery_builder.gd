@@ -24,6 +24,11 @@ func surface(key: String) -> ShaderMaterial:
 	return material
 
 func build(world: Node2D, full_map: bool = false) -> void:
+	if full_map:
+		preload("res://tools/hd2d/terrain_builder.gd").build(self, world)
+		world_assets = preload("res://tools/hd2d/world_builder.gd").new()
+		world_assets.build(self, world)
+		return
 	_ground(world)
 	# P1: the inn is the single sample house, with its EXACT existing footprint.
 	var r: Rect2 = world.BUILDINGS[5].rect

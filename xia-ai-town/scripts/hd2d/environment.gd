@@ -4,6 +4,7 @@ var environment: Environment
 @export var attributes: CameraAttributesPractical
 var quality := "standard"
 var effects := true
+var distance_fog := true
 
 func _ready() -> void:
 	sun = $Sun
@@ -20,7 +21,7 @@ func update(game_seconds: float, scenery: Node3D, reference_depth: float = 100.0
 	sun.light_energy = lerpf(0.18, 1.55, daylight)
 	environment.ambient_light_energy = lerpf(0.48, 0.34, daylight)
 	environment.ambient_light_color = Color("8da9d3").lerp(Color("b4c5cf"), daylight)
-	environment.fog_enabled = effects and quality == "standard"
+	environment.fog_enabled = effects and distance_fog and quality == "standard"
 	# Perspective zoom moves the camera. Keep the same mild 15-unit far
 	# margin beyond the player, instead of leaving the old fixed 115 distance.
 	attributes.dof_blur_far_distance = reference_depth + 15.0

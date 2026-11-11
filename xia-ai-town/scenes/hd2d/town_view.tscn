@@ -1,4 +1,4 @@
-[gd_scene load_steps=5 format=3]
+[gd_scene format=3]
 
 [ext_resource type="Script" path="res://scripts/hd2d/town_view.gd" id="1"]
 [ext_resource type="PackedScene" path="res://scenes/hd2d/lighting.tscn" id="2"]
@@ -9,7 +9,7 @@
 script = ExtResource("1")
 
 [node name="Camera" type="Camera3D" parent="."]
-transform = Transform3D(0.8660254, -0.30783075, 0.3940054, 0, 0.7880108, 0.6156615, -0.5, -0.5331785, 0.68243736, 45.175144, 23.919014, 49.18314)
+transform = Transform3D(0.8660254, -0.30783075, 0.3940054, 0, 0.7880108, 0.6156615, -0.5, -0.5331785, 0.68243736, 59.575, 27.46, 68.2)
 current = true
 fov = 35.0
 size = 22.375
@@ -21,6 +21,6 @@ far = 240.0
 [node name="Scenery" parent="." instance=ExtResource("3")]
 
 [node name="Hero" parent="." instance=ExtResource("4")]
-position = Vector3(32, 0, 26.375)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 42, 0, 37.75)
 
 [node name="Population" type="Node3D" parent="."]

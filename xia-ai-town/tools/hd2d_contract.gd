@@ -1,6 +1,8 @@
 extends SceneTree
 const World = preload("res://scripts/town_world.gd")
 const Projector = preload("res://scripts/hd2d/projection.gd")
+const ScenicLayout = preload("res://scripts/hd2d/scenic_layout.gd")
+const CameraLimits = preload("res://scripts/hd2d/camera_limits.gd")
 func _initialize() -> void:
 	var world := World.new()
 	world._ensure_grid()
@@ -390,6 +392,7 @@ func _scene_checks() -> void:
 func _full_map_checks() -> void:
 	var world := World.new()
 	world.render_2d = false
+	world.scenic_layout = true
 	root.add_child(world)
 	var view := preload("res://scenes/hd2d/town_view.tscn").instantiate()
 	root.add_child(view)
@@ -400,8 +403,23 @@ func _full_map_checks() -> void:
 		printerr("HD2D_FAIL: P3 map did not build or created the legacy canvas")
 		quit(1)
 		return
+	if view.has_node("Camera/ViewBoundary"):
+		printerr("HD2D_FAIL: screen-space map edge fog is still attached to the camera")
+		quit(1)
+		return
+	for title: String in ["镇界城墙", "镇界瓦压顶", "镇界垛柱"]:
+		var wall: Node = view.scenery.find_child(title, true, false)
+		if not wall is MeshInstance3D or not view.scenery.occluders.has(wall):
+			printerr("HD2D_FAIL: perimeter wall mesh is missing from occlusion registry: ", title)
+			quit(1)
+			return
+	if world.can_walk(Vector2(world.landscape.WALL_INSET, 480)) or world.can_walk(Vector2(800, world.landscape.WALL_INSET)) or world.can_walk(Vector2(world.landscape.WORLD_SIZE.x - world.landscape.WALL_INSET, 480)) or world.can_walk(Vector2(640, world.landscape.WORLD_SIZE.y - world.landscape.WALL_INSET)) or not world.can_walk(world.landscape.GATE_AT):
+		printerr("HD2D_FAIL: perimeter wall collision must be closed except at the south gate")
+		quit(1)
+		return
 	for building: Dictionary in world.BUILDINGS:
-		if building.id != "inn" and int(assets.placed.get("building/" + str(building.id), 0)) != 1:
+		var asset_key := "inn_town" if building.id == "inn" else str(building.id)
+		if int(assets.placed.get("building/" + asset_key, 0)) != 1:
 			printerr("HD2D_FAIL: P3 building missing ", building.id)
 			quit(1)
 			return
@@ -411,21 +429,86 @@ func _full_map_checks() -> void:
 		world.actor_pos = Vector2(rect.get_center().x, rect.end.y + 24)
 		var nearby: Dictionary = world.nearby()
 		if not world.can_walk(world.actor_pos) or nearby.get("id", "") != str(building.id):
-			printerr("HD2D_FAIL: original building interaction apron changed ", building.id)
+			printerr("HD2D_FAIL: scenic building interaction apron is blocked ", building.id)
 			quit(1)
 			return
-	for furniture: Dictionary in World.Layout.furniture():
+	for furniture: Dictionary in world.landscape.furniture():
 		var name := str(assets.data.prop_keys[int(furniture.index)])
 		var key := "prop/lantern_post" if name == "lantern" else "prop/" + name
 		if not assets.placed.has(key):
 			printerr("HD2D_FAIL: P3 furniture missing ", key)
 			quit(1)
 			return
-	if not world.can_walk(Vector2(800, 496)) or not assets.placed.has("prop/well") or not assets.placed.has("town/gate"):
-		printerr("HD2D_FAIL: P3 well/gate or original road missing")
+	if not world.can_walk(world.landscape.GATE_AT) or not assets.placed.has("prop/well") or not assets.placed.has("town/gate"):
+		printerr("HD2D_FAIL: scenic well/gate or road missing")
 		quit(1)
 		return
-	print("HD2D_FULL_MAP_PASS: six new buildings, every original furniture identity, well/gate, original walkable shop/sect/inn aprons, no legacy canvas")
+	# Check connections through the actual foot-collision grid, not just each door.
+	var pending: Array[Vector2i] = [Vector2i(42, 37)]
+	var reachable := {Vector2i(42, 37): true}
+	var index := 0
+	while index < pending.size():
+		var cell := pending[index]
+		index += 1
+		for step: Vector2i in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
+			var next := cell + step
+			if next.x < 0 or next.y < 0 or next.x >= 100 or next.y >= 60 or reachable.has(next): continue
+			if world.can_walk(Vector2(next * 16 + Vector2i(8, 8))):
+				reachable[next] = true
+				pending.append(next)
+	var gate_cell := Vector2i(world.landscape.GATE_AT / 16.0)
+	if not reachable.has(gate_cell):
+		printerr("HD2D_FAIL: south gate is disconnected from the town road")
+		quit(1)
+		return
+	for building: Dictionary in world.BUILDINGS:
+		var rect: Rect2 = building.rect
+		var door := Vector2i(Vector2(rect.get_center().x, rect.end.y + 24) / 16)
+		if not reachable.has(door):
+			printerr("HD2D_FAIL: scenic road disconnected from ", building.id)
+			quit(1)
+			return
+	if not await _camera_limit_checks(view.camera, view.hero):
+		quit(1)
+		return
+	print("HD2D_FULL_MAP_PASS: seven scenic buildings, furniture, connected door aprons, closed perimeter/open south gate, no screen-edge fog or legacy canvas")
 	view.queue_free()
 	world.queue_free()
 	await process_frame
+
+func _camera_limit_checks(camera: Camera3D, actor: Node3D) -> bool:
+	var tested := 0
+	var points: Array[Vector2] = [Vector2(76,76), Vector2(800,76), Vector2(1524,76),
+		Vector2(76,480), Vector2(800,480), Vector2(1524,480),
+		Vector2(76,884), Vector2(824,950), Vector2(1524,884),
+		Vector2(8,8), Vector2(1592,8), Vector2(8,952), Vector2(1592,952)]
+	var safe := ScenicLayout.SCENERY_BOUNDS.grow(-31.0)
+	for pixels: Vector2 in [Vector2(1100,720), Vector2(1440,900), Vector2(2560,1080), Vector2(3840,2160)]:
+		root.size = Vector2i(pixels)
+		await process_frame
+		for zoom: int in [1, 2, 3]:
+			for pitch: float in [30.0, 38.0, 65.0]:
+				for fov: float in [30.0, 35.0, 40.0]:
+					for yaw: float in [-180.0, -157.5, -135.0, -112.5, -90.0, -67.5, -45.0, -22.5, 0.0, 22.5, 30.0, 45.0, 67.5, 90.0, 112.5, 135.0, 157.5]:
+						var back := Projector.ground_back(yaw)
+						for at: Vector2 in points:
+							var wanted := (at - Vector2(back.x, back.z) * 68.0).clamp(ScenicLayout.CAMERA_FOCUS_BOUNDS.position, ScenicLayout.CAMERA_FOCUS_BOUNDS.end)
+							var height := ScenicLayout.height_at(at)
+							CameraLimits.configure(camera, pixels, zoom, wanted, pitch, yaw, false, fov, at, height, height, actor.occlusion_bounds)
+							var body_visible := true
+							for x: float in [actor.occlusion_bounds.position.x, actor.occlusion_bounds.end.x]:
+								for body_height: float in [actor.occlusion_bounds.position.y, actor.occlusion_bounds.end.y]:
+									var point := Projector.point(at, height) + Projector.right(yaw) * x * Projector.SCALE + Vector3.UP * Projector.upright_height(body_height, pitch)
+									body_visible = body_visible and Rect2(Vector2.ZERO, pixels).has_point(camera.unproject_position(point))
+							var footprint := CameraLimits.ground_rect(camera, pixels)
+							var depth := -camera.to_local(Projector.point(at, height)).z
+							var scale := pixels.y * Projector.SCALE / (2.0 * tan(deg_to_rad(fov) * 0.5) * depth)
+							var clipped := false
+							for corner: Vector3 in CameraLimits.ground_corners(camera, pixels):
+								clipped = clipped or -camera.to_local(corner).z >= camera.far
+							if not footprint.has_area() or not safe.encloses(footprint) or clipped or absf(scale - zoom) > 0.0001 or not body_visible:
+								printerr("HD2D_FAIL: camera terrain edge/clip/scale ", {"window": pixels, "zoom": zoom, "pitch": pitch, "yaw": yaw, "fov": fov, "actor": at, "footprint": footprint, "far": camera.far, "scale": scale, "body_visible": body_visible})
+								return false
+							tested += 1
+	print("HD2D_CAMERA_LIMITS_PASS: ", tested, " native-window/zoom/pitch/FOV/orbit/corner poses; no terrain edge, far clip or cropped hero; player-depth scale retained")
+	return true

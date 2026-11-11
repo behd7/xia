@@ -113,8 +113,8 @@ func _build_scene() -> void:
 	world_view = Control.new()
 	world_view.name = "TownViewport"
 	world_view.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	world_view.offset_top = 86
-	world_view.offset_bottom = -98
+	world_view.offset_top = 0 if hd2d_enabled else 86
+	world_view.offset_bottom = 0 if hd2d_enabled else -98
 	world_view.clip_contents = true
 	world_view.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(world_view)
@@ -122,6 +122,7 @@ func _build_scene() -> void:
 	world.name = "Town"
 	world.ui_font = theme.default_font
 	world.render_2d = not hd2d_enabled
+	world.scenic_layout = hd2d_enabled
 	world_view.add_child(world)
 	if hd2d_enabled:
 		world_presenter = load("res://scenes/hd2d/world_presenter.tscn").instantiate()
@@ -129,6 +130,8 @@ func _build_scene() -> void:
 		world_view.add_child(world_presenter)
 		world_presenter.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		world_presenter.setup(world)
+		preload("res://scripts/hd2d/scenic_hud.gd").build(self)
+		return
 	var top := _panel(self, Vector2.ZERO, Vector2(size.x, 86), Color("f3f0e7"))
 	top.name = "Header"
 	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
@@ -287,7 +290,7 @@ func _process(delta: float) -> void:
 		_check_greet()
 	region_label.text = world.region_name()
 	var near: Dictionary = world.nearby()
-	context_label.text = "E  ·  %s" % near.get("name", "交互") if not near.is_empty() else "沿石径漫步，近前按 E 交互"
+	context_label.text = "E  ·  %s" % near.get("name", "交互") if not near.is_empty() else "WASD 移步 · E 交互 · 滚轮缩放"
 	if hd2d_enabled:
 		var target_key := "npc/" + dialogue_slug if not dialogue_slug.is_empty() else ""
 		if target_key.is_empty() and not battle.is_empty():
@@ -425,7 +428,7 @@ func _connection(ok: bool, reason: String = "") -> void:
 		_log("connection lost: %s" % (reason if not reason.is_empty() else "unknown"))
 	online = ok
 	connection_label.text = "●  江湖已连接" if ok else "○  连接中断"
-	connection_label.add_theme_color_override("font_color", UI.JADE if ok else UI.RED)
+	connection_label.add_theme_color_override("font_color", (Color("c2c9b5") if ok else Color("eda18a")) if hd2d_enabled else (UI.JADE if ok else UI.RED))
 
 func refresh() -> void:
 	if syncing or busy:
@@ -508,7 +511,8 @@ func _apply_player(data: Dictionary, move_actor: bool = false) -> void:
 	exp_bar.tooltip_text = "经验 %d / %d%s" % [
 		int(player.exp), int(player.exp_next),
 		"（瓶颈：需更高上限功法）" if bool(player.get("at_cap", false)) else ""]
-	gold_label.text = "银两  %d 两    ·    修炼 %d" % [int(player.gold), int(player.cultivation)]
+	gold_label.text = "%d 两" % int(player.gold) if hd2d_enabled else "银两  %d 两    ·    修炼 %d" % [int(player.gold), int(player.cultivation)]
+	gold_label.tooltip_text = "修炼 %d" % int(player.cultivation)
 
 func _walkable_position(point: Vector2) -> Vector2:
 	if world.can_walk(point):
@@ -1182,8 +1186,9 @@ func open_map() -> void:
 	map.actor_pos = world.actor_pos
 	map.mobs = world.mobs
 	map.detailed = true
+	map.scenic_layout = hd2d_enabled
 	body.add_child(map)
-	body.add_child(UI.paragraph("药铺与铁匠铺在镇西，客栈位于中央石道旁。出南门可前往东山林地；后山崖的山贼更为凶险。"))
+	body.add_child(UI.paragraph("药铺在镇西，铁匠铺在东，客栈居中。北坡有三派院落，东岸可见听雨池；向南沿石径进入山林。" if hd2d_enabled else "药铺与铁匠铺在镇西，客栈位于中央石道旁。出南门可前往东山林地；后山崖的山贼更为凶险。"))
 
 func open_chronicle() -> void:
 	if busy:

@@ -16,7 +16,9 @@ const SAND = Layout.SAND
 const WALL = Layout.WALL
 const WELL = Layout.WELL
 const TOWN = Layout.TOWN
-const BUILDINGS = Layout.BUILDINGS
+var BUILDINGS: Array[Dictionary] = Layout.BUILDINGS
+var scenic_layout := false
+var landscape = Layout
 const NPC_DEFAULTS = Layout.NPC_DEFAULTS
 
 var actor_pos: Vector2 = Vector2(792, 440)
@@ -299,6 +301,11 @@ func region_name() -> String:
 		var area: Rect2 = building["rect"]
 		if area.grow(20).has_point(actor_pos):
 			return building["name"]
+	if scenic_layout:
+		if landscape.YARD.has_point(actor_pos): return "演武坪"
+		if actor_pos.x > 1300 and actor_pos.y < 480: return "听雨池"
+		if actor_pos.y > 736: return "东山林地" if actor_pos.x < 800 else "后山石径"
+		return "清溪镇"
 	if Rect2(832, 80, 288, 192).has_point(actor_pos):
 		return "练武场"
 	if Rect2(672, 352, 224, 128).has_point(actor_pos):
@@ -311,7 +318,9 @@ func region_name() -> String:
 
 func _ensure_grid() -> void:
 	if _grid.is_empty():
-		_grid = Layout.create_grid()
+		landscape = preload("res://scripts/hd2d/scenic_layout.gd") if scenic_layout else Layout
+		BUILDINGS = landscape.BUILDINGS
+		_grid = landscape.create_grid()
 
 # P1 fixture only; the real client never rewrites the shared gameplay layout.
 func _fill_tiles(area: Rect2i, value: int) -> void:

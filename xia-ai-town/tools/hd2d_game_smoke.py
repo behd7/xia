@@ -71,7 +71,7 @@ class GameInteraction(BackgroundInteraction):
         self.window = self.wait(owned, '未找到自有GPU窗口')
         self.check('private_owned_window', True, {'pid': self.pid, 'display': self.env['DISPLAY']})
         initial = self.capture('main_hud')
-        self.check('real_main_native_viewport', initial['window'] == [1440, 900] and initial['viewport'] == [1440, 716])
+        self.check('real_main_native_viewport', initial['window'] == [1440, 900] and initial['viewport'] == [1440, 900])
         self.check('all_server_actors_present', len(initial['npcs']) == 7 and len(initial['population']) > 7)
         required_assets = set(initial['actor_assets'].get(key, '') for key in initial['actor_assets'])
         self.check('p3_actor_sheets_loaded', {'gu_changfeng', 'tie_wushuang', 'su_wanqing', 'chen_bansong', 'wang_dazhu', 'liu_xiaodie', 'zhang_mantou', 'wolf', 'bandit', 'boss'} <= required_assets)
@@ -83,7 +83,7 @@ class GameInteraction(BackgroundInteraction):
             self.key('Escape')
             self.state(lambda s: not s['modal'], 'IME结束后Esc未关闭对话')
         self.key('F4')
-        before = self.sample()
+        before = self.state(lambda s: s['position'] == [832, 624], '诊断落点尚未同步')
         self.move('d', .5)
         after = self.state(lambda s: s['position'] != before['position'], '真实WASD没有移动')
         self.check('camera_relative_wasd', after['position'][0] > before['position'][0] + 20 and after['position'][1] < before['position'][1] - 10)
@@ -143,7 +143,7 @@ class GameInteraction(BackgroundInteraction):
         self.key('Escape')
         self.state(lambda s: not s['modal'], 'Esc未关闭行囊')
         self.xdo('windowsize', self.window, '1100', '720')
-        self.state(lambda s: s['window'] == [1100, 720] and s['viewport'] == [1100, 536], '实际窗口resize没有同步原生视口')
+        self.state(lambda s: s['window'] == [1100, 720] and s['viewport'] == [1100, 720], '实际窗口resize没有同步原生视口')
         self.key('i')
         self.state(lambda s: s['modal'] == 'character', '角色面板未打开')
         self.xdo('mousemove', '--window', self.window, 720, 560)
@@ -152,7 +152,7 @@ class GameInteraction(BackgroundInteraction):
         self.check('native_mouse_panel_scroll', True)
         self.key('Escape')
         self.xdo('windowsize', self.window, '1440', '900')
-        self.state(lambda s: s['window'] == [1440, 900] and s['viewport'] == [1440, 716], '窗口复原没有同步视口')
+        self.state(lambda s: s['window'] == [1440, 900] and s['viewport'] == [1440, 900], '窗口复原没有同步视口')
         self.key('F3')
         self.key('e')
         shop = self.state(lambda s: s['modal'] == 'shop' and not s['busy'], '门口交互未进入药铺')
@@ -265,7 +265,7 @@ def run_game(args, isolation: dict) -> int:
         env = dict(os.environ, XIA_SMOKE_ROOT=str(scratch), XIA_WORLD_VIEW='hd2d',
                    DB_PATH=str(scratch / 'xia.db'), CHROMA_DIR=str(scratch / 'chroma'),
                    SCHEDULER_ENABLED='false', GODOT_SILENCE_ROOT_WARNING='1', PYTHONDONTWRITEBYTECODE='1',
-                   XIA_HD2D_OUTPUT=str(output), XIA_HD2D_DURATION=str(duration), XIA_HD2D_QUALITY=args.quality,
+                   XIA_HD2D_OUTPUT=str(output), XIA_HD2D_SCENE_REVIEW='1' if args.scene_review else '0', XIA_HD2D_DURATION=str(duration), XIA_HD2D_QUALITY=args.quality,
                    XIA_HD2D_PITCH=str(args.pitch), XIA_HD2D_YAW=str(args.yaw), XIA_HD2D_FOV=str(args.fov),
                    XIA_HD2D_PROJECTION=args.projection, NO_PROXY='localhost,127.0.0.1', no_proxy='localhost,127.0.0.1',
                    ENABLE_GAMESCOPE_WSI='0')
@@ -348,7 +348,12 @@ def run_game(args, isolation: dict) -> int:
                            '--script', 'res://tools/hd2d_game_probe.gd']
                 with (output / 'engine.log').open('w') as engine_log:
                     process = subprocess.Popen(command, cwd=scratch, env=env, stdout=engine_log, stderr=subprocess.STDOUT)
-                    automation = GameInteraction(process.pid, env, output, duration, isolation['display'])
+                    if args.scene_review:
+                        from hd2d_scene_interaction import SceneInteraction
+                        automation_class = SceneInteraction
+                    else:
+                        automation_class = GameInteraction
+                    automation = automation_class(process.pid, env, output, duration, isolation['display'])
                     started = time.monotonic()
                     while process.poll() is None:
                         if automation.error:

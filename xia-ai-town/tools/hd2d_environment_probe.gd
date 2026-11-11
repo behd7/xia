@@ -1,7 +1,8 @@
 extends "res://tools/hd2d_probe.gd"
 ## P3 full-map GPU inventory, solid geometry, local reveal and native gallery.
-const Layout = preload("res://scripts/town_layout.gd")
+const Layout = preload("res://scripts/hd2d/scenic_layout.gd")
 const TownView = preload("res://scripts/hd2d/town_view.gd")
+const CameraLimits = preload("res://scripts/hd2d/camera_limits.gd")
 var world: Node2D
 var view: Node3D
 var draws := 0
@@ -11,7 +12,7 @@ func configure(zoom: int, focus: Vector2, elevation: float, azimuth: float = 0.0
 	view.set_pitch(elevation)
 	view.set_yaw(azimuth)
 	var reference := Vector2(actor.global_position.x, actor.global_position.z) / Projector.SCALE
-	Projector.configure(camera, Vector2(root.size), zoom, focus, elevation, azimuth, false, fov, reference)
+	CameraLimits.configure(camera, Vector2(root.size), zoom, focus, elevation, azimuth, false, fov, reference, Layout.height_at(reference), Layout.height_at(reference), actor.occlusion_bounds)
 	# Match TownView.update: changing zoom also moves the far-DOF threshold.
 	view.lighting.update(clock_seconds, fixtures, -camera.to_local(actor.global_position).z, actor.global_position)
 
@@ -25,6 +26,7 @@ func _run() -> void:
 	root.size = Vector2i(1440, 900)
 	world = World.new()
 	world.render_2d = false
+	world.scenic_layout = true
 	root.add_child(world)
 	view = load("res://scenes/hd2d/town_view.tscn").instantiate()
 	root.add_child(view)
@@ -47,9 +49,11 @@ func _run() -> void:
 	actor.sprite.modulate = Color(4, 0, 0, 1)
 	await _houses()
 	await _gate_clearance()
+	await _foreground_clipping()
 	actor.sprite.material_override = ordinary
 	actor.sprite.modulate = Color.WHITE
 	await _gallery()
+	await _boundary_views()
 	check(draws > 100, "continuous_real_gpu_draw", {"frame_post_draw": draws})
 	var report := {"device": RenderingServer.get_video_adapter_name(),
 		"backend": RenderingServer.get_current_rendering_method(), "quality": view.quality,
@@ -68,13 +72,12 @@ func _run() -> void:
 
 func _inventory() -> void:
 	var assets: RefCounted = fixtures.world_assets
-	for actor_key: String in ["gu_changfeng", "tie_wushuang", "su_wanqing", "chen_bansong", "wang_dazhu", "liu_xiaodie", "zhang_mantou", "wolf", "bandit", "boss"]:
-		var actor: Node3D = load("res://scenes/hd2d/actor.tscn").instantiate()
-		actor.configure_p3(actor_key)
-		root.add_child(actor)
-		check(actor.p3_key == actor_key and actor.metadata.columns == 10 and actor.metadata.directions.size() == 8 and actor.metadata.frames.size() == 80,
-			"p3_actor_%s_10x8_manifest" % actor_key)
-		actor.queue_free()
+	var grass_count := 0
+	var grass_valid := true
+	for patch: MultiMeshInstance3D in fixtures.find_children("*", "MultiMeshInstance3D", true, false):
+		grass_count += patch.multimesh.instance_count
+		grass_valid = grass_valid and patch.multimesh.buffer.size() == patch.multimesh.instance_count * 12 and patch.multimesh.get_aabb().has_volume()
+	check(grass_valid and grass_count > 2000, "grass_authored_buffers_survive_save_and_load", {"instances": grass_count})
 	var materials_valid := true
 	var rays_valid := true
 	var triangles_valid := true
@@ -95,9 +98,7 @@ func _inventory() -> void:
 	check(rays_valid, "all_environment_ray_shapes_double_sided_visual_layer_only", {"meshes": fixtures.occluders.size()})
 	check(triangles_valid, "all_imported_environment_triangles_non_degenerate")
 	for building: Dictionary in Layout.BUILDINGS:
-		if building.id == "inn":
-			continue
-		var key := "building/" + str(building.id)
+		var key := "building/" + ("inn_town" if building.id == "inn" else str(building.id))
 		check(int(assets.placed.get(key, 0)) == 1, key + "_produced_once")
 	for prop: Dictionary in Layout.furniture():
 		var key := "prop/" + str(assets.data.prop_keys[int(prop.index)])
@@ -111,6 +112,10 @@ func _inventory() -> void:
 	check(int(assets.placed.get("terrain/cliff_cells", 0)) == cells,
 		"all_frozen_cliff_cells_have_3d_surface", {"cells": cells})
 	check(assets.placed.has("prop/well") and assets.placed.has("town/gate"), "well_and_gate_present")
+
+	for at: Vector2 in [Vector2(240,224), Vector2(824,576), Vector2(1310,720)]:
+		actor.sync(at, 0.0)
+		check(is_equal_approx(actor.position.y, Layout.height_at(at) * Projector.SCALE), "terrain_foot_%d_%d" % [int(at.x), int(at.y)])
 
 func _red_body(image: Image, background: Image, reference: Image) -> int:
 	var rect := Rect2i(actor.occlusion_rect(camera).grow(3)).intersection(Rect2i(Vector2i.ZERO, image.get_size()))
@@ -166,8 +171,6 @@ func readability(title: String, scenery: Node3D, actors: Array, _native_backgrou
 func _houses() -> void:
 	var helper := Occlusion.new()
 	for building: Dictionary in Layout.BUILDINGS:
-		if building.id == "inn":
-			continue
 		var rect: Rect2 = building.rect
 		var behind := Vector2(rect.get_center().x, rect.position.y - 16)
 		actor.set_pitch(38)
@@ -207,24 +210,75 @@ func _houses() -> void:
 func _gate_clearance() -> void:
 	await physics_frame
 	var walkable := true
-	for y: int in range(460, 542):
-		walkable = walkable and world.can_walk(Vector2(800, y))
+	for y: int in range(884, 955):
+		walkable = walkable and world.can_walk(Vector2(Layout.GATE_AT.x, y))
 	var clear_height := Projector.upright_height(40, Projector.MAX_PITCH) / Projector.SCALE
 	var blocked: Array = []
 	for height: float in [1.0, 35.0, 65.0, clear_height]:
-		var query := PhysicsRayQueryParameters3D.create(Projector.point(Vector2(800, 455), height), Projector.point(Vector2(800, 545), height), 2)
+		var query := PhysicsRayQueryParameters3D.create(Projector.point(Layout.GATE_AT - Vector2(0, 42), height + Layout.height_at(Layout.GATE_AT)), Projector.point(Layout.GATE_AT + Vector2(0, 42), height + Layout.height_at(Layout.GATE_AT)), 2)
 		query.hit_back_faces = true
 		var hit := view.get_world_3d().direct_space_state.intersect_ray(query)
 		if not hit.is_empty():
 			blocked.append({"height": height, "hit": str(hit)})
-	check(walkable and blocked.is_empty(), "original_gate_road_and_human_clearance_open", {"clear_height": clear_height, "blocked": blocked})
+	check(walkable and blocked.is_empty(), "scenic_gate_road_and_human_clearance_open", {"clear_height": clear_height, "blocked": blocked})
+	var wall_meshes := [fixtures.find_child("镇界城墙", true, false), fixtures.find_child("镇界瓦压顶", true, false), fixtures.find_child("镇界垛柱", true, false)]
+	var wall_nodes_valid := true
+	for node: Node in wall_meshes:
+		wall_nodes_valid = wall_nodes_valid and node is MeshInstance3D and fixtures.occluders.has(node)
+	check(wall_nodes_valid and not view.has_node("Camera/ViewBoundary"), "perimeter_wall_replaces_screen_edge_fog", {"wall_meshes": wall_meshes.size(), "occluders": fixtures.occluders.size()})
+	var west_blocked: bool = not world.can_walk(Vector2(Layout.WALL_INSET, 480))
+	var north_blocked: bool = not world.can_walk(Vector2(800, Layout.WALL_INSET))
+	var east_blocked: bool = not world.can_walk(Vector2(Layout.WORLD_SIZE.x - Layout.WALL_INSET, 480))
+	var south_blocked: bool = not world.can_walk(Vector2(640, Layout.WORLD_SIZE.y - Layout.WALL_INSET))
+	check(west_blocked and north_blocked and east_blocked and south_blocked and world.can_walk(Layout.GATE_AT), "perimeter_collision_closed_except_gate", {"west": west_blocked, "north": north_blocked, "east": east_blocked, "south": south_blocked, "gate": world.can_walk(Layout.GATE_AT)})
 	# The water micro-motion is material-only; cell boundaries never move.
 	var water: ShaderMaterial = fixtures.world_assets.material("water")
 	check(bool(water.get_shader_parameter("water_motion")), "pond_and_well_water_micro_motion_enabled")
 
+func _foreground_clipping() -> void:
+	# Regress the actual 1× peripheral-roof cut, then exercise the shader with
+	# GPU readbacks both inside and beyond the narrow camera clearance band.
+	world.actor_pos = Vector2(832, 624)
+	view.set_pitch(38)
+	view.set_yaw(30)
+	view.zoom = 1
+	view.initialized = false
+	view.update(world, Vector2(root.size), 12 * 3600.0, 0.0)
+	view.occlusion.reset(fixtures.fade_groups)
+	var temple: MeshInstance3D = fixtures.find_child("temple_structure", true, false)
+	var nearest := INF
+	for vertex: Vector3 in temple.mesh.get_faces():
+		nearest = minf(nearest, -camera.to_local(temple.to_global(vertex)).z)
+	check(nearest > view.foreground_clip_depth + 2.0, "wide_view_keeps_peripheral_temple_complete", {"nearest_roof_or_wall_depth": nearest, "clip_depth": view.foreground_clip_depth})
+	fixtures.hide()
+	actor.hide()
+	var panel := MeshInstance3D.new()
+	var quad := QuadMesh.new()
+	quad.size = Vector2(0.8, 0.8)
+	panel.mesh = quad
+	var white := Image.create(1, 1, false, Image.FORMAT_RGBA8)
+	white.fill(Color.WHITE)
+	var diagnostic := ShaderMaterial.new()
+	diagnostic.shader = FADE_SHADER
+	diagnostic.set_shader_parameter("albedo_texture", ImageTexture.create_from_image(white))
+	diagnostic.set_shader_parameter("tint", Color(4, 0, 0, 1))
+	diagnostic.set_shader_parameter("glow", 1.0)
+	panel.material_override = diagnostic
+	scene.add_child(panel)
+	for depth: float in [6.0, 12.0]:
+		panel.global_transform = camera.global_transform * Transform3D(Basis.IDENTITY, Vector3(0, 0, -depth))
+		diagnostic.set_shader_parameter("foreground_clip_depth", 0.0)
+		var baseline := red(await shot("foreground-depth-%d-solid" % int(depth)))
+		diagnostic.set_shader_parameter("foreground_clip_depth", view.foreground_clip_depth)
+		var visible := red(await shot("foreground-depth-%d-clipped" % int(depth)))
+		var expected := visible == 0 if depth == 6.0 else visible >= baseline * 0.98
+		check(baseline > 100 and expected, "foreground_near_removed" if depth == 6.0 else "foreground_far_preserved", {"baseline_pixels": baseline, "visible_pixels": visible, "view_depth": depth})
+	panel.queue_free()
+	fixtures.show()
+	actor.show()
+	await process_frame
+
 func _gallery() -> void:
-	for other: Node3D in view.population.values():
-		other.show()
 	for building: Dictionary in Layout.BUILDINGS:
 		var rect: Rect2 = building.rect
 		var at := Vector2(rect.get_center().x, rect.end.y + 32)
@@ -233,16 +287,16 @@ func _gallery() -> void:
 		place(actor, at)
 		configure(2, at - Vector2(20, 35), 38, 30)
 		await shot("gallery-" + str(building.id))
-	var points := {"well": Vector2(720, 447), "pond": Vector2(1208, 475),
-		"yard": Vector2(976, 240), "gate": Vector2(800, 548),
-		"forest": Vector2(360, 670), "cliffs": Vector2(1250, 740)}
+	var points := {"well": Layout.WELL_AT + Vector2(0, 42), "pond": Vector2(1320, 430),
+		"yard": Vector2(952, 256), "gate": Layout.GATE_AT - Vector2(0, 40),
+		"forest": Vector2(360, 820), "cliffs": Vector2(1310, 800)}
 	for title: String in points:
 		var at: Vector2 = points[title]
 		place(actor, at)
 		configure(2, at - Vector2(20, 30), 38, 30)
 		await shot("gallery-" + title)
-	place(actor, Vector2(512, 422))
-	configure(1, Vector2(760, 320), 55, 0)
+	place(actor, Vector2(824, 580))
+	configure(1, Vector2(800, 430), 55, 0)
 	await shot("gallery-town-overview")
 	clock_seconds = 22 * 3600.0
 	for title: String in ["gate", "pond", "forest"]:
@@ -251,3 +305,62 @@ func _gallery() -> void:
 		configure(2, at - Vector2(20, 30), 38, 30)
 		view.lighting.update(22 * 3600.0, fixtures, -camera.to_local(actor.global_position).z, actor.global_position)
 		await shot("gallery-night-" + title)
+
+func _boundary_views() -> void:
+	var original_quality: String = view.quality
+	for quality: String in ["light", "standard"]:
+		view.quality = quality
+		view.update(world, Vector2(root.size), 12 * 3600.0, 0.0)
+		check(not view.lighting.environment.fog_enabled, "town_has_no_boundary_or_distance_fog_" + quality)
+	view.quality = original_quality
+	var ground: MeshInstance3D = fixtures.find_child("缓坡草地", true, false)
+	var bounds := ground.mesh.get_aabb()
+	var authored := Rect2(Vector2(bounds.position.x, bounds.position.z) / Projector.SCALE, Vector2(bounds.size.x, bounds.size.z) / Projector.SCALE)
+	check(authored.is_equal_approx(Layout.SCENERY_BOUNDS) and bounds.position.y > Layout.SCENERY_FLOOR * Projector.SCALE,
+		"non_walkable_scenic_ground_covers_camera_envelope", {"ground_bounds": authored, "logical_map": Layout.WORLD_SIZE})
+	var poses: Array[Dictionary] = [
+		{"name": "south-gate", "at": Layout.GATE_AT - Vector2(0,44), "zoom": 2, "pitch": 38.0, "yaw": 30.0, "fov": 35.0, "size": Vector2i(1440,900)},
+		{"name": "south-reverse", "at": Layout.GATE_AT - Vector2(0,44), "zoom": 1, "pitch": 30.0, "yaw": -150.0, "fov": 40.0, "size": Vector2i(1440,900)},
+		{"name": "northwest", "at": Vector2(76,76), "zoom": 1, "pitch": 30.0, "yaw": 135.0, "fov": 40.0, "size": Vector2i(1440,900)},
+		{"name": "northeast", "at": Vector2(1524,76), "zoom": 3, "pitch": 65.0, "yaw": -45.0, "fov": 30.0, "size": Vector2i(1440,900)},
+		{"name": "southwest", "at": Vector2(76,884), "zoom": 2, "pitch": 38.0, "yaw": 90.0, "fov": 35.0, "size": Vector2i(1440,900)},
+		{"name": "southeast", "at": Vector2(1524,884), "zoom": 3, "pitch": 65.0, "yaw": -135.0, "fov": 40.0, "size": Vector2i(1440,900)},
+		{"name": "small-window", "at": Vector2(76,480), "zoom": 1, "pitch": 30.0, "yaw": 0.0, "fov": 40.0, "size": Vector2i(1100,720)},
+		{"name": "outer-corner", "at": Vector2(8,8), "zoom": 3, "pitch": 65.0, "yaw": 30.0, "fov": 40.0, "size": Vector2i(1100,720)},
+		{"name": "ultrawide", "at": Vector2(1524,480), "zoom": 1, "pitch": 30.0, "yaw": 180.0, "fov": 40.0, "size": Vector2i(2560,1080)},
+	]
+	for pose: Dictionary in poses:
+		root.size = pose.size
+		await process_frame
+		world.actor_pos = pose.at
+		view.zoom = pose.zoom
+		view.set_pitch(pose.pitch)
+		view.set_yaw(pose.yaw)
+		view.set_fov(pose.fov)
+		view.initialized = false
+		view.update(world, Vector2(root.size), 12 * 3600.0, 0.0)
+		var image := await shot("boundary-" + str(pose.name))
+		fixtures.hide()
+		actor.hide()
+		var sky := await shot("boundary-" + str(pose.name) + "-background")
+		fixtures.show()
+		actor.show()
+		var missed := 0
+		var sampled := 0
+		for y: int in range(2, image.get_height(), 24):
+			for x: int in range(2, image.get_width(), 24):
+				if x > 26 and x < image.get_width() - 26 and y > 26 and y < image.get_height() - 26:
+					continue
+				var color := image.get_pixel(x,y)
+				var background := sky.get_pixel(x,y)
+				if Vector3(color.r-background.r, color.g-background.g, color.b-background.b).length() < 0.04:
+					missed += 1
+				sampled += 1
+		var footprint := CameraLimits.ground_rect(camera, Vector2(root.size))
+		var full_body: bool = Rect2(Vector2.ZERO, Vector2(root.size)).encloses(actor.occlusion_rect(camera))
+		check(missed == 0 and Layout.SCENERY_BOUNDS.grow(-31).encloses(footprint) and full_body,
+			"camera_border_has_ground_" + str(pose.name), {"sampled_border_pixels": sampled, "background_pixels": missed, "full_body_in_view": full_body, "ground_footprint": footprint, "window": root.size})
+	root.size = Vector2i(1440,900)
+	view.reset_camera()
+	view.zoom = 2
+	await process_frame

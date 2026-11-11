@@ -80,9 +80,17 @@ func _resources(scenery: Node3D, label: String) -> void:
 			else:
 				shape.shape = shape_cache[key]
 
+	for node: MultiMeshInstance3D in scenery.find_children("*", "MultiMeshInstance3D", true, false):
+		var mesh := node.multimesh.mesh
+		_material(mesh.surface_get_material(0))
+		if mesh.resource_path.is_empty():
+			_save(mesh, RESOURCES + "meshes/%s_grass_blades.res" % label)
+		_save(node.multimesh, RESOURCES + "meshes/%s_%s.res" % [label, node.name])
+
 func _build_map(full_map: bool) -> void:
 	var world := World.new()
 	world.render_2d = false
+	world.scenic_layout = full_map
 	world._ensure_grid()
 	if not full_map:
 		Fixture.prepare(world)

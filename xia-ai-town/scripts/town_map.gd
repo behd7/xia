@@ -3,6 +3,8 @@ extends Control
 var actor_pos := Vector2(792, 440)
 var mobs: Array = []
 var detailed: bool = false
+var scenic_layout := false
+const Scenic = preload("res://scripts/hd2d/scenic_layout.gd")
 
 const Layout = preload("res://scripts/town_layout.gd")
 
@@ -10,6 +12,9 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 func _draw() -> void:
+	if scenic_layout:
+		_draw_scenic()
+		return
 	var inset := Vector2(4, 4)
 	var area := size - inset * 2
 	var factor := area / Layout.WORLD_SIZE
@@ -45,3 +50,40 @@ func _box(color: Color) -> StyleBoxFlat:
 	box.border_color = Color("a8b19a")
 	box.set_border_width_all(1)
 	return box
+
+func _draw_scenic() -> void:
+	var inset := Vector2(8, 8)
+	var area := size - inset * 2
+	var factor := area / Scenic.WORLD_SIZE
+	draw_style_box(_box(Color("c1ccb0")), Rect2(Vector2.ZERO, size))
+	# Hand-drawn looking contours indicate the north terrace and eastern hill.
+	for contour: int in range(3):
+		var line := PackedVector2Array()
+		for x: int in range(0, 1601, 32):
+			line.append(inset + Vector2(x, 102 + contour * 44 + sin(x/146.0)*13) * factor)
+		draw_polyline(line, Color("aab99a"), 1.0, true)
+	for road: Dictionary in Scenic.ROAD_PATHS:
+		var line := PackedVector2Array()
+		for at: Vector2 in road.points:
+			line.append(inset + at * factor)
+		draw_polyline(line, Color("e1dcc7"), float(road.width) * factor.y, true)
+	var pond := Rect2(inset + Scenic.POND.position * factor, Scenic.POND.size * factor)
+	var pond_style := _box(Color("789c99"))
+	pond_style.set_corner_radius_all(14 if detailed else 5)
+	draw_style_box(pond_style, pond)
+	for building: Dictionary in Scenic.BUILDINGS:
+		var r := Rect2(inset + building.rect.position * factor, building.rect.size * factor)
+		draw_rect(Rect2(r.position + Vector2(2, 3), r.size), Color("7e8e77"))
+		draw_rect(r, Color("465c53"))
+		draw_line(r.position + Vector2(1, r.size.y*.5), r.position + Vector2(r.size.x-1, r.size.y*.5), Color("899980"), 1)
+		if detailed:
+			draw_string(get_theme_default_font(), r.position + Vector2(0, -6), str(building.name), HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color("293b37"))
+	for mob: Dictionary in mobs:
+		if mob.get("alive", false):
+			draw_circle(inset + Vector2(mob.x, mob.y) * factor, 3 if detailed else 1.5, Color("a75342"))
+	var point := inset + actor_pos * factor
+	draw_circle(point, 6 if detailed else 4, Color("f8f3df"))
+	draw_colored_polygon(PackedVector2Array([point + Vector2(0,-5), point + Vector2(4,4), point + Vector2(0,2), point + Vector2(-4,4)]), Color("a34e3f"))
+	if detailed:
+		draw_string(get_theme_default_font(), inset + Vector2(145,855) * factor, "东山林地", HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color("546c56"))
+		draw_string(get_theme_default_font(), inset + Vector2(1060,860) * factor, "后山石径", HORIZONTAL_ALIGNMENT_LEFT, -1, 18, Color("546c56"))

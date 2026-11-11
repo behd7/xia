@@ -81,6 +81,8 @@ def run_background(args) -> int:
     ]
     if args.game:
         worker_args += ['--game']
+    if args.scene_review:
+        worker_args += ['--scene-review']
     if args.ime:
         worker_args += ['--ime']
     if args.environment_probe:

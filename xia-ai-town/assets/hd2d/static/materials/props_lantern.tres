@@ -20,4 +20,5 @@ shader_parameter/vertex_color = null
 shader_parameter/sway = 0.004
 shader_parameter/hanging = true
 shader_parameter/glow = null
+shader_parameter/foreground_clip_depth = null
 shader_parameter/water_motion = null

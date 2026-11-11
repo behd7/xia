@@ -19,6 +19,7 @@ uniform bool vertex_color = false;
 uniform float sway = 0.0;
 uniform bool hanging = false;
 uniform float glow = 0.0;
+uniform float foreground_clip_depth = 0.0;
 uniform bool water_motion = false;
 varying vec3 position_world;
 varying vec3 pine_local;
@@ -67,8 +68,10 @@ void fragment() {
 	}
 	vec4 tex = texture(albedo_texture, sample_uv) * tint;
 	if (water_motion) {
-		float wave = sin(position_world.x * 6.0 + position_world.z * 4.0 - TIME * 0.9);
-		tex.rgb = mix(vec3(0.15, 0.28, 0.27), tex.rgb, 0.35) * (1.0 + step(0.82, wave) * 0.10);
+		float wave = sin(position_world.x * 3.0 + position_world.z * 5.0 - TIME * 0.7);
+		float broken = sin(position_world.x * 1.7 - position_world.z * 1.1 + TIME * 0.4);
+		tex.rgb = mix(vec3(0.025, 0.070, 0.058), vec3(0.035, 0.087, 0.073), floor((wave * 0.3 + broken * 0.2 + 0.5) * 4.0) / 4.0);
+		tex.rgb += vec3(0.035, 0.060, 0.052) * step(0.985, wave) * step(0.82, broken);
 	}
 	if (volume_foliage) {
 		// Project the surface at one texel per logical pixel on every side;
@@ -94,6 +97,8 @@ void fragment() {
 	if (vertex_color) { ALBEDO *= COLOR.rgb; }
 	if (volume_foliage || vertex_color) { SPECULAR = 0.0; }
 	ROUGHNESS = 0.95;
-	ALPHA = tex.a * opacity;
+	float view_depth = -(VIEW_MATRIX * vec4(position_world, 1.0)).z;
+	float close_visibility = IN_SHADOW_PASS || foreground_clip_depth <= 0.0 ? 1.0 : smoothstep(foreground_clip_depth, foreground_clip_depth + 2.0, view_depth);
+	ALPHA = tex.a * opacity * close_visibility;
 	EMISSION = tex.rgb * glow;
 }

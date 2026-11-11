@@ -85,7 +85,7 @@ class IsolationTests(unittest.TestCase):
             self.assertEqual(controller.sample()['seconds'], 4)
 
     def test_invalid_background_options_fail_before_launch(self):
-        for args in (['--ime'], ['--game'], ['--game', '--logic'], ['--background', '--duration', '10'], ['--background', '--logic'],
+        for args in (['--scene-review'], ['--background', '--game', '--scene-review', '--ime'], ['--ime'], ['--game'], ['--game', '--logic'], ['--background', '--duration', '10'], ['--background', '--logic'],
                      ['--background', '--display-driver', 'wayland'], ['--pitch', '66'],
                      ['--pitch', 'nan'], ['--yaw', '181'], ['--yaw', 'nan'],
                      ['--probe', '--yaw', '90'], ['--fov', '29'], ['--fov', '41'], ['--fov', 'nan'],
