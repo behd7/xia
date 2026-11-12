@@ -5,7 +5,6 @@ RAG 失败时按无记忆处理：搭话不能因为检索失败而不搭。
 """
 
 import asyncio
-import json
 import time
 
 from ..config import settings
@@ -19,17 +18,9 @@ from . import events as events_mod
 from . import mood as mood_mod
 from . import npc as npc_mod
 from . import rag as rag_mod
-from .json_utils import strip_fence
+from .dialogue_tools import REPLY_TOOL, parse_turn
 
 _locks: dict[int, asyncio.Lock] = {}
-
-
-def _parse(result_text: str) -> str:
-    data = json.loads(strip_fence(result_text))
-    reply = str(data.get("reply", "")).strip() if isinstance(data, dict) else ""
-    if not reply:
-        raise ValueError("missing reply")
-    return reply
 
 
 def _messages(n: dict, p: dict, affinity: int, memories: list[dict], now_str: str,
@@ -50,7 +41,7 @@ def _messages(n: dict, p: dict, affinity: int, memories: list[dict], now_str: st
         f"此刻{now_str}，你正在{place}，看见{p['name']}走近。\n"
         f"以你的口吻主动招呼他一句（≤40字），可顺带提起一件你记得的事，不要说套话，"
         "不要每句都提后山。\n"
-        '仅输出JSON：{"reply":"..."}'
+        "正常说话，不要输出 JSON 或代码块。可用 reply 工具回复，不要再重复输出文本。"
     )
     return [{"role": "system", "content": system},
             {"role": "user", "content": "请打招呼。"}]
@@ -111,10 +102,12 @@ async def greet(db, store, npc_id: int) -> dict:
         for temperature in (0.7, 0.3):
             try:
                 cr = await store.llm.chat(
-                    "greet", msgs, json_format=True, temperature=temperature,
+                    "greet", msgs, tools=[REPLY_TOOL], temperature=temperature,
                     metadata={"npc_id": npc_id, "affinity": aff},
                 )
-                reply = _parse(cr.text)
+                reply = parse_turn(cr.text, cr.tool_calls)["reply"]
+                if not reply:
+                    raise ValueError("missing greeting")
                 break
             except Exception:
                 continue

@@ -112,7 +112,10 @@ godot --headless --path xia-ai-town --check-only --script scripts/main.gd
 
 ```bash
 server/.venv/bin/python server/tests/smoke.py
+server/.venv/bin/python server/tests/npc_tools.py  # 原生工具传输与新旧协议效果对照
 ```
+
+NPC 对话使用普通文本 + 原生工具调用；需支持 tools 的 Ollama/OpenAI 兼容模型。客户端接口不变，后台反思与总结仍用 JSON。协议及验证边界见 [`docs/NPC-TOOLS.md`](docs/NPC-TOOLS.md)。
 
 完整接口冒烟验证会启动临时端口的真实后端，并使用临时数据库和独立的 Godot 用户目录，不影响现有存档：
 

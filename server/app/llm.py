@@ -5,13 +5,14 @@ import logging
 import math
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 import httpx
 
 from .config import settings
 from .db import Database
+from .llm_tools import ToolCall, ToolCallBuffer, ToolCallDelta, complete_tool_calls
 from .agent import trace as trace_mod
 
 logger = logging.getLogger(__name__)
@@ -75,18 +76,20 @@ class ChatResult:
     text: str
     in_tokens: int | None
     out_tokens: int | None
+    tool_calls: list[ToolCall] = field(default_factory=list)
 
 
 class OllamaClient:
     """Async client over the Ollama HTTP API (docs/DESIGN.md §7).
 
-    M0 carried only the /api/tags health check; M3 adds chat (with JSON
-    coercion, no-think, llm_log) and embed (with L2 normalisation). All
-    LLM round-trips share one global PriorityLimiter (AGENTS.md #7) so
-    dialogue + background agent jobs never flood Ollama, and background
-    work cannot starve foreground dialogue. Structured-output robustness
-    (verify -> retry once -> template fallback) lives in the callers;
-    this class only guarantees a parsed result or raises.
+    M0 carried only the /api/tags health check; later stages add ordinary
+    text, native tools, background JSON tasks, no-think, llm_log and embed
+    (with L2 normalisation). All LLM round-trips share one global
+    PriorityLimiter (AGENTS.md #7) so dialogue + background agent jobs never
+    flood Ollama, and background work cannot starve foreground dialogue.
+    Structured-output robustness (verify -> retry once -> template fallback)
+    lives in the callers; this class validates transport/tool argument framing
+    or raises.
     """
 
     def __init__(self, host: str, timeout: float, db: Database) -> None:
@@ -95,9 +98,10 @@ class OllamaClient:
         self._limiter = PriorityLimiter(settings.llm_concurrency)
         # Route that last answered an embed call, reused to skip dead candidates.
         self._embed_route: tuple[httpx.AsyncClient, str] | None = None
-        # Optional OpenAI-compatible backend: configured with key+base_url it takes
-        # precedence for chat, and is tried first for embeds.
+        # Optional OpenAI-compatible backend: chat and embedding may use
+        # different base URLs and separate API keys.
         self._api_client: httpx.AsyncClient | None = None
+        self._api_embed_client: httpx.AsyncClient | None = None
         self._api_model = settings.chat_model
         if settings.llm_api_key and settings.llm_api_base_url:
             self._api_model = settings.llm_api_model or settings.chat_model
@@ -106,6 +110,14 @@ class OllamaClient:
                 timeout=settings.llm_api_timeout,
                 trust_env=settings.llm_api_trust_env,
                 headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+            )
+        embed_base_url = settings.llm_api_embed_base_url or settings.llm_api_base_url
+        if settings.llm_api_embed_key and embed_base_url:
+            self._api_embed_client = httpx.AsyncClient(
+                base_url=embed_base_url,
+                timeout=settings.llm_api_timeout,
+                trust_env=settings.llm_api_trust_env,
+                headers={"Authorization": f"Bearer {settings.llm_api_embed_key}"},
             )
 
     async def tags(self) -> list[str]:
@@ -138,9 +150,10 @@ class OllamaClient:
     async def chat(
         self,
         purpose: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         json_format: bool = False,
+        tools: list[dict] | None = None,
         temperature: float = 0.7,
         metadata: dict | None = None,
         priority: int | None = None,
@@ -162,14 +175,14 @@ class OllamaClient:
         try:
             async with self._limiter.slot(p):
                 if self._api_client is not None:
-                    text, in_tok, out_tok = await self._call_api(messages, json_format, temperature)
+                    text, in_tok, out_tok, calls = await self._call_api(messages, json_format, temperature, tools)
                 else:
-                    text, in_tok, out_tok = await self._call_ollama(messages, json_format, temperature)
+                    text, in_tok, out_tok, calls = await self._call_ollama(messages, json_format, temperature, tools)
             ok = True
-            self._trace_generation(purpose, messages, text, temperature, json_format,
+            self._trace_generation(purpose, messages, self._trace_output(text, calls, tools), temperature, json_format,
                                    {**(metadata or {}), "priority": p},
                                    in_tok, out_tok, model=model)
-            return ChatResult(text=text, in_tokens=in_tok, out_tokens=out_tok)
+            return ChatResult(text=text, in_tokens=in_tok, out_tokens=out_tok, tool_calls=calls)
         except Exception as exc:
             error = exc
             raise
@@ -186,40 +199,48 @@ class OllamaClient:
     async def chat_stream(
         self,
         purpose: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         json_format: bool = False,
+        tools: list[dict] | None = None,
         temperature: float = 0.7,
         metadata: dict | None = None,
         priority: int | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[str | ToolCallDelta]:
         """Streaming chat completion, yielding content deltas as they arrive.
 
         Same priority queue and accounting as ``chat``; the limiter slot is held
         for the whole stream so a background job cannot interleave with a
         half-finished dialogue. Deltas are raw model output — with
         ``json_format=True`` that means fragments of the JSON object, and the
-        caller is responsible for decoding them.
+        caller is responsible for decoding them. With native ``tools``, yields
+        ``ToolCallDelta`` alongside ordinary text; callers buffer intents until
+        the completion succeeds. Other JSON tasks keep their old string API.
         """
         model = self._api_model if self._api_client is not None else settings.chat_model
         p = priority if priority is not None else PRIORITY.get(purpose, DEFAULT_PRIORITY)
         start = time.time()
         parts: list[str] = []
+        call_buffer = ToolCallBuffer()
         in_tok = out_tok = None
         ok = False
         error: Exception | None = None
         try:
             async with self._limiter.slot(p):
                 if self._api_client is not None:
-                    source = self._stream_api(messages, json_format, temperature)
+                    source = self._stream_api(messages, json_format, temperature, tools)
                 else:
-                    source = self._stream_ollama(messages, json_format, temperature)
+                    source = self._stream_ollama(messages, json_format, temperature, tools)
                 async for delta, usage in source:
                     if usage is not None:
                         in_tok, out_tok = usage
-                    if delta:
+                    if isinstance(delta, ToolCallDelta):
+                        call_buffer.feed(delta)
+                        yield delta
+                    elif delta:
                         parts.append(delta)
                         yield delta
+                calls = call_buffer.finish()
             ok = True
         except Exception as exc:
             error = exc
@@ -230,7 +251,7 @@ class OllamaClient:
                 text = "".join(parts)
                 logger.info("llm %s ok model=%s priority=%d %dms stream in=%s out=%s",
                             purpose, model, p, ms, in_tok, out_tok)
-                self._trace_generation(purpose, messages, text, temperature, json_format,
+                self._trace_generation(purpose, messages, self._trace_output(text, calls, tools), temperature, json_format,
                                        {**(metadata or {}), "priority": p, "stream": True},
                                        in_tok, out_tok, model=model)
             elif error is None:
@@ -244,7 +265,7 @@ class OllamaClient:
             except BaseException:
                 pass  # cancellation / bookkeeping must never mask the stream result
 
-    async def _stream_ollama(self, messages, json_format, temperature):
+    async def _stream_ollama(self, messages, json_format, temperature, tools=None):
         """Ollama /api/chat NDJSON stream; the final line carries token counts."""
         body: dict[str, Any] = {
             "model": settings.chat_model,
@@ -253,8 +274,9 @@ class OllamaClient:
             "think": False,
             "options": {"temperature": temperature, "num_ctx": settings.llm_num_ctx},
         }
-        if json_format:
-            body["format"] = "json"
+        self._add_output_options(body, json_format, tools, ollama=True)
+        done = False
+        next_tool_index = 0
         async with self._client.stream("POST", "/api/chat", json=body) as res:
             res.raise_for_status()
             async for line in res.aiter_lines():
@@ -267,10 +289,23 @@ class OllamaClient:
                 chunk = (data.get("message") or {}).get("content") or ""
                 if chunk:
                     yield chunk, None
+                for call in (data.get("message") or {}).get("tool_calls") or []:
+                    fn = call["function"]
+                    index = fn.get("index", call.get("index", next_tool_index))
+                    next_tool_index = max(next_tool_index, index + 1)
+                    args = fn.get("arguments", {})
+                    yield ToolCallDelta(index, fn["name"],
+                                        args if isinstance(args, str) else json.dumps(args),
+                                        call.get("id", "")), None
                 if data.get("done"):
+                    if data.get("done_reason") == "length":
+                        raise ValueError("incomplete Ollama completion")
+                    done = True
                     yield "", (data.get("prompt_eval_count"), data.get("eval_count"))
+        if not done:
+            raise ValueError("Ollama stream ended before done")
 
-    async def _stream_api(self, messages, json_format, temperature):
+    async def _stream_api(self, messages, json_format, temperature, tools=None):
         """OpenAI-compatible SSE stream; retries without stream_options on 400/422.
 
         ``stream_options.include_usage`` is an OpenAI extension that some
@@ -279,25 +314,25 @@ class OllamaClient:
         cannot duplicate text.
         """
         try:
-            async for item in self._stream_api_once(messages, json_format, temperature, True):
+            async for item in self._stream_api_once(messages, json_format, temperature, True, tools):
                 yield item
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code not in (400, 422):
                 raise
-            async for item in self._stream_api_once(messages, json_format, temperature, False):
+            async for item in self._stream_api_once(messages, json_format, temperature, False, tools):
                 yield item
 
-    async def _stream_api_once(self, messages, json_format, temperature, include_usage):
+    async def _stream_api_once(self, messages, json_format, temperature, include_usage, tools=None):
         body: dict[str, Any] = {
             "model": self._api_model,
             "messages": messages,
             "temperature": temperature,
             "stream": True,
         }
-        if json_format:
-            body["response_format"] = {"type": "json_object"}
+        self._add_output_options(body, json_format, tools)
         if include_usage:
             body["stream_options"] = {"include_usage": True}
+        done = False
         async with self._api_client.stream("POST", "/chat/completions", json=body) as res:
             res.raise_for_status()
             async for line in res.aiter_lines():
@@ -306,17 +341,33 @@ class OllamaClient:
                     continue
                 payload = line[5:].strip()
                 if payload == "[DONE]":
+                    done = True
                     break
                 data = json.loads(payload)
+                if data.get("error"):
+                    raise RuntimeError(f"chat API: {data['error']}")
                 usage = data.get("usage")
                 if usage:
                     yield "", (usage.get("prompt_tokens"), usage.get("completion_tokens"))
                 for choice in data.get("choices") or []:
+                    if choice.get("index", 0) != 0:
+                        continue
                     chunk = (choice.get("delta") or {}).get("content") or ""
                     if chunk:
                         yield chunk, None
+                    for call in (choice.get("delta") or {}).get("tool_calls") or []:
+                        fn = call.get("function") or {}
+                        yield ToolCallDelta(call["index"], fn.get("name") or "",
+                                            fn.get("arguments") or "", call.get("id") or ""), None
+                    reason = choice.get("finish_reason")
+                    if reason in ("length", "content_filter"):
+                        raise ValueError(f"incomplete API completion: {reason}")
+                    if reason in ("stop", "tool_calls"):
+                        done = True
+        if not done:
+            raise ValueError("API stream ended before done")
 
-    async def _call_ollama(self, messages, json_format, temperature):
+    async def _call_ollama(self, messages, json_format, temperature, tools=None):
         body: dict[str, Any] = {
             "model": settings.chat_model,
             "messages": messages,
@@ -324,18 +375,22 @@ class OllamaClient:
             "think": False,
             "options": {"temperature": temperature, "num_ctx": settings.llm_num_ctx},
         }
-        if json_format:
-            body["format"] = "json"
+        self._add_output_options(body, json_format, tools, ollama=True)
         res = await self._client.post("/api/chat", json=body)
         res.raise_for_status()
         data = res.json()
+        if data.get("error"):
+            raise RuntimeError(f"ollama: {data['error']}")
+        if data.get("done_reason") == "length":
+            raise ValueError("incomplete Ollama completion")
         return (
-            data.get("message", {}).get("content", ""),
+            data.get("message", {}).get("content") or "",
             data.get("prompt_eval_count"),
             data.get("eval_count"),
+            complete_tool_calls((data.get("message") or {}).get("tool_calls") or []),
         )
 
-    async def _call_api(self, messages, json_format, temperature):
+    async def _call_api(self, messages, json_format, temperature, tools=None):
         """OpenAI-compatible /chat/completions (base_url should end in /v1)."""
         body: dict[str, Any] = {
             "model": self._api_model,
@@ -343,17 +398,39 @@ class OllamaClient:
             "temperature": temperature,
             "stream": False,
         }
-        if json_format:
-            body["response_format"] = {"type": "json_object"}
+        self._add_output_options(body, json_format, tools)
         res = await self._api_client.post("/chat/completions", json=body)
         res.raise_for_status()
         data = res.json()
+        if data.get("error"):
+            raise RuntimeError(f"chat API: {data['error']}")
         usage = data.get("usage", {}) or {}
-        try:
-            text = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError):
-            text = ""
-        return text, usage.get("prompt_tokens"), usage.get("completion_tokens")
+        choice = data["choices"][0]
+        if choice.get("finish_reason") in ("length", "content_filter"):
+            raise ValueError("incomplete API completion")
+        message = choice["message"]
+        text = message.get("content") or ""
+        calls = complete_tool_calls(message.get("tool_calls") or [])
+        return text or "", usage.get("prompt_tokens"), usage.get("completion_tokens"), calls
+
+    @staticmethod
+    def _add_output_options(body, json_format, tools, *, ollama=False) -> None:
+        if tools and json_format:
+            raise ValueError("native tools and JSON output mode are mutually exclusive")
+        if tools:
+            body["tools"] = tools
+        elif json_format:
+            if ollama:
+                body["format"] = "json"
+            else:
+                body["response_format"] = {"type": "json_object"}
+
+    @staticmethod
+    def _trace_output(text, calls, tools):
+        if not tools:
+            return text
+        return {"content": text, "tool_calls": [
+            {"id": c.id, "name": c.name, "arguments": c.arguments} for c in calls]}
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts and L2-normalise each vector (DESIGN §8).
@@ -361,7 +438,8 @@ class OllamaClient:
         Both wire formats are supported because the embedding backend may be
         Ollama (``/api/embed`` -> ``{"embeddings": [[...]]}``) or any
         OpenAI-compatible server (``/embeddings`` -> ``{"data": [{"embedding":
-        [...]}]}``); see ``_embed_routes``. Chroma is built with
+        [...]}]}``); the API route can use a separate base URL from chat; see
+        ``_embed_routes``. Chroma is built with
         embedding_function=None and always receives explicit vectors
         (AGENTS.md ChromaDB 坑①); normalisation happens here so the caller
         never has to repeat it.
@@ -397,14 +475,15 @@ class OllamaClient:
     def _embed_routes(self, texts: list[str]) -> list[tuple[httpx.AsyncClient, str, dict[str, Any]]]:
         """Candidate (client, path, body) calls in preference order.
 
-        The OpenAI-compatible backend is only tried when it is configured; the
-        Ollama host is kept as the fallback so a missing local server or a
-        mismatched model id cannot take RAG down permanently.
+        The OpenAI-compatible embedding backend is only tried when its own key
+        and an effective base URL are configured; the Ollama host is kept as
+        the fallback so a missing local server or a mismatched model id cannot
+        take RAG down permanently.
         """
         routes: list[tuple[httpx.AsyncClient, str, dict[str, Any]]] = []
-        if self._api_client is not None:
+        if self._api_embed_client is not None:
             routes.append((
-                self._api_client,
+                self._api_embed_client,
                 "/embeddings",
                 {"model": self._embed_label(), "input": texts},
             ))
@@ -469,6 +548,8 @@ class OllamaClient:
         await self._client.aclose()
         if self._api_client is not None:
             await self._api_client.aclose()
+        if self._api_embed_client is not None:
+            await self._api_embed_client.aclose()
 
     # -- langfuse 打点（best-effort，绝不影响返回值；见 LANGFUSE-PLAN §2.3） --
 
