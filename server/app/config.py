@@ -23,15 +23,16 @@ class Settings(BaseSettings):
     llm_num_ctx: int = 20480
     max_dialogue_delta: int = 3  # 单次 LLM 交互（对话/送礼/切磋）好感变化上限
 
-    # Optional OpenAI-compatible chat backend (docs/DESIGN.md §7.1): when llm_api_key
-    # and llm_api_base_url are both set, chat uses this instead of local Ollama.
-    # Embeddings always stay on local Ollama (needed for RAG).
+    # Optional OpenAI-compatible backend (docs/DESIGN.md §7.1): chat uses the
+    # configured API when llm_api_key and llm_api_base_url are both set.
     llm_api_key: str = ""
     llm_api_model: str = ""
-    # Embedding model id on the OpenAI-compatible backend; empty reuses
-    # embed_model (correct for backends that share the same Ollama tags).
+    # Embedding settings use a separate credential. When no embedding base URL
+    # is supplied, the chat base URL is used only as the endpoint address.
+    llm_api_embed_key: str = ""
     llm_api_embed_model: str = ""
     llm_api_base_url: str = ""
+    llm_api_embed_base_url: str = ""
     # 外接 API 默认不继承 shell 的 http(s)_proxy：本地开发常见代理未启动时，
     # httpx 会把请求送到死端口并一直等到超时。需要代理时显式设为 true。
     llm_api_trust_env: bool = False

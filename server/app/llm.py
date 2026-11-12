@@ -95,9 +95,10 @@ class OllamaClient:
         self._limiter = PriorityLimiter(settings.llm_concurrency)
         # Route that last answered an embed call, reused to skip dead candidates.
         self._embed_route: tuple[httpx.AsyncClient, str] | None = None
-        # Optional OpenAI-compatible backend: configured with key+base_url it takes
-        # precedence for chat, and is tried first for embeds.
+        # Optional OpenAI-compatible backend: chat and embedding may use
+        # different base URLs and separate API keys.
         self._api_client: httpx.AsyncClient | None = None
+        self._api_embed_client: httpx.AsyncClient | None = None
         self._api_model = settings.chat_model
         if settings.llm_api_key and settings.llm_api_base_url:
             self._api_model = settings.llm_api_model or settings.chat_model
@@ -106,6 +107,14 @@ class OllamaClient:
                 timeout=settings.llm_api_timeout,
                 trust_env=settings.llm_api_trust_env,
                 headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+            )
+        embed_base_url = settings.llm_api_embed_base_url or settings.llm_api_base_url
+        if settings.llm_api_embed_key and embed_base_url:
+            self._api_embed_client = httpx.AsyncClient(
+                base_url=embed_base_url,
+                timeout=settings.llm_api_timeout,
+                trust_env=settings.llm_api_trust_env,
+                headers={"Authorization": f"Bearer {settings.llm_api_embed_key}"},
             )
 
     async def tags(self) -> list[str]:
@@ -361,7 +370,8 @@ class OllamaClient:
         Both wire formats are supported because the embedding backend may be
         Ollama (``/api/embed`` -> ``{"embeddings": [[...]]}``) or any
         OpenAI-compatible server (``/embeddings`` -> ``{"data": [{"embedding":
-        [...]}]}``); see ``_embed_routes``. Chroma is built with
+        [...]}]}``); the API route can use a separate base URL from chat; see
+        ``_embed_routes``. Chroma is built with
         embedding_function=None and always receives explicit vectors
         (AGENTS.md ChromaDB 坑①); normalisation happens here so the caller
         never has to repeat it.
@@ -397,14 +407,15 @@ class OllamaClient:
     def _embed_routes(self, texts: list[str]) -> list[tuple[httpx.AsyncClient, str, dict[str, Any]]]:
         """Candidate (client, path, body) calls in preference order.
 
-        The OpenAI-compatible backend is only tried when it is configured; the
-        Ollama host is kept as the fallback so a missing local server or a
-        mismatched model id cannot take RAG down permanently.
+        The OpenAI-compatible embedding backend is only tried when its own key
+        and an effective base URL are configured; the Ollama host is kept as
+        the fallback so a missing local server or a mismatched model id cannot
+        take RAG down permanently.
         """
         routes: list[tuple[httpx.AsyncClient, str, dict[str, Any]]] = []
-        if self._api_client is not None:
+        if self._api_embed_client is not None:
             routes.append((
-                self._api_client,
+                self._api_embed_client,
                 "/embeddings",
                 {"model": self._embed_label(), "input": texts},
             ))
@@ -469,6 +480,8 @@ class OllamaClient:
         await self._client.aclose()
         if self._api_client is not None:
             await self._api_client.aclose()
+        if self._api_embed_client is not None:
+            await self._api_embed_client.aclose()
 
     # -- langfuse 打点（best-effort，绝不影响返回值；见 LANGFUSE-PLAN §2.3） --
 

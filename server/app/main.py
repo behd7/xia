@@ -49,19 +49,27 @@ mem_store: memory_mod.MemoryStore | None = None
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     global mem_store
     use_api = bool(settings.llm_api_key and settings.llm_api_base_url)
+    embed_api_base_url = settings.llm_api_embed_base_url or settings.llm_api_base_url
+    use_embed_api = bool(settings.llm_api_embed_key and embed_api_base_url)
     logger.info("startup: log=%s db=%s chroma=%s reset_on_start=%s",
                 LOG_PATH, settings.db_path_abs, settings.chroma_dir_abs,
                 settings.reset_on_start)
-    logger.info("startup: chat_backend=%s model=%s api_base=%s api_trust_env=%s "
-                "api_timeout=%.1fs ollama=%s chat_model=%s llm_timeout=%.1fs "
-                "llm_num_ctx=%d",
+    logger.info("startup: chat_backend=%s model=%s api_base=%s api_embed_base=%s "
+                "api_trust_env=%s api_timeout=%.1fs ollama=%s chat_model=%s "
+                "llm_timeout=%.1fs llm_num_ctx=%d",
                 "openai-api" if use_api else "ollama",
                 (settings.llm_api_model or settings.chat_model) if use_api else settings.chat_model,
-                settings.llm_api_base_url or "-", settings.llm_api_trust_env,
-                settings.llm_api_timeout, settings.ollama_host, settings.chat_model,
+                settings.llm_api_base_url or "-", embed_api_base_url or "-",
+                settings.llm_api_trust_env, settings.llm_api_timeout,
+                settings.ollama_host, settings.chat_model,
                 settings.llm_timeout, settings.llm_num_ctx)
     if bool(settings.llm_api_key) != bool(settings.llm_api_base_url):
-        logger.warning("startup: LLM_API_KEY 与 LLM_API_BASE_URL 只配置了一个，将使用本地 Ollama")
+        logger.warning("startup: LLM_API_KEY 与 LLM_API_BASE_URL 只配置了一个，对话将使用本地 Ollama")
+    if (
+        (settings.llm_api_embed_key or settings.llm_api_embed_base_url)
+        and bool(settings.llm_api_embed_key) != bool(embed_api_base_url)
+    ):
+        logger.warning("startup: LLM_API_EMBED_KEY 与 embedding base URL 配置不完整，嵌入将回退本地 Ollama")
     log_proxy_env(logger)
 
     await db.connect()
@@ -424,8 +432,10 @@ async def health() -> dict[str, Any]:
     except Exception:
         db_ok = False
 
-    # 双后端：配置了 OpenAI 兼容 API 时对话走 API，嵌入仍走本地 Ollama。
-    use_api = settings.llm_api_key and settings.llm_api_base_url
+    # Chat and embedding can use separate OpenAI-compatible endpoints and keys.
+    use_api = bool(settings.llm_api_key and settings.llm_api_base_url)
+    embed_api_base_url = settings.llm_api_embed_base_url or settings.llm_api_base_url
+    use_embed_api = bool(settings.llm_api_embed_key and embed_api_base_url)
     try:
         names = await ollama.tags()
         ollama_info: dict[str, Any] = {
@@ -438,8 +448,11 @@ async def health() -> dict[str, Any]:
             "api_timeout": settings.llm_api_timeout,
             "chat_model": settings.chat_model,
             "chat_model_ok": (True if use_api else settings.chat_model in names),
+            "embed_api_configured": use_embed_api,
+            "embed_api_model": (settings.llm_api_embed_model or settings.embed_model) if use_embed_api else None,
+            "embed_api_base_url": embed_api_base_url or None,
             "embed_model": settings.embed_model,
-            "embed_model_ok": settings.embed_model in names,
+            "embed_model_ok": (True if use_embed_api else settings.embed_model in names),
         }
     except Exception:
         ollama_info = {
@@ -452,8 +465,11 @@ async def health() -> dict[str, Any]:
             "api_timeout": settings.llm_api_timeout,
             "chat_model": settings.chat_model,
             "chat_model_ok": bool(use_api),
+            "embed_api_configured": use_embed_api,
+            "embed_api_model": (settings.llm_api_embed_model or settings.embed_model) if use_embed_api else None,
+            "embed_api_base_url": embed_api_base_url or None,
             "embed_model": settings.embed_model,
-            "embed_model_ok": False,
+            "embed_model_ok": bool(use_embed_api),
         }
 
     npc_ok = False

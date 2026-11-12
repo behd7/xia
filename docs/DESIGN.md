@@ -616,20 +616,27 @@ base_url 需以 `/v1` 结尾，如 `LLM_API_BASE_URL=https://api.example.com/v1`
 `LLM_API_MODEL` 指定其模型名（缺省回退 `CHAT_MODEL`）。健康检查
 `/api/health` 会标注当前生效的对话后端（`openai-api` / `ollama`）与有效模型名。
 
+embedding 使用独立的 `LLM_API_EMBED_KEY`，不会复用对话的 `LLM_API_KEY`。
+配置 `LLM_API_EMBED_BASE_URL` 可让 embedding 走不同的 OpenAI 兼容服务；留空时
+仅对 embedding 使用 `LLM_API_BASE_URL` 作为地址。未配置 embedding key 时，
+embedding API 路由不启用，仍按本地 Ollama 路由处理。
+
 **嵌入的双格式兼容**：embedding 后端可能是 Ollama（`/api/embed` →
 `{"embeddings": [[...]]}`）也可能是 OpenAI 兼容服务（`/embeddings` →
 `{"data": [{"embedding": [...]}]}`）。`OllamaClient.embed` 按
 「配置的 API 后端 → Ollama `/api/embed` → Ollama `/embeddings`」顺序尝试，
 解析两种响应形状，并缓存命中成功的路由；某条路失败自动降级到下一条，
-全部失败才抛错（由调用方的兜底链路接住）。`LLM_API_EMBED_MODEL` 可单独指定
-API 侧的嵌入模型名，留空回退 `EMBED_MODEL`。健康检查的 `/api/tags` 缺失时
-自动改查 `/v1/models`，因此把 host 直接指向 OpenAI 兼容服务也不会误报不可达。
+全部失败才抛错（由调用方的兜底链路接住）。`LLM_API_EMBED_MODEL` 可单独指定 API 侧的嵌入模型名，留空回退
+`EMBED_MODEL`。健康检查的 `/api/tags` 缺失时自动改查 `/v1/models`，因此把 host
+直接指向 OpenAI 兼容服务也不会误报不可达。
 
 ```env
 LLM_API_KEY=
 LLM_API_MODEL=
-LLM_API_EMBED_MODEL=     # API 侧嵌入模型名；留空回退 EMBED_MODEL
 LLM_API_BASE_URL=
+LLM_API_EMBED_KEY=     # 独立的 embedding API key，不复用 LLM_API_KEY
+LLM_API_EMBED_MODEL=   # API 侧嵌入模型名；留空回退 EMBED_MODEL
+LLM_API_EMBED_BASE_URL= # 留空时复用 LLM_API_BASE_URL 的地址（不复用 key）
 LLM_API_TRUST_ENV=false   # 外接 API 默认直连；需要 shell 代理时改 true
 LLM_API_TIMEOUT=8         # 外接 API 单次超时（秒），失败后仍走重试/模板兜底
 ```
@@ -986,6 +993,7 @@ Xia/
 | MAX_DIALOGUE_DELTA | ±3 | 单次 LLM 交互（对话/送礼/切磋）好感变化上限 |
 | LLM_API_KEY / LLM_API_BASE_URL | 空 | 同时设置则对话走该 OpenAI 兼容 API |
 | LLM_API_MODEL | 空 | API 对话模型名；缺省回退 CHAT_MODEL |
+| LLM_API_EMBED_KEY / LLM_API_EMBED_BASE_URL | 空 | 同时有效则 embedding 走独立的 OpenAI 兼容 API；base URL 留空时回退对话 base URL |
 | LLM_API_EMBED_MODEL | 空 | API 侧嵌入模型名；缺省回退 EMBED_MODEL |
 | LLM_API_TRUST_ENV | false | 外接 API 是否继承 shell 的 http(s)_proxy；默认直连 |
 | LLM_API_TIMEOUT | 8s | 外接 API 单次超时；失败后仍走重试/模板兜底 |
