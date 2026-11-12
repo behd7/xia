@@ -437,7 +437,7 @@ recency: 半衰期 = 3 游戏日
 
 玩家按 E 进入对话 → 输入框 + 快捷项：**[打招呼] [打听消息] [门派拜师] [切磋] [送礼]**（送礼弹背包选择）。
 
-对话回复单次 LLM 调用（qwen3:4b-instruct，`format:"json"`，禁思考），响应以 SSE 流式返回（服务端为回复只调用一次模型；送礼/切磋复用同一对话链路，见 §6.5）：
+对话回复单次 LLM 调用（普通文本 + 原生 `tools/tool_calls`；Ollama 禁思考，不再强制 JSON 输出），响应以 SSE 流式返回（服务端为回复只调用一次模型；送礼/切磋复用同一对话链路，见 §6.5）：
 
 **输入 prompt 结构**（第一人称身份句，不用"玩家/游戏/好感度 X"等机械设定词；交情以档位自然带出，不强制口头禅，让 NPC 自由发挥措辞）：
 ```
@@ -457,9 +457,11 @@ recency: 半衰期 = 3 游戏日
 你说话的样子：参考这些语气，不要逐字照抄：{speech_examples}
 你此刻的心气：{轻情绪描述，有则加}
 此刻{干支时辰}，你正在{地点}。
-以你的口吻应答{玩家名}（≤80字）。并给出你与{玩家名}的关系变化(-2~+3)、
-是否想就此收住话头(BOOL)。
-仅输出JSON: {"reply","affinity_delta","end"}
+正常应答，不要输出 JSON 对象或代码块。
+用 reply(text) 说出回复（≤80字）；普通文本同样作为回复，不要两处重复。
+用 change_affinity(delta) 表达本轮关系变化(-2~+3)，无变化可省略。
+想就此收住话头才调用 end_dialogue()。
+可调用 give_item/take_item/teach_art/refuse，最多两个原地动作。
 ```
 
 **议程（`agent/agenda.py`）**：每人有预置议程池与权重（试探神器、套张馒头的话、怂恿/劝阻上山、炫耀消息、避谈、拉人、闲聊），**不调 LLM**。每次新对话用 `random.Random(npc_id*1000003 + day*1009 + seq)` 确定性加权抽取，排除最近 3 个议程（池中无可选时允许重复）；`agenda_seq:{id}:{day}` 每场 +1，`agenda_recent:{id}` 保留最近 3 个，`agenda_current:{id}` 存当前议程。同一场对话 5 现实分钟内复用当前议程，`end=true` 清除。
@@ -467,9 +469,9 @@ recency: 半衰期 = 3 游戏日
 **轻情绪（`agent/mood.py` + `npc_mood` 表）**：只把一句语气描述注入 prompt，**不改好感、不参与任何结算**。送礼/切磋按 LLM 好感变化设情绪：delta<0 → `impatient`；delta>0 时送礼 `pleased`、玩家切磋获胜 `respectful`、玩家落败 `pleased`；delta=0 不改。对话 `end=true` 且好感 <30 → `impatient` 20 分。所有写入 best-effort，失败只打印。
 
 **输出处理**：reply 显示（可为空 = 只行动/沉默）；`acts` 由服务端校验执行、渲染成动作括注（§6.14）；好感 clamp 后更新；end=true 则对话结束并清当前议程。
-**失败策略**：JSON 解析失败→重试一次(temperature 0.3)→再失败用模板回复（"{NPC}沉吟片刻，不置可否。"，delta=0），永不阻塞游戏。动作被合法性校验拒绝时不重试整轮，只做一次「改口」重生成（只取文本、丢弃 acts）。
+**失败策略**：工具参数/控制工具校验失败或流中断→重试一次(temperature 0.3)→再失败用模板回复（"{NPC}沉吟片刻，不置可否。"，delta=0），永不阻塞游戏。动作被合法性校验拒绝时不重试整轮，只做一次「改口」重生成（只取文本、丢弃 acts）。
 
-**流式输出（SSE）**：`POST /api/npc/{id}/talk` 返回 `text/event-stream`，事件序列 `start` → `token`* → `done`；重试或模板兜底前发 `reset`，客户端据此清空已显示的文字。模型仍只输出一个 JSON 对象，服务端边收边解码 `reply` 值（转义、代理对、UTF-8 分片都安全），`affinity_delta`/`end` 在流结束后解析，`done` 携带 `{reply, affinity, end, player, fallback, place}`。**流式路径不新增 LLM 调用**（M5 预算不变；送礼/切磋复用同一对话链路，见 §6.5）。Godot 的 `HTTPRequest` 会缓冲整包，客户端改用 `HTTPClient` 手动轮询读取（`api.gd::stream_request`）。
+**流式输出（SSE）**：`POST /api/npc/{id}/talk` 返回 `text/event-stream`，事件序列 `start` → `token`* → `done`；重试或模板兜底前发 `reset`，客户端据此清空已显示的文字。模型输出普通文本与原生工具调用。服务端转发普通文本或增量解码 `reply(text)` 的参数（转义、代理对、UTF-8 分片都安全）；若两种回复同时出现，以显式 `reply` 为准，必要时 `reset`，不重复显示。全部工具在流成功结束后才校验并映射回原有 `{reply, affinity_delta, end, acts}` 结算入口，`done` 仍携带 `{reply, acts, affinity, end, player, fallback, place, stale}`。**流式路径不新增 LLM 调用**（M5 预算不变；送礼/切磋复用同一对话链路，见 §6.5）。Godot 的 `HTTPRequest` 会缓冲整包，客户端改用 `HTTPClient` 手动轮询读取（`api.gd::stream_request`）。
 
 **三层记忆与批总结**：普通对话每轮由 `MemoryStore.add_conversation_turn` 按 `npc_state.turn_no` 递增写入账本（`conversation.kind='turn'`）；送礼/切磋调用 `dialogue.talk` 复用同一链路，`user` 是合成的玩家动作，`npc` 是同一对话 prompt 生成的回复。窗口按 **NPC 独立**统计：`turn_no - last_midterm_turn > CONVERSATION_WINDOW_CAPACITY`（20）时，取最老 `MIDTERM_TURNS_PER_ENTRY`（10）轮一次 LLM 归纳成 **1 条中期记忆**：`summary`（≤120 字）+ 3~6 条可检索线索，写进 `conversation.kind='midterm'`（线索向量随行序列化，每 NPC 最多 `MIDTERM_CAPACITY`=10 条 FIFO），成功后才把 `last_midterm_turn` 推进这批的末轮号。**原文不删除**，只是移到窗口之外。
 
@@ -586,8 +588,8 @@ NPC 额外保留：`role`、`home_poi/work_poi`、`affinity`、`persona`、记�
 
 一轮对话对 NPC 不只是说话，也可以是**行动**。实现见 `server/app/agent/actions.py`，落地细节与阶段记录见 [`MEMORY-V2-PLAN.md`](MEMORY-V2-PLAN.md) §6。
 
-- **契约**：仍是一次 `format:"json"` 调用，输出扩一个 `acts` 数组：`{"reply":"…","acts":[{"tool":"give_item","args":{…}}],"affinity_delta":0,"end":false}`。`reply` 可为空（只行动/沉默），`acts` 可为空（只说话）。**不引入原生 function calling**：4B + Ollama 原生 tools 不稳，且与 `format:"json"` 互斥。
-- **v1 工具集（四个，全部原地）**：`give_item`、`take_item`、`teach_art`、`refuse`。**不含移动/跟随/带路**——NPC 位置仍只由日程确定性函数决定（架构约束 #2），要做 `follow` 必须先设计「日程相位平移」，不能新增位置同步。`teach_art` 只教功法且要求同源、不压级：属性相冲需要散功，工具不能替玩家确认。
+- **契约**：一次普通文本 + 原生 function calling；工具定义见 `server/app/agent/dialogue_tools.py`。`reply(text)` → 原有 `reply`，`change_affinity(delta)` → `affinity_delta`，`end_dialogue()` → `end=true`，四个原地工具 → 原有 `acts`。不发送 `format:"json"` 或 `response_format:json_object`；模型需支持原生工具。只行动时不必回复；没有关系变化/结束工具时默认 `0/false`。协议迁移与等价证据见 [`NPC-TOOLS.md`](NPC-TOOLS.md)。
+- **世界动作工具集（四个，全部原地；回复/关系/结束控制工具不占每轮两个动作的额度）**：`give_item`、`take_item`、`teach_art`、`refuse`。**不含移动/跟随/带路**——NPC 位置仍只由日程确定性函数决定（架构约束 #2），要做 `follow` 必须先设计「日程相位平移」，不能新增位置同步。`teach_art` 只教功法且要求同源、不压级：属性相冲需要散功，工具不能替玩家确认。
 - **原子性与安全阀**：所有 act 先全量校验（白名单 / 参数 / 前置条件）再执行，任一失败则一个都不执行并把原因作为 observation 回填、让模型改口一次；**动作一旦执行成功就禁止重试整轮**（「解析失败重试一次」只能发生在执行之前），`tool_call_log(turn_id, call_index)` 唯一约束做幂等，且回放发生在校验之前。
 - **不得开侧门**：工具效果一律走既有服务端函数（`inventory` / `arts`），不直接写 `npc_state.affinity`、不改日程、不跨地图、内部不调 LLM。
 - **入忆**：有副作用的动作在执行的同一写序内落 `memory(kind='action', importance 3~6)` 并推 `recent_events`（目击扩散），不等 36 轮总结；行动是反思与关系摘要的正式素材。
@@ -658,7 +660,8 @@ embedding：`POST /api/embed {"model": ..., "input": [...]}`，向量 L2 归一�
 
 ### 7.3 结构化输出
 
-- 对话/反思用 `/api/chat` + `format:"json"` + prompt 内 JSON schema 说明；对话请求 `stream:true`，服务端边收边解码 `reply` 并经 SSE 转发（§6.6），JSON 校验仍在流结束后做；
+- NPC 普通对话/送礼/切磋使用原生 `tools/tool_calls`（Ollama `/api/chat` 或 OpenAI `/chat/completions`），`stream:true`，文本与回复工具经 SSE 转发（§6.6）；搭话及动作改口非流式，只开放 `reply` 工具。完整工具参数校验在执行前完成，绝不把输出失败静默降回 JSON 模式；
+- 反思、关系摘要、八卦、心事及中期/长期总结继续使用原有 JSON 输出模式，协议迁移不改后台任务；
 - qwen3 禁思考：请求体 `"think": false`（旧版 Ollama 退化为 system 附加 `/no_think`）；
 - 校验→重试 1 次→模板兜底（§6.6）；所有调用写 `llm_log` 表（用途/耗时/token/成败）便于实验分析。流式调用的 token 数取 Ollama 末行或 OpenAI `stream_options.include_usage`（不支持时自动去掉该字段重试，代价是没有 token 计数）。
 
@@ -1003,7 +1006,7 @@ Xia/
 ## 15. 风险与开放问题
 
 **风险与对策**：
-- 4B 模型 JSON 输出不稳 → format:json + 重试 + 模板兜底，永不阻塞玩法（§7.3）；
+- 模型输出/原生工具调用不稳 → 执行前完整校验 + 重试 + 模板兜底，永不阻塞玩法（§7.3）；本地模型的工具能力需另实测；
 - 对话延迟 2~5s（4B Q4 本地推理）→ 前端"…"指示 + 记忆检索与 prompt 组装并行；每 10 轮多一次中期总结与线索嵌入，每 36 轮多一次后台长期总结（不占前台等待）；
 - 长对话上下文膨胀 → 只平铺最近 `dialogue_window_size` 轮，长程信息靠中期 summary+线索、长期记忆表与关系摘要承载；
 - 中期与长期都在 SQLite → 重启不丢；长期总结后台异步，进程退出时**排队中的任务**可能丢一批，但游标未推进，重启后同一区间会自动重来；

@@ -31,17 +31,6 @@ MAX_COUNT = 3
 TAKE_ITEM_MIN_AFFINITY = 50   # 能不能从玩家手里要东西
 TEACH_ART_MIN_AFFINITY = 70   # 肯不肯传功（与拜师门槛一致）
 
-# 写进 system prompt 的动作说明：越短越好，4B 模型的注意力有限。
-PROMPT_SPECS = (
-    "你也可以顺手做点事（可省略，最多两个）：\n"
-    "- give_item：把身上有的东西给对方，参数 item（物品名）、count（1~3）\n"
-    "- take_item：向对方要过一件东西，参数 item、count\n"
-    "- teach_art：把你正在练的功法教给对方（须同源、交情够），参数 art（功法名）\n"
-    "- refuse：明确回绝对方，参数 reason（不超过20字）\n"
-    '需要动手时在 JSON 里加 "acts":[{"tool":"give_item",'
-    '"args":{"item":"小回春散","count":1}}]；没有动作就省略 acts。'
-)
-
 _ACT_TEXT = {
     "give_item": "把{count}件{name}递给了{player}",
     "take_item": "收下了{player}的{count}件{name}",

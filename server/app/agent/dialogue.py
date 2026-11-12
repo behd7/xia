@@ -1,17 +1,12 @@
-"""自由对话（docs/DESIGN.md §6.6）：POST /api/npc/{id}/talk（SSE 流式）。
+"""NPC 对话：普通文本 + 原生工具调用，效果仍走原来的结算链。
 
-单次 LLM 调用（qwen3:4b-instruct, format:json, 禁思考），从单回合回到：
-记忆检索（RAG）+ 最近对话平铺 并行做 -> prompt -> 流式 JSON -> 校验 -> 重试一次
-(temperature 0.3) -> 模板兜底。绝不让模型输出失败阻塞游戏（AGENTS.md #4）。
-
-仍是**一次**前台调用（M5 预算）：模型输出 JSON，`reply` 字段边到边解码成
-SSE token，`affinity_delta`/`end` 在流结束后解析，最后发 `done`。
+RAG / prompt -> 流式内容与工具意图 -> 完整校验 -> 重试一次 -> 模板兜底。
+回复在 SSE 中流式显示；动作、好感和结束意图只在整轮成功后结算。
+送礼/切磋复用同一链路；副作用不进入生成重试路径。
 """
 
 import asyncio
-import json
 import logging
-import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -32,7 +27,7 @@ from . import prompt_budget as budget_mod
 from . import rag as rag_mod
 from . import relationship as relationship_mod
 from . import trace as trace_mod
-from .json_utils import strip_fence
+from .dialogue_tools import DIALOGUE_TOOLS, PROMPT_SPECS, REPLY_TOOL, TurnStream, parse_turn
 
 logger = logging.getLogger(__name__)
 
@@ -42,32 +37,6 @@ SHICHEN_PHASES = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申",
 def shichen(clock) -> str:
     hour = int(clock.now() // 3600) % 24
     return SHICHEN_PHASES[(hour + 1) // 2 % 12] + "时"
-
-
-def _parse(result_text: str) -> dict:
-    """解析 LLM 的 JSON 输出；失败抛异常由调用方走重试/兜底。
-
-    `reply` 可以为空（只行动或沉默），`acts` 可以省略（只说话）；但两者不能都空，
-    否则视为解析失败走重试。
-    """
-    data = json.loads(strip_fence(result_text))
-    if not isinstance(data, dict):
-        raise ValueError("not an object")
-    acts = data.get("acts")
-    if acts is None:
-        acts = []
-    if not isinstance(acts, list):
-        raise ValueError("acts must be a list")
-    reply = str(data.get("reply") or "").strip()
-    clean_acts = [act for act in acts if isinstance(act, dict)]
-    if not reply and not clean_acts:
-        raise ValueError("empty reply")
-    return {
-        "reply": reply,
-        "affinity_delta": int(data.get("affinity_delta", 0) or 0),
-        "end": bool(data.get("end", False)),
-        "acts": clean_acts,
-    }
 
 
 def _fallback(n: dict) -> dict:
@@ -87,95 +56,19 @@ async def _correct_after_reject(mem_store, msgs: list[dict], result: dict,
             "dialogue",
             [
                 *msgs,
-                {"role": "assistant", "content": json.dumps(
-                    {"reply": result.get("reply", ""), "acts": result.get("acts", [])},
-                    ensure_ascii=False)},
+                {"role": "assistant", "content": (
+                    result.get("reply", "") or "（你正想动手，但尚未做成。）")},
                 {"role": "user", "content": (
                     f"（旁白：{report.observation}你没能做成那件事。"
                     "只说一句符合眼下情形的话，不要再带任何动作。）")},
             ],
-            json_format=True, temperature=0.3,
+            tools=[REPLY_TOOL], temperature=0.3,
             metadata={"stage": "act_correction", "error": report.error},
         )
-        data = json.loads(strip_fence(cr.text))
-        reply = str((data or {}).get("reply") or "").strip()
-        return reply or None
+        return parse_turn(cr.text, cr.tool_calls)["reply"] or None
     except Exception:
         logger.exception("act correction failed")
         return None
-
-
-_REPLY_KEY = re.compile(r'"reply"\s*:\s*"')
-_HEX4 = re.compile(r"[0-9a-fA-F]{4}")
-_ESCAPES = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f",
-            "n": "\n", "r": "\r", "t": "\t"}
-
-
-def _reply_prefix(text: str) -> str | None:
-    """Decode the already-complete prefix of the JSON `reply` string.
-
-    Returns None until the key and opening quote arrive. A trailing incomplete
-    escape (or a lone high surrogate whose pair may still come) is held back —
-    the next chunk completes it, so the returned value only ever grows.
-    """
-    m = _REPLY_KEY.search(text)
-    if m is None:
-        return None
-    out: list[str] = []
-    i = m.end()
-    while i < len(text):
-        c = text[i]
-        if c == '"':
-            return "".join(out)
-        if c != "\\":
-            out.append(c)
-            i += 1
-            continue
-        if i + 1 >= len(text):
-            break
-        esc = text[i + 1]
-        if esc == "u":
-            if i + 6 > len(text) or not _HEX4.fullmatch(text[i + 2:i + 6]):
-                break
-            code = int(text[i + 2:i + 6], 16)
-            i += 6
-            if 0xD800 <= code <= 0xDBFF:
-                # A surrogate pair may be split across chunks; wait for the low half.
-                if not (text.startswith("\\u", i) and i + 6 <= len(text)):
-                    break
-                low_hex = text[i + 2:i + 6]
-                if not _HEX4.fullmatch(low_hex):
-                    break
-                low = int(low_hex, 16)
-                if not 0xDC00 <= low <= 0xDFFF:
-                    break
-                out.append(chr(0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)))
-                i += 6
-                continue
-            out.append(chr(code))
-            continue
-        if esc not in _ESCAPES:
-            break
-        out.append(_ESCAPES[esc])
-        i += 2
-    return "".join(out)
-
-
-class _ReplyExtractor:
-    """Turn streamed JSON fragments into `reply` text deltas for SSE."""
-
-    def __init__(self) -> None:
-        self._raw = ""
-        self._sent = ""
-
-    def feed(self, chunk: str) -> str:
-        self._raw += chunk
-        value = _reply_prefix(self._raw)
-        if value is None or not value.startswith(self._sent):
-            return ""
-        delta = value[len(self._sent):]
-        self._sent = value
-        return delta
 
 
 def _warmth(affinity: int, name: str) -> str:
@@ -255,11 +148,8 @@ def _build_messages(p, n, affinity, memories, turns, impression, now_str, place,
         f"你们最近的往来：\n{turn_lines}\n"
         f"{heart_line}{agenda_line}{examples_line}{mood_line}"
         f"此刻{now_str}，你正在{place}。\n"
-        f"{acts_mod.PROMPT_SPECS}\n"
-        f"以你的口吻应答{p['name']}（≤80字，也可以不作声）。并给出这次你与{p['name']}的关系变化"
-        "（-2~+3整数）、是否想就此收住话头（BOOL）。\n"
-        '仅输出JSON，不要输出其他文字：{"reply":"...","acts":[],'
-        '"affinity_delta":0,"end":false}\n'
+        f"{PROMPT_SPECS}\n"
+        f"以你的口吻应答{p['name']}，按工具说明表达关系变化与行动意图。\n"
         "不要复述上面的设定，只在相关或你想推进话题时提起。\n"
         "不知道的事就岔开、装糊涂或反问，不要编造新人物、新宝物、新门派。"
     )
@@ -361,8 +251,7 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
     last_msgs: list[dict] = []
     for temperature in (0.7, 0.3):  # 校验 -> 重试一次(temperature 0.3)
         attempts += 1
-        raw: list[str] = []
-        extractor = _ReplyExtractor()
+        stream = TurnStream()
         try:
             msgs = _build_messages(
                 p, n, current_affinity, memories, turns, impression,
@@ -374,15 +263,24 @@ async def talk_stream(db, mem_store, npc_id: int, message: str, *,
             )
             last_msgs = msgs
             async for chunk in mem_store.llm.chat_stream(
-                    purpose, msgs, json_format=True, temperature=temperature,
+                    purpose, msgs, tools=DIALOGUE_TOOLS, temperature=temperature,
                     metadata={"attempt": attempts, "temperature": temperature}):
-                raw.append(chunk)
-                delta = extractor.feed(chunk)
+                reset, delta = stream.feed(chunk)
+                if reset:
+                    yield "reset", {}
                 if delta:
                     yield "token", {"text": delta}
-            result = _parse("".join(raw))
+            result = stream.finish()
+            # Whitespace trimming / explicit reply overriding ordinary content
+            # must leave displayed SSE text identical to the settled reply.
+            if stream.sent != result["reply"]:
+                yield "reset", {}
+                if result["reply"]:
+                    yield "token", {"text": result["reply"]}
             break
         except Exception:
+            logger.warning("dialogue generation rejected npc=%d attempt=%d",
+                           npc_id, attempts, exc_info=True)
             # The retry restarts the reply; tell the client to drop partial text.
             yield "reset", {}
             continue

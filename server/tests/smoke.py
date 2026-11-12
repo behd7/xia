@@ -87,9 +87,12 @@ async def main() -> int:
     GATE = {"reached": asyncio.Event(), "release": asyncio.Event()}
     GATE_LT = {"reached": asyncio.Event(), "release": asyncio.Event()}
 
-    # -- stub LLM：chat 按 purpose 返回确定 JSON；embed 返回确定向量（仅测通路） --
+    from app.llm import ChatResult
+    from app.llm_tools import ToolCall, ToolCallDelta
+
+    # -- stub LLM：NPC 对话返回原生工具，后台任务继续返回 JSON --
     async def fake_chat(purpose, messages, *, json_format=False, temperature=0.7,
-                        metadata=None, priority=None):
+                        metadata=None, priority=None, tools=None):
         CALLED.append(purpose)
         CALLS.append((purpose, priority))
         STAGES.append((metadata or {}).get("stage"))
@@ -145,14 +148,33 @@ async def main() -> int:
                         '"reason":"镇上人人自危","deviation":"gather_early","minutes":10}')
         else:
             text = "{}"
-        return type("R", (), {"text": text, "in_tokens": 10, "out_tokens": 8})()
+        calls = []
+        if tools:
+            assert not json_format, "NPC tools must not force JSON output"
+            payload = json.loads(text)  # deterministic old-contract fixture, not model wire output
+            names = {t["function"]["name"] for t in tools}
+            if payload.get("reply"):
+                calls.append(ToolCall("reply", {"text": payload["reply"]}, "reply-id"))
+            if "change_affinity" in names:
+                calls.append(ToolCall("change_affinity", {"delta": payload.get("affinity_delta", 0)}))
+            if "end_dialogue" in names and payload.get("end"):
+                calls.append(ToolCall("end_dialogue", {}))
+            calls.extend(ToolCall(a["tool"], a["args"]) for a in payload.get("acts", [])
+                         if a["tool"] in names)
+            text = ""
+        return ChatResult(text, 10, 8, calls)
 
     async def fake_chat_stream(purpose, messages, *, json_format=False, temperature=0.7,
-                               metadata=None, priority=None):
+                               metadata=None, priority=None, tools=None):
         result = await fake_chat(purpose, messages, json_format=json_format,
-                                 temperature=temperature, metadata=metadata, priority=priority)
+                                 temperature=temperature, metadata=metadata, priority=priority, tools=tools)
         for i in range(0, len(result.text), 7):
             yield result.text[i:i + 7]
+        for index, call in enumerate(result.tool_calls):
+            yield ToolCallDelta(index, call.name, id=call.id)
+            args = json.dumps(call.arguments, ensure_ascii=True)
+            for i in range(0, len(args), 7):
+                yield ToolCallDelta(index, arguments=args[i:i + 7])
 
     def _fake_vec(text: str) -> list[float]:
         buckets = (
