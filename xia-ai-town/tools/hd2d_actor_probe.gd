@@ -1,5 +1,5 @@
 extends SceneTree
-## Real Forward+ readback on the same isolated display as the full P1 probe.
+## Real GPU body, shadow and lighting readbacks on the isolated display.
 const Projector = preload("res://scripts/hd2d/projection.gd")
 const Actor = preload("res://scripts/hd2d/actors.gd")
 const Lighting = preload("res://scripts/hd2d/environment.gd")
@@ -27,7 +27,8 @@ func shot(title: String) -> Image:
 		await process_frame
 	await RenderingServer.frame_post_draw
 	var image := root.get_texture().get_image()
-	image.save_png(output.path_join(title+".png"))
+	if image.save_png(output.path_join(title+".png")) != OK:
+		check(false, "save_" + title)
 	return image
 
 func difference(a: Image, b: Image) -> Dictionary:
@@ -47,6 +48,7 @@ func _run() -> void:
 	output = OS.get_environment("XIA_HD2D_OUTPUT")
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	Engine.max_fps = 60
+	Engine.time_scale = 0.0
 	scene = Node3D.new()
 	root.add_child(scene)
 	var lighting: Node3D = load("res://scenes/hd2d/lighting.tscn").instantiate()
@@ -71,7 +73,7 @@ func _run() -> void:
 	actor = load("res://scenes/hd2d/actor.tscn").instantiate()
 	scene.add_child(actor)
 	actor.sync(Vector2(512,422),0.0,0)
-	await create_timer(2.0).timeout
+	await create_timer(2.0, true, false, true).timeout
 	check(root.size==Vector2i(1440,900),"native_window",{"window":[root.size.x,root.size.y]})
 	check(actor.sprite.cast_shadow==GeometryInstance3D.SHADOW_CASTING_SETTING_OFF and actor.body_shadow.cast_shadow==GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY,
 		"single_volumetric_shadow_without_paper_sprite_shadow")
@@ -171,24 +173,34 @@ func _run() -> void:
 		"passed":not failed,"checks":results,"scope":"P1 actor gait, ground-shadow and scene-lighting GPU readbacks"},"\t"))
 	quit(1 if failed else 0)
 
-func garment_luminance(image: Image, who: Node3D, view_camera: Camera3D) -> float:
-	# Sample the same pale cloth/skin texels in both materials, rather than
-	# including the bright grass or black boots in a screen rectangle average.
+func garment_stats(image: Image, who: Node3D, view_camera: Camera3D, background: Image = null) -> Dictionary:
+	# Sample actual pale garment/skin texels, not a screen rectangle. The
+	# body-hidden control proves these pixels are body, not an occluding roof.
 	var atlas: Image = Actor.SHEET.get_image()
 	var frame_rect: Array = who.metadata.frames[who.frame].rect
 	var luminance := 0.0
 	var count := 0
+	var clipped := 0
+	var visible_samples := 0
 	for y: int in range(80):
 		for x: int in range(64):
 			var texel := atlas.get_pixel(frame_rect[0]+x,frame_rect[1]+y)
-			if texel.a < 0.5 or texel.get_luminance() < 0.6:
-				continue
+			if texel.a < 0.5 or texel.get_luminance() < 0.6: continue
 			var local := Vector3((x+0.5-32)*who.sprite.pixel_size,(40-y-0.5)*who.sprite.pixel_size,0)
 			var pixel := Vector2i(view_camera.unproject_position(who.sprite.to_global(local)))
-			if Rect2i(Vector2i.ZERO,image.get_size()).has_point(pixel):
-				luminance += image.get_pixelv(pixel).get_luminance()
-				count += 1
-	return luminance / maxf(1,count)
+			if not Rect2i(Vector2i.ZERO,image.get_size()).has_point(pixel): continue
+			var color := image.get_pixelv(pixel)
+			luminance += color.get_luminance()
+			clipped += int(color.r >= 0.99 and color.g >= 0.99 and color.b >= 0.99)
+			if background != null:
+				var bg := background.get_pixelv(pixel)
+				visible_samples += int(Vector3(color.r-bg.r, color.g-bg.g, color.b-bg.b).length() > 0.03)
+			count += 1
+	return {"luminance": luminance/maxf(1,count), "samples": count,
+		"white_clip_fraction": float(clipped)/maxi(1,count), "visible_fraction": float(visible_samples)/maxi(1,count)}
+
+func garment_luminance(image: Image, who: Node3D, view_camera: Camera3D) -> float:
+	return garment_stats(image, who, view_camera).luminance
 
 func lighting_checks() -> void:
 	scene.queue_free()
@@ -196,20 +208,28 @@ func lighting_checks() -> void:
 	var world := preload("res://scripts/town_world.gd").new()
 	world._ensure_grid()
 	preload("res://scripts/hd2d/fixture_layout.gd").prepare(world)
-	var view := preload("res://scripts/hd2d/town_view.gd").new()
+	var view := preload("res://scenes/hd2d/prototype_view.tscn").instantiate()
 	root.add_child(view)
 	view.setup(world)
+	view.set_physics_process(false)
+	view.occlusion.enabled = false
+	view.occlusion.reset()
 	view.quality = OS.get_environment("XIA_HD2D_QUALITY")
 	var cases := {}
+	var visibility_material: ShaderMaterial = Actor.body_material.duplicate()
+	visibility_material.set_shader_parameter("unshaded", true)
+	var exposure := float(Actor.body_material.get_shader_parameter("compatibility_exposure")) if RenderingServer.get_current_rendering_method() == "gl_compatibility" else 1.0
+	check(exposure >= 0.1 and exposure <= 1.0, "body_exposure_control_valid", {"exposure": exposure})
 	for entry: Array in [
 		["day",12,38,30,Vector2(512,422)],
 		["key",12,38,-58,Vector2(512,422)],
-		["back",12,38,122,Vector2(512,422)],
+		["back",12,38,122,Vector2(860,120)],
+		["game",12,Projector.GAME_PITCH,Projector.GAME_YAW,Vector2(860,560)],
 		["low",12,30,30,Vector2(512,422)],
 		["high",12,65,30,Vector2(512,422)],
 		["dusk",18,38,30,Vector2(512,422)],
 		["night",22,38,30,Vector2(512,422)],
-		["house",12,38,30,Vector2(512,240)]]:
+		["house",12,38,90,Vector2(652,300)]]:
 		world.actor_pos = entry[4]
 		view.set_pitch(entry[2])
 		view.set_yaw(entry[3])
@@ -222,13 +242,33 @@ func lighting_checks() -> void:
 		view.hero.body_shadow.set_pose(-1,Vector2.DOWN)
 		for who: Node3D in [view.hero,view.target]:
 			who.sprite.material_override = null
+			# Compare normal response at matched exposure, not an exposed material
+			# against an uncompensated/clipped reference. Forward+ stays at 1.0.
+			who.sprite.modulate = Color(exposure, exposure, exposure, 1.0)
 		var before := await shot("lighting-"+entry[0]+"-before")
 		for who: Node3D in [view.hero,view.target]:
 			who.sprite.material_override = Actor.body_material
+			who.sprite.modulate = Color.WHITE
 		var after := await shot("lighting-"+entry[0]+"-after")
+		view.hero.sprite.hide()
+		var background := await shot("lighting-"+entry[0]+"-background")
+		view.hero.sprite.show()
+		var stats := garment_stats(after, view.hero, view.camera, background)
+		# Lit cloth can legitimately match a dark background. A saturated
+		# diagnostic body proves coverage without changing depth/alpha/pose.
+		view.hero.sprite.material_override = visibility_material
+		view.hero.sprite.modulate = Color(4, 0, 4, 1)
+		var marker := await shot("lighting-"+entry[0]+"-body-coverage")
+		view.hero.sprite.material_override = Actor.body_material
+		view.hero.sprite.modulate = Color.WHITE
+		var coverage := garment_stats(marker, view.hero, view.camera, background)
+		stats["lit_contrast_fraction"] = stats.visible_fraction
+		stats["body_visible_fraction"] = coverage.visible_fraction
+		stats.erase("visible_fraction")
+		check(stats.samples > 50 and stats.body_visible_fraction > 0.95, entry[0]+"_photometry_samples_visible_body", stats)
 		var bounds: Rect2 = view.hero.screen_rect(view.camera)
 		cases[entry[0]] = {"before":garment_luminance(before,view.hero,view.camera),
-			"after":garment_luminance(after,view.hero,view.camera),
+			"after":stats.luminance,"samples":stats,
 			"bounds":[bounds.position.x,bounds.position.y,bounds.size.x,bounds.size.y]}
 		if entry[0] == "night":
 			for lantern: OmniLight3D in view.scenery.lanterns:
@@ -241,8 +281,11 @@ func lighting_checks() -> void:
 			var clear := garment_luminance(unshadowed,view.hero,view.camera)
 			check(clear>cases.house.after+0.04,"actor_receives_scene_shadow",{"shadowed":cases.house.after,"unshadowed":clear})
 			view.lighting.sun.shadow_enabled = true
-	check(cases.day.after>cases.day.before*1.18 and cases.day.after<0.92,"day_cloth_readable",cases.day)
-	check(cases.back.after>cases.back.before*1.18,"backlit_cloth_readable",cases.back)
+	# Mean sRGB brightness is renderer-dependent, and is not clipping. Check
+	# actual three-channel saturation; aesthetic readability remains visual.
+	check(cases.day.after>cases.day.before*1.18 and cases.day.samples.white_clip_fraction<0.1,"day_material_gain_without_white_clipping",cases.day)
+	check(cases.game.samples.white_clip_fraction<0.1,"game_camera_cloth_preserves_highlight_detail",cases.game)
+	check(cases.back.after>cases.back.before*1.18,"backlit_material_luminance_gain",cases.back)
 	check(cases.night.no_lantern<cases.day.after*0.85 and cases.night.no_lantern>0.15,"night_remains_dimmer_than_day",{"night":cases.night.no_lantern,"day":cases.day.after})
 	# Lightweight uses only one lantern; leave margin for shadow-map rounding.
 	check(cases.night.after>cases.night.no_lantern+0.025,"actor_receives_lantern_light",cases.night)

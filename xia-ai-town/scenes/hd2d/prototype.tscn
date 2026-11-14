@@ -141,7 +141,7 @@ text = "日夜"
 custom_minimum_size = Vector2(0, 42)
 layout_mode = 2
 mouse_default_cursor_shape = 2
-text = "局部虚化"
+text = "人物描边"
 
 [node name="TestPanel" type="Button" parent="Actions"]
 custom_minimum_size = Vector2(0, 42)
@@ -164,7 +164,7 @@ grow_vertical = 0
 [node name="MovementHint" type="Label" parent="Footer"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 14
-text = "WASD / 方向键 随镜头移步 · 滚轮 1/2/3× · O 局部虚化 · T 双目标 · L 日夜 · Q 画质 · F 后期 · R 回门口 · B 面板"
+text = "WASD / 方向键 随镜头移步 · 滚轮 1/2/3× · O 人物描边 · L 日夜 · Q 画质 · F 后期 · R 回门口 · B 面板"
 
 [node name="CameraHint" type="Label" parent="Footer"]
 layout_mode = 2

@@ -426,7 +426,8 @@ func _full_map_checks() -> void:
 		if str(building.kind).is_empty():
 			continue
 		var rect: Rect2 = building.rect
-		world.actor_pos = Vector2(rect.get_center().x, rect.end.y + 24)
+		# Check business access outside the door-front NPC interaction circle.
+		world.actor_pos = Vector2(rect.get_center().x + 56, rect.end.y + 24)
 		var nearby: Dictionary = world.nearby()
 		if not world.can_walk(world.actor_pos) or nearby.get("id", "") != str(building.id):
 			printerr("HD2D_FAIL: scenic building interaction apron is blocked ", building.id)

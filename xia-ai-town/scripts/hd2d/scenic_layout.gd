@@ -1,6 +1,7 @@
 extends RefCounted
 ## P4 authored town. Shared by HD-2D terrain, movement, door interactions and map.
-## Coordinates remain 1600×960; NPC schedules are deliberately outside this revision.
+## Coordinates remain 1600×960. The server still plans schedules on the frozen 2D
+## layout; NPC_ROUTES/MOB_POSITIONS re-seat the same actors on this town.
 
 const TILE: int = 16
 const WORLD_SIZE: Vector2 = Vector2(1600, 960)
@@ -33,22 +34,64 @@ const BUILDINGS: Array[Dictionary] = [
 	{"rect": Rect2(1088, 64, 192, 112), "name": "烟雨小筑", "kind": "sect", "id": "yanyu"},
 	{"rect": Rect2(112, 384, 144, 96), "name": "药铺", "kind": "shop", "id": "clinic"},
 	{"rect": Rect2(1040, 368, 160, 112), "name": "铁匠铺", "kind": "shop", "id": "smith"},
-	{"rect": Rect2(560, 432, 224, 128), "name": "客栈", "kind": "inn", "id": "inn"},
+	{"rect": Rect2(384, 432, 224, 128), "name": "客栈", "kind": "inn", "id": "inn"},
 	{"rect": Rect2(1344, 624, 160, 112), "name": "破庙", "kind": "", "id": "temple"},
 ]
+## Physical facade signs: x / height / forward offset from the building pad.
+## Hang in front of each eave so the fixed 30-degree camera sees the lettering.
+## Names come from BUILDINGS, never a second text table or generated image.
+const BUILDING_SIGNS := {
+	"jianyang": {"offset": Vector3(0, 51, 64), "width": 88.0},
+	"xuantie": {"offset": Vector3(0, 82, 82), "width": 72.0},
+	"yanyu": {"offset": Vector3(-28, 65, 58), "width": 88.0},
+	"clinic": {"offset": Vector3(0, 38, 60), "width": 64.0},
+	"smith": {"offset": Vector3(-24, 62, 52), "width": 72.0},
+	"inn": {"offset": Vector3(0, 50, 74), "width": 64.0},
+	"temple": {"offset": Vector3(0, 73, 70), "width": 64.0},
+}
 const ROAD_PATHS: Array[Dictionary] = [
 	{"points": [Vector2(72,304),Vector2(400,272),Vector2(528,320),Vector2(848,352),Vector2(1032,272),Vector2(1296,288)], "width": 48.0},
 	{"points": [Vector2(72,544),Vector2(352,560),Vector2(496,624),Vector2(832,624),Vector2(1008,576),Vector2(1256,560),Vector2(1304,448)], "width": 56.0},
+	{"points": [Vector2(680,336),Vector2(680,624)], "width": 40.0},
+	{"points": [Vector2(272,288),Vector2(288,552)], "width": 40.0},
 	{"points": [Vector2(824,336),Vector2(832,624),Vector2(824,784),GATE_AT], "width": 64.0},
 	{"points": [Vector2(128,848),Vector2(432,800),Vector2(824,784),Vector2(1104,816),Vector2(1456,784)], "width": 40.0},
 	{"points": [Vector2(272,176),Vector2(272,288)], "width": 40.0},
 	{"points": [Vector2(680,272),Vector2(680,336)], "width": 48.0},
 	{"points": [Vector2(1184,176),Vector2(1184,288)], "width": 40.0},
 	{"points": [Vector2(184,480),Vector2(184,552)], "width": 40.0},
-	{"points": [Vector2(672,560),Vector2(672,624)], "width": 48.0},
+	{"points": [Vector2(496,560),Vector2(496,624)], "width": 48.0},
 	{"points": [Vector2(1120,480),Vector2(1120,568)], "width": 40.0},
 	{"points": [Vector2(1424,736),Vector2(1424,784),Vector2(1304,768),Vector2(1288,576)], "width": 40.0},
 ]
+# Server schedules keep their phases and timing; only the polylines are local.
+# Every point is a foot position on this layout: home -> door front -> crossroad.
+const GATHER_ANCHOR := Vector2(832, 616)
+const NPC_ROUTES := {
+	"gu_changfeng": {"home_to_work": [Vector2(128, 120), Vector2(128, 200), Vector2(272, 200)],
+		"work_to_gather": [Vector2(272, 200), Vector2(272, 286), Vector2(400, 272), Vector2(528, 320), Vector2(820, 350), Vector2(828, 480), Vector2(808, 600)]},
+	"tie_wushuang": {"home_to_work": [Vector2(548, 216), Vector2(548, 300), Vector2(680, 300)],
+		"work_to_gather": [Vector2(680, 300), Vector2(680, 336), Vector2(820, 350), Vector2(828, 480), Vector2(832, 592)]},
+	"su_wanqing": {"home_to_work": [Vector2(1048, 150), Vector2(1048, 200), Vector2(1184, 200)],
+		"work_to_gather": [Vector2(1184, 200), Vector2(1184, 282), Vector2(1032, 272), Vector2(848, 352), Vector2(828, 480), Vector2(856, 600)]},
+	"chen_bansong": {"home_to_work": [Vector2(184, 352), Vector2(288, 352), Vector2(288, 504), Vector2(184, 504)],
+		"work_to_gather": [Vector2(184, 504), Vector2(184, 552), Vector2(352, 560), Vector2(400, 608), Vector2(496, 624), Vector2(800, 624)]},
+	"wang_dazhu": {"home_to_work": [Vector2(1120, 336), Vector2(1008, 336), Vector2(1008, 504), Vector2(1120, 504)],
+		"work_to_gather": [Vector2(1120, 504), Vector2(1120, 568), Vector2(1008, 576), Vector2(864, 628)]},
+	"liu_xiaodie": {"home_to_work": [Vector2(352, 470), Vector2(352, 608), Vector2(496, 608), Vector2(496, 584)],
+		"work_to_gather": [Vector2(496, 584), Vector2(496, 624), Vector2(760, 636), Vector2(812, 652)]},
+	"zhang_mantou": {"home_to_work": [Vector2(1424, 760), Vector2(1424, 784), Vector2(1304, 768), Vector2(1288, 576), Vector2(1256, 560), Vector2(1008, 576), Vector2(884, 596)],
+		"work_to_gather": [Vector2(884, 596), Vector2(852, 656)]},
+}
+# Server spawn tiles sit on the old wilderness band; here it lies south of the
+# southern lane (wolves west, bandits and their chief on the eastern stone path).
+const MOB_POSITIONS := {
+	"wolf_1": Vector2(232, 872), "wolf_2": Vector2(424, 872), "wolf_3": Vector2(616, 856),
+	"bandit_1": Vector2(1000, 872), "bandit_2": Vector2(1144, 872), "bandit_3": Vector2(1240, 840),
+	"boss_1": Vector2(1480, 872),
+}
+# Fixed server spawn points (new character / revival) and their seats here.
+const SPAWN_REMAP := {Vector2(792, 440): Vector2(832, 648), Vector2(520, 376): Vector2(496, 592)}
 const POND := Rect2(1328, 160, 208, 256)
 const YARD := Rect2(880, 112, 144, 128)
 const WELL_AT := Vector2(448, 576)
@@ -191,6 +234,26 @@ func _fill_tiles(r: Rect2i, value: int) -> void:
 		for x: int in range(r.position.x, r.end.x):
 			_grid[y * 100 + x] = value
 
+## Old-layout anchors and their seats here. Used for points this file has no
+## authored route for (a new NPC or mob), never for the authored ones above.
+const _LEGACY_ANCHORS: Array = [
+	[Vector2(144, 183), Vector2(272, 200)], [Vector2(368, 183), Vector2(680, 300)],
+	[Vector2(592, 183), Vector2(1184, 200)], [Vector2(128, 375), Vector2(184, 504)],
+	[Vector2(304, 375), Vector2(1120, 504)], [Vector2(566, 407), Vector2(640, 584)],
+	[Vector2(1360, 444), Vector2(1424, 760)], [Vector2(768, 440), Vector2(832, 616)],
+	[Vector2(400, 624), Vector2(424, 872)], [Vector2(1128, 624), Vector2(1144, 872)],
+]
+
+static func remap_legacy(at: Vector2) -> Vector2:
+	if SPAWN_REMAP.has(at):
+		return SPAWN_REMAP[at]
+	var best: Array = _LEGACY_ANCHORS[0]
+	for pair: Array in _LEGACY_ANCHORS:
+		if at.distance_squared_to(pair[0]) < at.distance_squared_to(best[0]):
+			best = pair
+	# Keep the offset from the nearest landmark, bounded so it stays in its yard.
+	return (best[1] + (at - best[0]).limit_length(48.0)).clamp(Vector2(72, 72), WORLD_SIZE - Vector2(72, 72))
+
 
 static func noise(x: int, y: int, salt: int = 0) -> int:
 	return absi((x * 374761393 + y * 668265263 + salt * 69069) ^ ((x + salt) * 1274126177)) % 997
@@ -201,8 +264,9 @@ static func furniture() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	# Positions are feet. The common renderer's legacy +16/+30 is removed here.
 	for entry: Array in [
-		[P_TABLE, 510, 578], [P_TABLE, 810, 536], [P_BARREL, 798, 564],
-		[P_BARREL, 798, 534], [P_FIREWOOD, 568, 578],
+		# Leave the north/south main lane clear; cluster furniture to its west.
+		[P_TABLE, 510, 578], [P_TABLE, 756, 536], [P_BARREL, 784, 564],
+		[P_BARREL, 784, 534], [P_FIREWOOD, 568, 578],
 		[P_HERBS, 128, 504], [P_HERBS, 248, 502], [P_FLOWER_SHRUB, 278, 450],
 		[P_BAMBOO, 78, 416], [P_FIREWOOD, 1222, 428], [P_WHEEL, 1226, 482],
 		[P_RACK, 910, 140], [P_DUMMY, 966, 146], [P_DUMMY, 1000, 202], [P_BALE, 902, 212],

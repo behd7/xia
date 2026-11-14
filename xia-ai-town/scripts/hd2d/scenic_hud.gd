@@ -63,7 +63,7 @@ static func build(main: Control) -> void:
 	main.region_label = UI.label("清溪镇", 19, PAPER)
 	main.region_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title.add_child(main.region_label)
-	title.add_child(_button("舆图 M", main.open_map))
+	title.add_child(_button("舆图 " + main.input_hints.open_map, main.open_map))
 	main.minimap = MapView.new()
 	main.minimap.scenic_layout = true
 	main.minimap.custom_minimum_size = Vector2(202, 122)
@@ -82,13 +82,12 @@ static func build(main: Control) -> void:
 	dock.offset_right = 620
 	dock.offset_bottom = -20
 	dock.add_theme_constant_override("separation", 6)
-	for entry: Array in [["角色 I", main.open_character], ["行囊 B", main.open_inventory], ["武学 K", main.open_skills], ["镇志", main.open_chronicle], ["人物", main.open_people], ["视角 C", func():
-		if main.modal == null and not main.busy: main.world_presenter.toggle_camera_panel()], ["设置", main.open_settings]]:
+	for entry: Array in [["角色 " + main.input_hints.open_character, main.open_character], ["行囊 " + main.input_hints.open_inventory, main.open_inventory], ["武学 " + main.input_hints.open_skills, main.open_skills], ["镇志", main.open_chronicle], ["人物", main.open_people], ["设置", main.open_settings]]:
 		var button := _button(entry[0], entry[1])
 		if entry[0] == "设置": button.name = "ConnectionSettings"
 		main.shortcuts.append(button)
 		dock.add_child(button)
-	main.context_label = UI.label("WASD 移步 · E 交互 · 滚轮缩放", 14, PAPER)
+	main.context_label = UI.label(main.idle_hint, 14, PAPER)
 	main.context_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	main.context_label.add_theme_color_override("font_shadow_color", Color(0.05, 0.1, 0.07, 0.95))
 	main.context_label.add_theme_constant_override("shadow_offset_x", 1)

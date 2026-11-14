@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "builder": "tools/build_hd2d_environment.py",
-  "builder_sha256": "fc6f8e02528b3f2cb1657cc149b524e6130c19b8e2918ed5289eccd987b15a58",
+  "builder_sha256": "e5f154b681c19eeba99f813417e5cd4131d96bd7fca8a951c455fd5aa1550f19",
   "shell_builder_sha256": "b86109647e5dca4bd8f9d09e12d97bd7f9bddf5e4141338c6288c96283e1a27d",
   "logical_scale": 0.0625,
   "materials": {
@@ -78,6 +78,15 @@
         0.36,
         0.37
       ]
+    },
+    "ember": {
+      "texture": "materials/window_paper",
+      "tint": [
+        0.95,
+        0.33,
+        0.06
+      ],
+      "glow": 0.8
     },
     "rock": {
       "texture": "materials/rock",
@@ -369,10 +378,10 @@
     },
     "building/clinic": {
       "path": "buildings/clinic.glb",
-      "geometry_sha256": "fac543bdee1e32528e4bea6416446b51ce664571f0c5020fabd9bc382d860e55",
+      "geometry_sha256": "b3ba82b3123037ce9c173b95d27ebb1da6a772063c95459d2f6cf592e0ca6e95",
       "mesh_count": 1,
       "surface_count": 11,
-      "triangles": 3262,
+      "triangles": 3470,
       "components": {
         "clinic_structure": {
           "materials": [
@@ -396,7 +405,7 @@
           5.125
         ],
         [
-          -3.6875,
+          -4.25,
           3.875
         ],
         [
@@ -415,10 +424,10 @@
     },
     "building/smith": {
       "path": "buildings/smith.glb",
-      "geometry_sha256": "554b942a2d90620f68bca349ead71e2d45fdf67d41345889ad2d27864d348cef",
+      "geometry_sha256": "62eb12ed4406eb8accee6b94825f6b15d373b74579a29361117494f1f141484c",
       "mesh_count": 1,
-      "surface_count": 9,
-      "triangles": 1832,
+      "surface_count": 10,
+      "triangles": 2038,
       "components": {
         "smith_structure": {
           "materials": [
@@ -430,7 +439,8 @@
             "plaster",
             "bronze",
             "iron",
-            "bark"
+            "bark",
+            "ember"
           ]
         }
       },
@@ -459,10 +469,10 @@
     },
     "building/temple": {
       "path": "buildings/temple.glb",
-      "geometry_sha256": "4cac9a73ecef67a5532be1277f5e448428b09b9b78b3ed03e46d18a4868d2a56",
+      "geometry_sha256": "8beb27f3a74286e80bf706b0ec84504f2f3e824bdc0fd61de66554de18054c33",
       "mesh_count": 1,
-      "surface_count": 8,
-      "triangles": 2290,
+      "surface_count": 9,
+      "triangles": 2478,
       "components": {
         "temple_structure": {
           "materials": [
@@ -473,6 +483,7 @@
             "wood",
             "roof",
             "moss",
+            "foliage",
             "rock"
           ]
         }
@@ -1429,6 +1440,36 @@
         ]
       ],
       "index": 31
+    },
+    "prop/building_sign": {
+      "path": "props/building_sign.glb",
+      "geometry_sha256": "b2665b200de56f71111b1906972a8e7c2a0d0152be0c5ef620c338f3bbbbcef9",
+      "mesh_count": 1,
+      "surface_count": 3,
+      "triangles": 76,
+      "components": {
+        "building_sign": {
+          "materials": [
+            "wood_recess",
+            "wood_light",
+            "wood"
+          ]
+        }
+      },
+      "bounds_blender": [
+        [
+          -2.0625,
+          2.0625
+        ],
+        [
+          -0.15625,
+          0.09375
+        ],
+        [
+          -0.875,
+          1.3125
+        ]
+      ]
     },
     "prop/lantern_post": {
       "path": "props/lantern_post.glb",

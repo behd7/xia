@@ -18,6 +18,8 @@ import threading
 import time
 import traceback
 
+from hd2d_validation import claim_output
+
 ICD_DIR = Path('/usr/share/vulkan/icd.d')
 DESKTOP_ENV = (
     'DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'SWAYSOCK', 'MANGOSOCK',
@@ -70,22 +72,30 @@ def run_background(args) -> int:
     # Image decoding verifies real nonempty readbacks, not just file existence.
     from PIL import Image  # noqa: F401
     output = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix='xia-hd2d-background-'))
-    output.mkdir(parents=True, exist_ok=True)
-    if any(output.iterdir()):
-        raise RuntimeError('后台测试请使用空的 --output 目录，避免旧截图/报告被误判为本轮结果')
+    claim_output(output)
     duration = args.duration or 90
     worker_args = [
         '--gpu-device', args.gpu_device, '--quality', args.quality, '--pitch', str(args.pitch), '--yaw', str(args.yaw),
         '--fov', str(args.fov), '--projection', args.projection,
         '--display-driver', 'x11', '--no-vsync', '--output', str(output),
     ]
+    if args.renderer:
+        worker_args += ['--renderer', args.renderer]
     if args.game:
-        worker_args += ['--game']
+        worker_args += ['--game', '--max-fps', str(args.max_fps)]
+    if args.profile:
+        worker_args += ['--profile']
+    if args.no_captures:
+        worker_args += ['--no-captures']
+    if args.npc_matrix:
+        worker_args += ['--npc-matrix']
     if args.scene_review:
         worker_args += ['--scene-review']
     if args.ime:
         worker_args += ['--ime']
-    if args.environment_probe:
+    if args.resource_probe:
+        worker_args += ['--resource-probe']
+    elif args.environment_probe:
         worker_args += ['--environment-probe']
     elif args.actor_probe:
         worker_args += ['--actor-probe']
@@ -103,15 +113,17 @@ def run_background(args) -> int:
             'host_wayland_display': os.environ.get('WAYLAND_DISPLAY'),
             'compositor_gpu': args.compositor_gpu,
         }
+        compositor_hz = 240 if args.game and args.max_fps != 60 else 60
+        manifest.update(compositor_hz=compositor_hz, requested_max_fps=args.max_fps)
         guard = runtime / 'isolation.json'
         write_json(guard, manifest)
         command = [
             'nice', '-n', '10', 'gamescope', '--backend', 'headless',
-            '-W', '1440', '-H', '900', '-w', '1440', '-h', '900', '-r', '60',
+            '-W', '1440', '-H', '900', '-w', '1440', '-h', '900', '-r', str(compositor_hz),
             '--', sys.executable, str(Path(__file__).resolve()),
             '--worker', str(guard), *worker_args,
         ]
-        print('BACKGROUND: 私有 gamescope/headless，1440×900，限60 FPS；不操作前台桌面', flush=True)
+        print(f'BACKGROUND: 私有 gamescope/headless，1440×900，合成器{compositor_hz}Hz，客户端上限{args.max_fps}（0=不限）；不操作前台桌面', flush=True)
         print(f'后台日志与截图：{output}', flush=True)
         with (output / 'display.log').open('w') as log:
             process = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT,
@@ -141,7 +153,7 @@ def validate_display(guard: Path) -> dict:
         raise RuntimeError('拒绝向前台/未知DISPLAY发送输入')
     if os.environ.get('ENABLE_GAMESCOPE_WSI') != '1':
         raise RuntimeError('Worker was not launched inside gamescope')
-    manifest.update(display=display, backend='gamescope/headless', max_fps=60)
+    manifest.update(display=display, backend='gamescope/headless', max_fps=manifest.get('requested_max_fps', 60))
     return manifest
 
 
@@ -432,13 +444,13 @@ class BackgroundInteraction:
 
 def worker(guard: Path, argv: list[str]) -> int:
     output = Path(argv[argv.index('--output') + 1])
-    scope = 'P2/P3 real-client isolated regression' if '--game' in argv else 'P3 environment GPU probe' if '--environment-probe' in argv else 'P1 isolated background regression'
+    scope = 'P2/P3 real-client isolated regression' if '--game' in argv else 'R11 two-view resource GPU probe' if '--resource-probe' in argv else 'P3 environment GPU probe' if '--environment-probe' in argv else 'P1 isolated background regression'
     result = {'passed': False, 'scope': scope + '; NOT physical-display/P5 acceptance'}
     try:
         isolation = validate_display(guard)
         result['isolation'] = isolation
         from hd2d_smoke import run
-        factory = None if any(flag in argv for flag in ('--probe', '--actor-probe', '--environment-probe', '--game')) else lambda pid, env, out, duration: BackgroundInteraction(
+        factory = None if any(flag in argv for flag in ('--probe', '--actor-probe', '--environment-probe', '--resource-probe', '--game')) else lambda pid, env, out, duration: BackgroundInteraction(
             pid, env, out, duration, isolation['display'])
         code = run(argv, private_display=isolation, automation_factory=factory)
         result.update(passed=code == 0, worker_exit_code=code)

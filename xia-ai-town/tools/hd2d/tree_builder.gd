@@ -13,7 +13,6 @@ static func _material(scenery: Node3D, key: String, spec: Dictionary) -> ShaderM
 	var rgb: Array = spec.tint
 	material.set_shader_parameter("tint", Color(float(rgb[0]), float(rgb[1]), float(rgb[2])))
 	material.set_shader_parameter("vertex_color", true)
-	material.set_shader_parameter("fade_residue", 0.01)
 	if key == "needles":
 		material.set_shader_parameter("volume_foliage", true)
 		material.set_shader_parameter("sway", 0.018)

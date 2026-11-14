@@ -194,7 +194,6 @@ func register_occluder(mesh: MeshInstance3D, group: StringName) -> void:
 	if not fade_groups.has(group):
 		fade_groups[group] = []
 	fade_groups[group].append(mesh)
-	mesh.set_instance_shader_parameter("occlusion_fade", 0.0)
 	occluders.append(mesh)
 	# Visual ray tests only, separate layer; never used for player movement.
 	var body := StaticBody3D.new()

@@ -34,6 +34,17 @@ xia-ai-town/assets/hd2d/            # 加工后的纹理与元数据，由 --hd2
 
 `tools/build_art_assets.py --hd2d` 已扩展新流程；`--check` 验证源图与派生结果，`--preview-dir /tmp/xia-hd2d-art-review` 输出角色/复铺审阅图。默认不加 `--hd2d` 时保留旧流程，不手改派生 PNG。源图未纳入版本库，重建者须另行保留；运行已有派生资源不需要源图。
 
+### R09 建筑功能轮廓局部修订（2026-11-14）
+
+- 沿用已认可的江南山麓像素材质、`1/16` 模型比例与固定 yaw=0°／pitch=30°／FOV35°。原生 HUD、中文 Label3D、二维占地和 NPC 日程不改。
+- 输入为本项目原创程序化 Blender 几何，**没有新增位图、图像生成调用或第三方素材**。脚本仍为 `xia-ai-town/tools/build_hd2d_environment.py`；源码是可重建依据，不手改导出 GLB。
+- 药铺：檐前四束草药扩大可读轮廓，右侧药柜上增加实体凹口药臼与斜杵；陈设避开中央牌匾／门口。
+- 铁匠铺：侧炉床、炭块、开口炉罩与尖角铁砧；炭色复用 `window_paper` 并使用已有 shader 的 `glow`，不加实时灯、粒子或新纹理。
+- 破庙：阶梯形缺瓦、封闭厚度的断口、露出的斜椽、断柱／倒梁和少量杂草。不是在完整屋顶上画裂纹；几何探针验证缺口处无 roof 三角形、另一侧瓦面仍存在。
+- 可编辑源：`xia-ai-town/asserts/hd2d/buildings/{clinic,smith,temple}.blend`（忽略、不入库）；运行输出：`xia-ai-town/assets/hd2d/buildings/{clinic,smith,temple}.glb`、`environment.json` 与离线固化的 `town_scenery.tscn`。
+- `scenic_layout.gd` 只将中轴道路旁一张桌和两个桶移到西侧；`world_builder.gd` 降低远山纹理反差。`hd2d_art_check.gd` 对照改前布局验证全部 6,000 个玩法格不变，并检查桌／桶完整包络不盖住主路。
+- 技术验收／原生“显示文字、隐藏文字”截图见 [优化进度 R09](HD2D-SCENE-OPTIMIZATION.md)。用户的功能辨识评审尚待确认；助手目视和几何通过不能代替用户认可。
+
 ### P1 客栈 Blender 模型（单栋候选，不量产）
 
 - 建模输入为原创低模几何，不调用图生 3D、不下载第三方建筑，不新增或手改 PNG。暂复用已有瓦／灰墙／木／石／门窗像素材质。

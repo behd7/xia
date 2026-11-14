@@ -25,7 +25,7 @@ func update(game_seconds: float, scenery: Node3D, reference_depth: float = 100.0
 	# Perspective zoom moves the camera. Keep the same mild 15-unit far
 	# margin beyond the player, instead of leaving the old fixed 115 distance.
 	attributes.dof_blur_far_distance = reference_depth + 15.0
-	attributes.dof_blur_far_enabled = effects and quality == "standard"
+	attributes.dof_blur_far_enabled = effects and quality == "standard" and RenderingServer.get_current_rendering_method() != "gl_compatibility"
 	var nearby_lights: Array = []
 	if quality == "light" and scenery.world_assets != null:
 		nearby_lights.assign(scenery.lanterns)

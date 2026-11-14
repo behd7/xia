@@ -1,5 +1,5 @@
 extends "res://tools/hd2d_probe.gd"
-## P3 full-map GPU inventory, solid geometry, local reveal and native gallery.
+## Full-map GPU inventory, hard geometry, actor-only outlines and native gallery.
 const Layout = preload("res://scripts/hd2d/scenic_layout.gd")
 const TownView = preload("res://scripts/hd2d/town_view.gd")
 const CameraLimits = preload("res://scripts/hd2d/camera_limits.gd")
@@ -23,6 +23,7 @@ func _run() -> void:
 	output = OS.get_environment("XIA_HD2D_OUTPUT")
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	Engine.max_fps = 60
+	Engine.time_scale = 0.0
 	root.size = Vector2i(1440, 900)
 	world = World.new()
 	world.render_2d = false
@@ -31,6 +32,7 @@ func _run() -> void:
 	view = load("res://scenes/hd2d/town_view.tscn").instantiate()
 	root.add_child(view)
 	view.setup(world, true)
+	view.set_physics_process(false)
 	view.quality = OS.get_environment("XIA_HD2D_QUALITY")
 	view.update(world, Vector2(root.size), 12 * 3600.0, 0.0)
 	scene = view
@@ -60,7 +62,7 @@ func _run() -> void:
 		"window": [root.size.x, root.size.y], "viewport": [root.size.x, root.size.y],
 		"rendered_frames": draws, "results": results, "passed": not failed,
 		"placed": fixtures.world_assets.placed,
-		"limits": "P3 environment inventory/geometry/readability and native gallery; separate real-client OS interaction, character production and P5 remain"}
+		"limits": "Environment inventory/hard geometry/actor-only outlines and GPU gallery; not aesthetic approval, real-client OS input, performance or P5"}
 	var file := FileAccess.open(output.path_join("probe.json"), FileAccess.WRITE)
 	file.store_string(JSON.stringify(report))
 	file.close()
@@ -129,45 +131,6 @@ func _red_body(image: Image, background: Image, reference: Image) -> int:
 				count += 1
 	return count
 
-func readability(title: String, scenery: Node3D, actors: Array, _native_background: bool = false) -> Dictionary:
-	# Full-map doors, bronze reliefs and flowers can also be red. Build the
-	# reference with ALL scenery hidden so only the diagnostic actor defines
-	# the pixel mask; actual contrast uses the unchanged native background.
-	var visible := await shot(title + "-visible")
-	for who: Node3D in actors:
-		who.sprite.hide()
-	var background := await shot(title + "-background")
-	scenery.hide()
-	for who: Node3D in actors:
-		who.sprite.show()
-	var reference := await shot(title + "-body-reference")
-	scenery.show()
-	var total := 0
-	var retained := 0
-	var contrasts := PackedFloat32Array()
-	var rect := Rect2i(actor.occlusion_rect(camera).grow(3)).intersection(Rect2i(Vector2i.ZERO, visible.get_size()))
-	for y: int in range(rect.position.y, rect.end.y):
-		for x: int in range(rect.position.x, rect.end.x):
-			var ref := reference.get_pixel(x, y)
-			if ref.r <= ref.g + 0.18 or ref.r <= ref.b + 0.18:
-				continue
-			var base := background.get_pixel(x, y).srgb_to_linear()
-			var ideal := ref.srgb_to_linear()
-			var now := visible.get_pixel(x, y).srgb_to_linear()
-			var reference_signal := Vector3(ideal.r - base.r, ideal.g - base.g, ideal.b - base.b)
-			if reference_signal.length_squared() <= 0.000025:
-				continue
-			var actual := Vector3(now.r - base.r, now.g - base.g, now.b - base.b)
-			var ratio := actual.dot(reference_signal) / reference_signal.length_squared()
-			contrasts.append(ratio)
-			total += 1
-			if ratio >= 0.65:
-				retained += 1
-	contrasts.sort()
-	return {"reference_pixels": total, "readable_pixels": retained, "coverage": float(retained) / maxi(total, 1),
-		"contrast_p10": contrasts[int(contrasts.size() * 0.1)] if not contrasts.is_empty() else 0.0,
-		"contrast_median": contrasts[int(contrasts.size() * 0.5)] if not contrasts.is_empty() else 0.0}
-
 func _houses() -> void:
 	var helper := Occlusion.new()
 	for building: Dictionary in Layout.BUILDINGS:
@@ -177,35 +140,31 @@ func _houses() -> void:
 		actor.set_yaw(30)
 		place(actor, behind)
 		configure(2, behind, 38, 30)
-		helper.reset(fixtures.fade_groups)
+		helper.reset()
 		fixtures.hide()
 		var reference := await shot(str(building.id) + "-body-reference")
 		fixtures.show()
-		var solid := await shot(str(building.id) + "-solid")
+		var solid := await shot(str(building.id) + "-hard-solid")
 		actor.sprite.hide()
-		var background := await shot(str(building.id) + "-solid-background")
+		var background := await shot(str(building.id) + "-hard-background")
 		actor.sprite.show()
 		var leaked := _red_body(solid, background, reference)
 		check(leaked == 0, str(building.id) + "_solid_geometry_blocks_body", {"visible_body_pixels": leaked})
-		settle(helper, [actor], 0.8, fixtures.fade_groups)
-		var readable := await readability(str(building.id) + "-local", fixtures, [actor], true)
-		check(readable.reference_pixels > 20 and readable.coverage >= 0.90,
-			str(building.id) + "_local_reveal_full_body", readable)
-		helper.reset(fixtures.fade_groups)
-	# Extreme rear view and 3x near a new building, in addition to default 2x.
-	for pose: Vector3 in [Vector3(65, 175, 1), Vector3(30, -75, 3)]:
+		var evidence := await outline_evidence(str(building.id), helper, [actor])
+		check(outline_ok(evidence), str(building.id) + "_outline_without_scenery_transparency", evidence)
+		helper.reset()
+	for pose: Vector3 in [Vector3(65,175,1), Vector3(30,-75,3)]:
 		var rect: Rect2 = Layout.BUILDINGS[1].rect
 		var back := Projector.ground_back(pose.y)
-		var behind := rect.get_center() - Vector2(back.x, back.z) * 100
+		var behind := rect.get_center() - Vector2(back.x,back.z)*100
 		actor.set_pitch(pose.x)
 		actor.set_yaw(pose.y)
 		place(actor, behind)
 		configure(int(pose.z), behind, pose.x, pose.y)
-		settle(helper, [actor], 0.8, fixtures.fade_groups)
-		var readable := await readability("new-house-p%d-y%d-z%d" % [int(pose.x), int(pose.y), int(pose.z)], fixtures, [actor], true)
-		check(readable.reference_pixels > 20 and readable.coverage >= 0.90,
-			"new_house_extreme_pose_%d_%d_%d" % [int(pose.x), int(pose.y), int(pose.z)], readable)
-		helper.reset(fixtures.fade_groups)
+		var label := "new-house-p%d-y%d-z%d" % [int(pose.x),int(pose.y),int(pose.z)]
+		var evidence := await outline_evidence(label, helper, [actor])
+		check(outline_ok(evidence), label + "_outline", evidence)
+		helper.reset()
 
 func _gate_clearance() -> void:
 	await physics_frame
@@ -244,7 +203,7 @@ func _foreground_clipping() -> void:
 	view.zoom = 1
 	view.initialized = false
 	view.update(world, Vector2(root.size), 12 * 3600.0, 0.0)
-	view.occlusion.reset(fixtures.fade_groups)
+	view.occlusion.reset()
 	var temple: MeshInstance3D = fixtures.find_child("temple_structure", true, false)
 	var nearest := INF
 	for vertex: Vector3 in temple.mesh.get_faces():

@@ -38,12 +38,43 @@ var _grid := PackedByteArray()
 var hero_facing := "down"
 
 func initialize() -> void:
+	_ensure_grid()
 	if npcs.is_empty():
 		for key: String in NPC_DEFAULTS:
 			var defaults: Dictionary = NPC_DEFAULTS[key]
 			npcs.append({"slug": key, "id": key, "name": defaults.name,
-				"pos": defaults.pos, "robe": defaults.robe, "facing": "down", "moving": false})
-	_ensure_grid()
+				"pos": _local_routes(key, [defaults.pos], [defaults.pos])[0][-1], "robe": defaults.robe, "facing": "down", "moving": false})
+	if scenic_layout:
+		gather_anchor_pos = landscape.GATHER_ANCHOR
+
+## The server plans on the frozen 2D town. The scenic town keeps its phases and
+## clock but walks its own authored polylines; unknown actors are re-seated.
+func _local_routes(slug: String, home_work: Array, work_gather: Array) -> Array:
+	if not scenic_layout:
+		return [home_work, work_gather]
+	if landscape.NPC_ROUTES.has(slug):
+		var route: Dictionary = landscape.NPC_ROUTES[slug]
+		return [route.home_to_work, route.work_to_gather]
+	return [home_work.map(func(at: Vector2) -> Vector2: return landscape.remap_legacy(at)),
+		work_gather.map(func(at: Vector2) -> Vector2: return landscape.remap_legacy(at))]
+
+func local_point(at: Vector2) -> Vector2:
+	return landscape.remap_legacy(at) if scenic_layout and landscape.SPAWN_REMAP.has(at) else at
+
+func local_mobs(remote: Array) -> Array:
+	if not scenic_layout:
+		return remote
+	var result: Array = []
+	for mob: Variant in remote:
+		if not mob is Dictionary:
+			continue
+		var entry: Dictionary = mob.duplicate()
+		var at: Vector2 = landscape.MOB_POSITIONS.get(str(entry.get("id", "")),
+			landscape.remap_legacy(Vector2(float(entry.get("x", 0)), float(entry.get("y", 0)))))
+		entry["x"] = at.x
+		entry["y"] = at.y
+		result.append(entry)
+	return result
 
 func _ready() -> void:
 	initialize()
@@ -66,16 +97,52 @@ func can_walk(p: Vector2) -> bool:
 	return true
 
 
+const WALK_SPEED := 150.0
+const MAX_WALK_STEP := 4.0
+
+func advance_actor(direction: Vector2, delta: float) -> Vector2:
+	# Consume all elapsed time, but never leap across a collision tile. Axis
+	# sliding and the existing small foot box remain the gameplay controller.
+	var before := actor_pos
+	if delta <= 0 or not is_finite(delta) or direction == Vector2.ZERO:
+		return Vector2.ZERO
+	var displacement := direction.limit_length() * WALK_SPEED * delta
+	var count := maxi(1, ceili(displacement.length() / MAX_WALK_STEP))
+	var step := displacement / count
+	for _index: int in count:
+		var next := actor_pos + Vector2(step.x, 0)
+		if can_walk(next): actor_pos = next
+		next = actor_pos + Vector2(0, step.y)
+		if can_walk(next): actor_pos = next
+	return actor_pos - before
+
+func nearby_npc(radius: float = 38.0) -> Dictionary:
+	var closest: Dictionary = {}
+	var distance := radius
+	for npc: Dictionary in npcs:
+		var candidate := actor_pos.distance_to(Vector2(npc["pos"]))
+		if candidate <= distance:
+			distance = candidate
+			closest = npc
+	return closest
+
+func npc_in_range(slug: String, radius: float = 38.0) -> bool:
+	for npc: Dictionary in npcs:
+		if str(npc.get("slug", "")) == slug:
+			return actor_pos.distance_to(Vector2(npc["pos"])) <= radius
+	return false
+
 func nearby() -> Dictionary:
+	# Door-front NPCs must remain reachable; shop/sect entry still works just
+	# outside the NPC circle. Pick by distance, not roster insertion order.
+	var npc := nearby_npc()
+	if not npc.is_empty():
+		return {"id": npc["slug"], "name": npc["name"], "kind": "npc"}
 	for building: Dictionary in BUILDINGS:
 		var area: Rect2 = building["rect"]
 		var kind: String = building["kind"]
 		if not kind.is_empty() and area.grow(32).has_point(actor_pos):
 			return {"id": building["id"], "name": building["name"], "kind": kind}
-	for npc: Dictionary in npcs:
-		var at: Vector2 = npc["pos"]
-		if actor_pos.distance_to(at) <= 38.0:
-			return {"id": npc["slug"], "name": npc["name"], "kind": "npc"}
 	return {}
 
 
@@ -85,6 +152,8 @@ func apply_state(state: Dictionary) -> void:
 	var anchor: Variant = state.get("gather_anchor", [768, 440])
 	if anchor is Array and anchor.size() >= 2:
 		gather_anchor_pos = Vector2(float(anchor[0]), float(anchor[1]))
+	if scenic_layout:
+		gather_anchor_pos = landscape.GATHER_ANCHOR
 	var by_slug: Dictionary = {}
 	for entry: Dictionary in npcs:
 		by_slug[entry["slug"]] = entry
@@ -99,6 +168,9 @@ func apply_state(state: Dictionary) -> void:
 		var work_gather: Array = _vector_list(remote.get("work_to_gather", []))
 		if home_work.is_empty() or work_gather.is_empty():
 			continue
+		var local: Array = _local_routes(slug, home_work, work_gather)
+		home_work = local[0]
+		work_gather = local[1]
 		entry["npc_id"] = int(remote.get("id", 0))
 		entry["poi"] = str(remote.get("poi", ""))
 		entry["paused_until"] = remote.get("paused_until")
@@ -143,7 +215,8 @@ func schedule_position(entry: Dictionary, now_game: float) -> Vector2:
 		"work":
 			return home_work[-1] + _pacing(nid, day, sod)
 		"gather":
-			return gather_anchor_pos + _pacing(nid, day, sod)
+			# Scenic routes end at separate spots around the crossroad.
+			return (work_gather[-1] if scenic_layout else gather_anchor_pos) + _pacing(nid, day, sod)
 		"walk_home_to_work":
 			return _point_along(home_work, t)
 		"walk_work_to_home":
