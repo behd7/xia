@@ -4,6 +4,8 @@ const UI = preload("res://scripts/ui_kit.gd")
 const ApiClient = preload("res://scripts/api.gd")
 const WorldScene = preload("res://scripts/town_world.gd")
 const MapView = preload("res://scripts/town_map.gd")
+const InputActions = preload("res://scripts/input_actions.gd")
+const ModalFocus = preload("res://scripts/modal_focus.gd")
 const Projector = preload("res://scripts/hd2d/projection.gd")
 
 @export var hd2d_enabled := false
@@ -20,6 +22,7 @@ var online: bool = false
 var busy: bool = false
 var syncing: bool = false
 var state_version: int = 0
+var focus_scope := ModalFocus.new()
 var modal: Control
 var modal_body: VBoxContainer
 var modal_kind: String = ""
@@ -44,6 +47,10 @@ var time_label: Label
 var connection_label: Label
 var context_label: Label
 var toast_label: Label
+var hud_writes := 0
+var input_hints: Dictionary = {}
+var idle_hint := ""
+var expanded_map: Control
 var minimap: Control
 var modal_status: Label
 var world_view: Control
@@ -66,8 +73,8 @@ func _ready() -> void:
 	api = ApiClient.new()
 	api.name = "Api"
 	add_child(api)
-	_build_scene()
 	_bind_inputs()
+	_build_scene()
 	var timer := Timer.new()
 	timer.wait_time = 10.0
 	timer.timeout.connect(refresh)
@@ -77,14 +84,9 @@ func _ready() -> void:
 	refresh()
 
 func _bind_inputs() -> void:
-	var bindings := {"move_left": [KEY_A, KEY_LEFT], "move_right": [KEY_D, KEY_RIGHT], "move_up": [KEY_W, KEY_UP], "move_down": [KEY_S, KEY_DOWN]}
-	for action in bindings:
-		if not InputMap.has_action(action):
-			InputMap.add_action(action)
-		for key in bindings[action]:
-			var event := InputEventKey.new()
-			event.physical_keycode = key
-			InputMap.action_add_event(action, event)
+	InputActions.install()
+	input_hints = InputActions.hints()
+	idle_hint = "%s 移步 · %s 交互 · 滚轮缩放" % [input_hints.move_up + input_hints.move_left + input_hints.move_down + input_hints.move_right, input_hints.interact]
 
 func _panel(parent: Node, at: Vector2, dimensions: Vector2, color: Color = UI.PAPER) -> PanelContainer:
 	var panel := PanelContainer.new()
@@ -105,6 +107,8 @@ func _vbox(parent: Node, gap: int = 10) -> VBoxContainer:
 
 func _build_scene() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if not resized.is_connected(_refresh_modal_focus):
+		resized.connect(_refresh_modal_focus, CONNECT_DEFERRED)
 	var background := ColorRect.new()
 	background.color = Color("9cae81")
 	background.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -159,9 +163,6 @@ func _build_scene() -> void:
 	header.add_child(VSeparator.new())
 	connection_label = UI.label("○  正在连接", 13, UI.MUTED)
 	header.add_child(connection_label)
-	if hd2d_enabled:
-		header.add_child(UI.button("视角 C", func():
-			if modal == null and not busy: world_presenter.toggle_camera_panel()))
 	var settings_button := UI.button("设置", open_settings)
 	settings_button.name = "ConnectionSettings"
 	header.add_child(settings_button)
@@ -211,7 +212,7 @@ func _build_scene() -> void:
 	minimap.name = "Minimap"
 	av.add_child(minimap)
 	av.add_child(UI.label("北 · 三派驻镇     南 · 山林试剑", 11, UI.MUTED))
-	av.add_child(UI.button("展开舆图   M", open_map))
+	av.add_child(UI.button("展开舆图   " + input_hints.open_map, open_map))
 	var people := _panel(self, Vector2.ZERO, Vector2(230, 176), Color("ebeadd"))
 	people.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
 	people.offset_left = -254
@@ -233,8 +234,8 @@ func _build_scene() -> void:
 	var walk := _vbox(dock, 4)
 	walk.custom_minimum_size.x = 268
 	walk.add_child(UI.label("W A S D  /  方向键     移步", 13))
-	walk.add_child(UI.label("E 交互    ·    Esc 返回    ·    滚轮缩放", 12, UI.MUTED))
-	for entry in [["角色   I", open_character], ["行囊   B", open_inventory], ["武学   K", open_skills]]:
+	walk.add_child(UI.label("%s 交互    ·    %s 返回    ·    滚轮缩放" % [input_hints.interact, input_hints.close_panel], 12, UI.MUTED))
+	for entry in [["角色   " + input_hints.open_character, open_character], ["行囊   " + input_hints.open_inventory, open_inventory], ["武学   " + input_hints.open_skills, open_skills]]:
 		var btn := UI.button(entry[0], entry[1])
 		btn.custom_minimum_size.x = 112
 		shortcuts.append(btn)
@@ -242,7 +243,7 @@ func _build_scene() -> void:
 	var fill := Control.new()
 	fill.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	dock.add_child(fill)
-	context_label = UI.label("沿石径漫步，近前按 E 交互", 14, UI.JADE)
+	context_label = UI.label("沿石径漫步，近前按 %s 交互" % input_hints.interact, 14, UI.JADE)
 	context_label.custom_minimum_size.x = 270
 	context_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	dock.add_child(context_label)
@@ -259,38 +260,45 @@ func _build_scene() -> void:
 	toast_label.hide()
 	add_child(toast_label)
 
+var profile_enabled := false
+var profile_frames := 0
+var profile_usec := 0
+var profile_max_usec := 0
+var profile_events: Array[Dictionary] = []
+
+func _profile_event(label: String, since: int) -> void:
+	if profile_enabled:
+		var now := Time.get_ticks_usec()
+		profile_events.append({"name": label, "at_usec": now, "usec": now - since})
+
 func _process(delta: float) -> void:
 	if world == null:
 		return
+	var profile_start := Time.get_ticks_usec() if profile_enabled else 0
 	encounter_cooldown = maxf(0, encounter_cooldown - delta)
 	var direction := Vector2.ZERO
 	if modal == null and not busy and not player.is_empty() and battle.is_empty():
 		direction = Input.get_vector("move_left", "move_right", "move_up", "move_down")
 		if hd2d_enabled:
 			direction = Projector.camera_relative_direction(direction, world_presenter.view.yaw)
-		var step := direction * 150.0 * minf(delta, 0.04)
-		var next: Vector2 = world.actor_pos + Vector2(step.x, 0)
-		if world.can_walk(next):
-			world.actor_pos = next
-		next = world.actor_pos + Vector2(0, step.y)
-		if world.can_walk(next):
-			world.actor_pos = next
-	world.moving = direction.length_squared() > 0
+	var walked: Vector2 = world.advance_actor(direction, delta)
+	world.moving = not walked.is_zero_approx()
 	world.walk_time += delta if world.moving else 0.0
-	minimap.actor_pos = world.actor_pos
-	minimap.queue_redraw()
+	minimap.update_state(world.actor_pos, world.mobs)
+	if is_instance_valid(expanded_map):
+		expanded_map.update_state(world.actor_pos, world.mobs)
 	var game_seconds := 12.0 * 3600.0
 	if not clock.is_empty():
 		var sec: float = float(clock.get("game_sec", 0)) + (Time.get_ticks_msec() / 1000.0 - clock_received) * float(clock.get("time_scale", 60))
 		var hour := int(sec / 3600) % 24
 		var periods := ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"]
-		time_label.text = "%s时  %02d:%02d · 第 %d 日" % [periods[int((hour + 1) / 2) % 12], hour, int(sec / 60) % 60, int(sec / 86400) + 1]
+		_set_hud_text(time_label, "%s时  %02d:%02d · 第 %d 日" % [periods[int((hour + 1) / 2) % 12], hour, int(sec / 60) % 60, int(sec / 86400) + 1])
 		world.tick_schedule(sec, dialogue_slug)
 		game_seconds = sec
 		_check_greet()
-	region_label.text = world.region_name()
+	_set_hud_text(region_label, world.region_name())
 	var near: Dictionary = world.nearby()
-	context_label.text = "E  ·  %s" % near.get("name", "交互") if not near.is_empty() else "WASD 移步 · E 交互 · 滚轮缩放"
+	_set_hud_text(context_label, "%s  ·  %s" % [input_hints.interact, near.get("name", "交互")] if not near.is_empty() else idle_hint)
 	if hd2d_enabled:
 		var target_key := "npc/" + dialogue_slug if not dialogue_slug.is_empty() else ""
 		if target_key.is_empty() and not battle.is_empty():
@@ -304,11 +312,11 @@ func _process(delta: float) -> void:
 						target_key = "npc/" + str(npc.slug)
 		if target_key.is_empty() and near.get("kind", "") == "npc":
 			target_key = "npc/" + str(near.id)
-		world_presenter.update(world, int(zoom), game_seconds, delta, target_key, modal != null or busy or not battle.is_empty())
+		world_presenter.update(world, int(zoom), game_seconds, delta, target_key)
 	else:
 		world.scale = Vector2.ONE * zoom
 		var target: Vector2 = (world_view.size * 0.5 - (world.actor_pos + Vector2(0, -68)) * zoom).round()
-		world.position = (world.position.lerp(target, minf(delta * 8, 1))).round() if camera_initialized else target
+		world.position = (world.position.lerp(target, 1.0 - exp(-8.0 * delta))).round() if camera_initialized else target
 		camera_initialized = true
 		# Keep the original per-frame NPC drawing while the player stands still.
 		world.canvas.queue_redraw()
@@ -319,6 +327,15 @@ func _process(delta: float) -> void:
 			if mob.get("alive", false) and world.actor_pos.distance_to(Vector2(mob.x, mob.y)) < 17:
 				start_battle(str(mob.id))
 				break
+	if profile_enabled:
+		var elapsed := Time.get_ticks_usec() - profile_start
+		profile_frames += 1
+		profile_usec += elapsed
+		profile_max_usec = maxi(profile_max_usec, elapsed)
+
+func _set_hud_text(node: Label, text: String) -> void:
+	if UI.set_text(node, text):
+		hud_writes += 1
 
 func _check_greet() -> void:
 	if modal != null or busy or not battle.is_empty():
@@ -361,7 +378,7 @@ func _mark_greeted(slug: String, affinity: int) -> void:
 func _input(event: InputEvent) -> void:
 	# LineEdit consumes Esc before _unhandled_key_input. Preserve IME cancellation,
 	# then let Main apply the same modal/busy/battle rules with any UI focus.
-	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE:
+	if event is InputEventKey and event.pressed and not event.echo and event.is_action_pressed("close_panel"):
 		var focus := get_viewport().gui_get_focus_owner()
 		if (focus is LineEdit or focus is TextEdit) and focus.has_ime_text():
 			focus.cancel_ime()
@@ -369,46 +386,29 @@ func _input(event: InputEvent) -> void:
 		else:
 			_unhandled_key_input(event)
 		return
-	# Release/失焦 must clear a drag even if a native panel consumes the event.
-	if world_presenter and event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_MIDDLE and not event.pressed:
-		world_presenter.camera_dragging = false
-
-func _notification(what: int) -> void:
-	if what == NOTIFICATION_WM_WINDOW_FOCUS_OUT and world_presenter:
-		world_presenter.camera_dragging = false
 
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not event is InputEventKey or not event.pressed or event.echo:
 		return
-	if event.keycode == KEY_ESCAPE:
-		if modal == null and world_presenter and world_presenter.camera_panel.visible:
-			world_presenter.camera_panel.hide()
-		else:
-			close_modal()
+	if event.is_action_pressed("close_panel"):
+		close_modal()
 		get_viewport().set_input_as_handled()
 		return
-	if modal != null or busy:
+	var focus := get_viewport().gui_get_focus_owner()
+	if modal != null or busy or focus is LineEdit or focus is TextEdit:
 		return
-	match event.physical_keycode:
-		KEY_I: open_character()
-		KEY_B: open_inventory()
-		KEY_K: open_skills()
-		KEY_M: open_map()
-		KEY_E: interact()
-		KEY_C:
-			if world_presenter: world_presenter.toggle_camera_panel()
-		KEY_HOME:
-			if world_presenter: world_presenter.reset_camera()
+	for binding: Array in [["open_character", open_character], ["open_inventory", open_inventory], ["open_skills", open_skills], ["open_map", open_map], ["interact", interact]]:
+		if event.is_action_pressed(binding[0]):
+			binding[1].call()
+			get_viewport().set_input_as_handled()
+			return
 
 func _unhandled_input(event: InputEvent) -> void:
-	if world_presenter and world_presenter.handle_event(event, modal != null or busy or not battle.is_empty()):
-		get_viewport().set_input_as_handled()
-		return
 	if modal == null and event is InputEventMouseButton and event.pressed and world_view.get_global_rect().has_point(event.position):
 		# Both renderers retain the same 1×/2×/3× reference-depth scale.
-		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+		if event.is_action_pressed("zoom_in"):
 			zoom = minf(zoom + 1.0, 3.0)
-		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+		elif event.is_action_pressed("zoom_out"):
 			zoom = maxf(zoom - 1.0, 1.0)
 
 func notify(text: String) -> void:
@@ -427,7 +427,7 @@ func _connection(ok: bool, reason: String = "") -> void:
 	else:
 		_log("connection lost: %s" % (reason if not reason.is_empty() else "unknown"))
 	online = ok
-	connection_label.text = "●  江湖已连接" if ok else "○  连接中断"
+	_set_hud_text(connection_label, "●  江湖已连接" if ok else "○  连接中断")
 	connection_label.add_theme_color_override("font_color", (Color("c2c9b5") if ok else Color("eda18a")) if hd2d_enabled else (UI.JADE if ok else UI.RED))
 
 func refresh() -> void:
@@ -454,7 +454,7 @@ func refresh() -> void:
 	world_info = data.get("world", {})
 	if not world_info.get("premise", []).is_empty():
 		world_premise_label.text = "后山传闻 · 黑旋风与断岳刀"
-	world.mobs = data.get("mobs", [])
+	world.mobs = world.local_mobs(data.get("mobs", []))
 	minimap.mobs = world.mobs
 	people_npcs = data.get("npcs", [])
 	if data.get("player") != null:
@@ -488,8 +488,8 @@ func _apply_player(data: Dictionary, move_actor: bool = false) -> void:
 	player = data
 	world.actor_name = str(player.name)
 	if move_actor:
-		world.actor_pos = _walkable_position(Vector2(player.pos.x, player.pos.y))
-	character_name.text = str(player.name)
+		_place_actor(world.local_point(Vector2(player.pos.x, player.pos.y)))
+	_set_hud_text(character_name, str(player.name))
 	var sect: Variant = player.get("sect")
 	var art: Variant = player.get("art")
 	var art_text := "未习功法"
@@ -497,22 +497,25 @@ func _apply_player(data: Dictionary, move_actor: bool = false) -> void:
 		art_text = "%s·%s" % [str(art.name), str(art.element_name)]
 		if bool(art.get("at_cap", false)):
 			art_text += "（瓶颈）"
-	character_meta.text = "第 %d 重  /  %s%s" % [
+	_set_hud_text(character_meta, "第 %d 重  /  %s%s" % [
 		int(player.level), art_text,
-		"" if sect == null else "  /  " + str(sect.name)]
-	hp_label.text = "气血    %d / %d" % [int(player.hp), int(player.hp_max)]
-	mp_label.text = "内力    %d / %d" % [int(player.mp), int(player.mp_max)]
-	hp_bar.max_value = float(player.hp_max)
-	hp_bar.value = float(player.hp)
-	mp_bar.max_value = float(player.mp_max)
-	mp_bar.value = float(player.mp)
-	exp_bar.max_value = float(player.exp_next)
-	exp_bar.value = float(player.exp)
+		"" if sect == null else "  /  " + str(sect.name)])
+	_set_hud_text(hp_label, "气血    %d / %d" % [int(player.hp), int(player.hp_max)])
+	_set_hud_text(mp_label, "内力    %d / %d" % [int(player.mp), int(player.mp_max)])
+	UI.set_bar(hp_bar, float(player.hp), float(player.hp_max))
+	UI.set_bar(mp_bar, float(player.mp), float(player.mp_max))
+	UI.set_bar(exp_bar, float(player.exp), float(player.exp_next))
 	exp_bar.tooltip_text = "经验 %d / %d%s" % [
 		int(player.exp), int(player.exp_next),
 		"（瓶颈：需更高上限功法）" if bool(player.get("at_cap", false)) else ""]
-	gold_label.text = "%d 两" % int(player.gold) if hd2d_enabled else "银两  %d 两    ·    修炼 %d" % [int(player.gold), int(player.cultivation)]
+	_set_hud_text(gold_label, "%d 两" % int(player.gold) if hd2d_enabled else "银两  %d 两    ·    修炼 %d" % [int(player.gold), int(player.cultivation)])
 	gold_label.tooltip_text = "修炼 %d" % int(player.cultivation)
+
+func _place_actor(point: Vector2) -> void:
+	world.actor_pos = _walkable_position(point)
+	camera_initialized = false
+	if hd2d_enabled and is_instance_valid(world_presenter):
+		world_presenter.view.reset_follow()
 
 func _walkable_position(point: Vector2) -> Vector2:
 	if world.can_walk(point):
@@ -522,7 +525,7 @@ func _walkable_position(point: Vector2) -> Vector2:
 			var candidate: Vector2 = point + direction * radius
 			if world.can_walk(candidate):
 				return candidate
-	return Vector2(792, 440)
+	return world.local_point(Vector2(792, 440))
 
 func mutate(path: String, body: Dictionary, success: String = "", redraw: Callable = Callable()) -> bool:
 	if busy:
@@ -551,10 +554,17 @@ func mutate(path: String, body: Dictionary, success: String = "", redraw: Callab
 		redraw.call()
 	return true
 
+func _refresh_modal_focus() -> void:
+	if is_instance_valid(modal):
+		var since := Time.get_ticks_usec() if profile_enabled else 0
+		focus_scope.configure(modal, modal_body)
+		_profile_event("focus/" + modal_kind, since)
+
 func _set_request_buttons(disabled: bool) -> void:
 	for button in get_tree().get_nodes_in_group("request_buttons"):
 		if is_instance_valid(button):
 			button.disabled = disabled or bool(button.get_meta("unavailable", false))
+	_refresh_modal_focus.call_deferred()
 
 func _action(text: String, callback: Callable, unavailable: bool = false, primary: bool = false) -> Button:
 	var button := UI.button(text, callback, primary)
@@ -565,8 +575,12 @@ func _action(text: String, callback: Callable, unavailable: bool = false, primar
 
 func _remove_modal() -> void:
 	if is_instance_valid(modal):
+		var since := Time.get_ticks_usec() if profile_enabled else 0
 		remove_child(modal)
 		modal.queue_free()
+		focus_scope.close(shortcuts[0] if not shortcuts.is_empty() else null)
+		_profile_event("remove/" + modal_kind, since)
+	expanded_map = null
 	modal = null
 	modal_status = null
 	modal_kind = ""
@@ -590,15 +604,14 @@ func close_modal() -> void:
 	_remove_modal()
 
 func _new_modal(title: String, subtitle: String, kind: String, width: float = 780.0) -> VBoxContainer:
+	var since := Time.get_ticks_usec() if profile_enabled else 0
 	_remove_modal()
 	modal_kind = kind
-	if world_presenter:
-		world_presenter.camera_dragging = false
-		world_presenter.camera_panel.hide()
 	modal = Control.new()
 	modal.name = "Modal"
 	modal.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(modal)
+	focus_scope.open(self, modal)
 	var shade := ColorRect.new()
 	shade.color = Color(0.08, 0.15, 0.13, 0.66)
 	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -617,7 +630,7 @@ func _new_modal(title: String, subtitle: String, kind: String, width: float = 78
 	text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	heading.add_child(text)
 	if kind != "new_game" and kind != "battle":
-		heading.add_child(UI.button("返回  Esc", close_modal))
+		heading.add_child(UI.button("返回  " + input_hints.close_panel, close_modal))
 	content.add_child(UI.paragraph(subtitle, 14))
 	content.add_child(UI.rule())
 	var scroll := ScrollContainer.new()
@@ -630,6 +643,8 @@ func _new_modal(title: String, subtitle: String, kind: String, width: float = 78
 	modal_status = UI.paragraph("", 14, UI.RED)
 	modal_status.name = "RequestStatus"
 	content.add_child(modal_status)
+	_refresh_modal_focus.call_deferred()
+	_profile_event("build/" + kind, since)
 	return modal_body
 
 func open_settings() -> void:
@@ -672,7 +687,7 @@ func open_new_game() -> void:
 			modal_status.text = "请先留下你的名号。"
 			return
 		if await mutate("/api/game/new", {"name": input.text.strip_edges()}, "江湖路远，珍重前行。"):
-			world.actor_pos = Vector2(player.pos.x, player.pos.y)
+			_place_actor(world.local_point(Vector2(player.pos.x, player.pos.y)))
 			_remove_modal()
 			refresh()
 	body.add_child(_action("踏入江湖", create, false, true))
@@ -777,7 +792,7 @@ func interact() -> void:
 		return
 	var near: Dictionary = world.nearby()
 	if near.is_empty():
-		notify("走近铺面或人物，再按 E 交互。")
+		notify("走近铺面或人物，再按 %s 交互。" % input_hints.interact)
 		return
 	match near.get("kind", ""):
 		"shop": open_shop(str(near.id))
@@ -937,10 +952,14 @@ func _heart_for(slug: String) -> String:
 func open_dialogue(slug: String) -> void:
 	if busy or player.is_empty():
 		return
+	if not world.npc_in_range(slug):
+		notify("走近此人，再拱手交谈。")
+		return
 	var npc := _find_npc(slug)
 	if npc.is_empty():
 		notify("此人尚未来到镇中。")
 		return
+	var since := Time.get_ticks_usec() if profile_enabled else 0
 	dialogue_id = int(npc.id)
 	dialogue_name = str(npc.name)
 	dialogue_affinity = int(npc.get("affinity", 0))
@@ -948,16 +967,19 @@ func open_dialogue(slug: String) -> void:
 	dialogue_slug = slug
 	_append_talk(dialogue_name, "……你走上前，拱手见礼。")
 	_render_dialogue_footer("main")
+	_profile_event("open/dialogue", since)
 
 func _dialogue_dock() -> VBoxContainer:
 	return modal_body.get_parent().get_parent()
 
 func _render_dialogue_footer(mode: String) -> void:
+	var since := Time.get_ticks_usec() if profile_enabled else 0
 	if dialogue_footer != null:
 		dialogue_footer.queue_free()
 	dialogue_footer = VBoxContainer.new()
 	dialogue_footer.add_theme_constant_override("separation", 10)
 	_dialogue_dock().add_child(dialogue_footer)
+	_refresh_modal_focus.call_deferred()
 	# 首条空格，给对话气泡区留足高度
 	var spacer := Control.new()
 	spacer.custom_minimum_size = Vector2(0, 12)
@@ -1000,7 +1022,10 @@ func _render_dialogue_footer(mode: String) -> void:
 	var send := _action("作 揖", func(): send_talk(input.text, true), false, true)
 	send.custom_minimum_size.x = 96
 	inbox.add_child(send)
+	_profile_event("footer/build", since)
+	since = Time.get_ticks_usec() if profile_enabled else 0
 	input.grab_focus()
+	_profile_event("footer/grab_focus", since)
 
 # 动作气泡：done.acts 是 [{tool, text}]，拼成一句括注贴在 NPC 台词后面。
 func _acts_note(data: Dictionary) -> String:
@@ -1183,8 +1208,8 @@ func open_map() -> void:
 	var body := _new_modal("清 溪 舆 图", "北访三派，南行山林。朱砂为你，赤点为野怪。", "map", 900)
 	var map := MapView.new()
 	map.custom_minimum_size = Vector2(790, 370)
-	map.actor_pos = world.actor_pos
-	map.mobs = world.mobs
+	map.update_state(world.actor_pos, world.mobs)
+	expanded_map = map
 	map.detailed = true
 	map.scenic_layout = hd2d_enabled
 	body.add_child(map)

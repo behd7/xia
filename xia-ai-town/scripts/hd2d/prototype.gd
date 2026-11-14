@@ -170,11 +170,11 @@ func _process(delta: float) -> void:
 	else:
 		view.zoom = zoom
 		view.update(world, area.size, seconds, delta)
-		for entry: Array in [[hero_label, view.hero, true], [target_label, view.target, view.protect_target]]:
+		for entry: Array in [[hero_label, view.hero], [target_label, view.target]]:
 			var label: Label = entry[0]
 			var rect: Rect2 = entry[1].screen_rect(view.camera)
 			label.position = (rect.position + Vector2(rect.size.x/2-label.size.x/2,-25)).round()
-			label.visible = not view.camera.is_position_behind(entry[1].global_position) and rect.intersects(Rect2(Vector2.ZERO, area.size)) and view.label_visible(entry[1], entry[2])
+			label.visible = not view.camera.is_position_behind(entry[1].global_position) and rect.intersects(Rect2(Vector2.ZERO, area.size))
 	var hour := fposmod(seconds/3600,24)
 	var location: String = world.nearby().get("name", "路旁") if baseline else Layout.location(world.actor_pos, world)
 	status.text = "位置 %.1f, %.1f · %s · %d× · %02d:%02d · 窗口 %s / 世界区 %s · %s" % [world.actor_pos.x,world.actor_pos.y,location,zoom,int(hour),int(fmod(seconds/60,60)),str(get_window().size),str(Vector2i(area.size)),"2D" if baseline else view.quality]
@@ -191,8 +191,7 @@ func _process(delta: float) -> void:
 			"pitch":null if baseline else view.pitch,"yaw":null if baseline else view.yaw,"hour":hour,
 			"projection":"2d" if baseline else ("orthogonal" if view.orthogonal else "perspective"),"fov":null if baseline else view.fov,
 			"occlusion_enabled":false if baseline else view.occlusion.enabled,
-			"protect_target":false if baseline else view.protect_target,
-			"fade_groups":{} if baseline else view.occlusion.strengths()}))
+			"outlines":{} if baseline else view.occlusion.strengths()}))
 		sample_file.flush()
 	if not output.is_empty() and runtime >= next_capture and runtime > 3.5:
 		next_capture += capture_interval
@@ -235,8 +234,6 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.physical_keycode:
 			KEY_O: toggle_occlusion()
-			KEY_T:
-				if view: view.protect_target = not view.protect_target
 			KEY_L: cycle_time()
 			KEY_Q:
 				if view: view.quality = "light" if view.quality == "standard" else "standard"
@@ -265,7 +262,7 @@ func cycle_time() -> void:
 func toggle_occlusion() -> void:
 	if view:
 		view.occlusion.enabled = not view.occlusion.enabled
-		caption.text = "遮挡局部柔边虚化：%s · 可在 1600×960 样板中自由绕行" % ("开启" if view.occlusion.enabled else "关闭（检查真实遮挡）")
+		caption.text = "遮挡人物描边：%s · 可在 1600×960 样板中自由绕行" % ("开启" if view.occlusion.enabled else "关闭（检查真实遮挡）")
 
 func toggle_panel() -> void:
 	panel.visible = not panel.visible
@@ -288,10 +285,9 @@ func capture(file: String) -> void:
 		"actor_frame":-1 if baseline else view.hero.sprite.frame,"actor_direction":-1 if baseline else view.hero.facing,
 		"projection":"2d" if baseline else ("orthogonal" if view.orthogonal else "perspective"),"fov":null if baseline else view.fov,
 		"hour":fposmod((clock_anchor+(Time.get_ticks_msec()/1000.0-clock_received)*clock_scale)/3600.0,24.0),
-		"occlusion_mode":"none" if baseline else "local_soft",
+		"occlusion_mode":"none" if baseline else "actor_outline",
 		"occlusion_enabled":false if baseline else view.occlusion.enabled,
-		"protect_target":false if baseline else view.protect_target,
-		"fade_groups":{} if baseline else view.occlusion.strengths()}
+		"outlines":{} if baseline else view.occlusion.strengths()}
 	for button: Button in actions.get_children():
 		var r := button.get_global_rect()
 		snapshot.buttons.append({"text":button.text,"center":[r.get_center().x,r.get_center().y]})
@@ -310,7 +306,7 @@ func finish() -> void:
 	if not output.is_empty():
 		var data := {"device":RenderingServer.get_video_adapter_name(),"backend":RenderingServer.get_current_rendering_method(),
 			"quality":"baseline" if baseline else view.quality,"duration":runtime,"baseline":baseline,
-			"occlusion_mode":"none" if baseline else "local_soft",
+			"occlusion_mode":"none" if baseline else "actor_outline",
 			"pitch":null if baseline else view.pitch,"yaw":null if baseline else view.yaw,
 			"projection":"2d" if baseline else ("orthogonal" if view.orthogonal else "perspective"),"fov":null if baseline else view.fov,
 			"window":[get_window().size.x,get_window().size.y],"viewport":[int(area.size.x),int(area.size.y)],

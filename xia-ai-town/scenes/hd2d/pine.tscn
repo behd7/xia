@@ -12,7 +12,6 @@
 
 [node name="crown" parent="松树0_叶簇体积" index="0"]
 material_override = ExtResource("2")
-instance_shader_parameters/occlusion_fade = 0.0
 metadata/volume_foliage = true
 metadata/fade_group = &"prop/tree/0"
 
@@ -25,7 +24,6 @@ shape = ExtResource("3")
 
 [node name="trunk" parent="松树0_叶簇体积" index="1"]
 material_override = ExtResource("4")
-instance_shader_parameters/occlusion_fade = 0.0
 metadata/volume_foliage = false
 metadata/fade_group = &"prop/tree/0"
 

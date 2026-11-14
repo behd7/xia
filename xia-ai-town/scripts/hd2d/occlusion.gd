@@ -1,17 +1,24 @@
 extends RefCounted
 const Projector = preload("res://scripts/hd2d/projection.gd")
-## Rays identify foreground surfaces; only their pixels near the protected body
-## become translucent. Each target has its own mask, depth plane and hysteresis.
+## Scenery is never made translucent. Rays against the baked visual shapes find
+## the actors a building or tree (partly) hides; those enable a depth-inverted
+## silhouette pass (actor_outline.gdshader), which draws only the covered pixels
+## as a contour on top of the cover. Each actor fades and restores on its own.
 const QUERY_INTERVAL := 1.0 / 30.0
+## The player and current target are tested every query, the rest in turn.
+const BACKGROUND_QUERIES := 4
 const RESTORE_HOLD := 0.25
-const FADE_IN_SECONDS := 0.18
-const FADE_OUT_SECONDS := 0.35
+const FADE_IN_SECONDS := 0.12
+const FADE_OUT_SECONDS := 0.30
 const MAX_RAY_HITS := 128
-const MAX_TARGETS := 2
 var enabled := true
 var _query_elapsed := QUERY_INTERVAL
-var _wanted: Dictionary = {}
 var _states: Dictionary = {}
+var _cursor := 0
+## Opt-in counters: runtime rays and diagnostic sign/geometry rays stay separate.
+var profile_enabled := false
+var profile := {"batches": 0, "batch_usec": 0, "max_batch_usec": 0, "rays": 0, "diagnostic_rays": 0, "outside_physics": 0}
+var _runtime_query := false
 
 func _opaque_hit(mesh: Node3D, at: Vector3) -> bool:
 	if not mesh.has_meta("alpha_image"):
@@ -38,6 +45,9 @@ func _ray_groups(view: Node3D, camera: Camera3D, at: Vector3, first_only: bool =
 	var ray := PhysicsRayQueryParameters3D.create(Projector.ray_origin(camera, at), at, 2)
 	ray.hit_back_faces = true
 	for _layer: int in range(MAX_RAY_HITS):
+		if profile_enabled:
+			var counter := "rays" if _runtime_query else "diagnostic_rays"
+			profile[counter] += 1
 		var hit := view.get_world_3d().direct_space_state.intersect_ray(ray)
 		if hit.is_empty():
 			break
@@ -46,13 +56,13 @@ func _ray_groups(view: Node3D, camera: Camera3D, at: Vector3, first_only: bool =
 			found[mesh.get_meta("fade_group")] = true
 			if first_only:
 				break
-		# Selecting a merged mesh enables the mask on all its foreground faces.
 		# Continue through other meshes/alpha holes; no need to re-hit this RID.
 		var excluded := ray.exclude
 		excluded.append(hit.rid)
 		ray.exclude = excluded
 	return found
 
+## Every scenery component in front of the actor. Diagnostics only.
 func blocking_groups(view: Node3D, camera: Camera3D, actor: Node3D) -> Dictionary:
 	var found: Dictionary = {}
 	for at: Vector3 in actor.occlusion_points():
@@ -65,80 +75,76 @@ func actor_blocked(view: Node3D, camera: Camera3D, actor: Node3D) -> bool:
 			return true
 	return false
 
-func _slot() -> Dictionary:
-	return {"strength": 0.0, "clear_time": RESTORE_HOLD, "mask": Vector4.ZERO, "plane": Vector4.ZERO}
+func _visible(camera: Camera3D, actor: Node3D) -> bool:
+	if camera.is_position_behind(actor.global_position):
+		return false
+	var size := Vector2(camera.get_viewport().get_visible_rect().size)
+	return Rect2(Vector2.ZERO, size).grow(96.0).has_point(camera.unproject_position(actor.global_position))
 
-func _mask(camera: Camera3D, actor: Node3D) -> Vector4:
-	var rect: Rect2 = actor.occlusion_rect(camera)
-	var padding := maxf(3.0, rect.size.y * 0.10)
-	var half_size := rect.size * 0.5 + Vector2.ONE * padding
-	return Vector4(rect.get_center().x, rect.get_center().y, half_size.x, half_size.y)
-
-func _plane(actor: Node3D) -> Vector4:
-	# The body is a vertical, fixed-Y plane. Test each scenery fragment against
-	# that plane, rather than fading background faces of a selected mesh too.
-	var normal := Projector.ground_back(float(actor.yaw))
-	return Vector4(normal.x, normal.y, normal.z, normal.dot(actor.global_position))
-
-func update(view: Node3D, camera: Camera3D, actors: Array, groups: Dictionary, delta: float) -> void:
+## `actors[0 .. priority)` are tested every query (player, current target).
+## Runtime callers must enter from _physics_process; the last result is cached
+## between 30Hz queries. Visual strength still advances at the render rate.
+func query(view: Node3D, camera: Camera3D, actors: Array, priority: int, delta: float) -> void:
 	_query_elapsed += delta
 	if not enabled:
-		_wanted.clear()
 		_query_elapsed = QUERY_INTERVAL
+		for state: Dictionary in _states.values():
+			state.blocked = false
 	elif _query_elapsed >= QUERY_INTERVAL:
+		var query_start := Time.get_ticks_usec() if profile_enabled else 0
+		_runtime_query = true
 		_query_elapsed = 0.0
-		_wanted.clear()
-		for index: int in range(mini(MAX_TARGETS, actors.size())):
-			var actor: Node3D = actors[index]
-			for key: StringName in blocking_groups(view, camera, actor):
-				_wanted[key] = int(_wanted.get(key, 0)) | (1 << index)
-		for key: StringName in _wanted:
-			if groups.has(key) and not _states.has(key):
-				_states[key] = [_slot(), _slot()]
-	for key: StringName in _states.keys():
-		var slots: Array = _states[key]
-		var maximum := 0.0
-		for index: int in range(MAX_TARGETS):
-			var state: Dictionary = slots[index]
-			var selected := enabled and (int(_wanted.get(key, 0)) & (1 << index)) != 0
-			state.clear_time = 0.0 if selected else float(state.clear_time) + delta
-			var hold := enabled and float(state.clear_time) < RESTORE_HOLD
-			var goal := 1.0 if selected or hold else 0.0
-			var seconds := FADE_IN_SECONDS if goal > 0.0 else FADE_OUT_SECONDS
-			state.strength = move_toward(float(state.strength), goal, delta / seconds)
-			maximum = maxf(maximum, float(state.strength))
-			# Camera/actor motion updates every rendered frame, independently of
-			# the 30Hz ray queries. A removed target restores at its last location.
-			if index < actors.size():
-				var actor: Node3D = actors[index]
-				var depth := -camera.to_local(actor.global_position).z
-				if depth > camera.near and depth < camera.far:
-					state.mask = _mask(camera, actor)
-					state.plane = _plane(actor)
-		for mesh: MeshInstance3D in groups.get(key, []):
-			mesh.set_instance_shader_parameter("occlusion_fade", maximum)
-			mesh.set_instance_shader_parameter("occlusion_weights", Vector2(slots[0].strength, slots[1].strength))
-			for index: int in range(MAX_TARGETS):
-				mesh.set_instance_shader_parameter("occlusion_mask%d" % index, slots[index].mask)
-				mesh.set_instance_shader_parameter("occlusion_plane%d" % index, slots[index].plane)
-		if maximum == 0.0 and not _wanted.has(key):
-			_states.erase(key)
+		var pending: Array = actors.slice(0, priority)
+		var rest := actors.size() - priority
+		for _step: int in range(mini(BACKGROUND_QUERIES, rest)):
+			_cursor = (_cursor + 1) % rest
+			pending.append(actors[priority + _cursor])
+		for actor in pending:
+			if not is_instance_valid(actor) or actor.is_queued_for_deletion():
+				continue
+			var blocked := _visible(camera, actor) and actor_blocked(view, camera, actor)
+			var id: int = actor.get_instance_id()
+			if blocked and not _states.has(id):
+				_states[id] = {"actor": actor, "strength": 0.0, "clear_time": RESTORE_HOLD, "blocked": true}
+			elif _states.has(id):
+				_states[id].blocked = blocked
+		_runtime_query = false
+		if profile_enabled:
+			var elapsed := Time.get_ticks_usec() - query_start
+			profile.batches += 1
+			profile.batch_usec += elapsed
+			profile.max_batch_usec = maxi(profile.max_batch_usec, elapsed)
+			profile.outside_physics += int(not Engine.is_in_physics_frame())
 
+func advance(actors: Array, delta: float) -> void:
+	if not enabled:
+		for state: Dictionary in _states.values():
+			state.blocked = false
+	for id: int in _states.keys():
+		var state: Dictionary = _states[id]
+		if not is_instance_valid(state.actor) or not actors.has(state.actor):
+			if is_instance_valid(state.actor):
+				state.actor.set_outline(0.0)
+			_states.erase(id)
+			continue
+		state.clear_time = 0.0 if state.blocked else float(state.clear_time) + delta
+		var goal := 1.0 if state.blocked or (enabled and float(state.clear_time) < RESTORE_HOLD) else 0.0
+		state.strength = move_toward(float(state.strength), goal, delta / (FADE_IN_SECONDS if goal > 0.0 else FADE_OUT_SECONDS))
+		state.actor.set_outline(float(state.strength))
+		if float(state.strength) == 0.0 and not state.blocked:
+			_states.erase(id)
+
+## Outline strength per outlined actor node name.
 func strengths() -> Dictionary:
 	var result: Dictionary = {}
-	for key: StringName in _states:
-		var slots: Array = _states[key]
-		result[key] = maxf(float(slots[0].strength), float(slots[1].strength))
+	for state: Dictionary in _states.values():
+		if is_instance_valid(state.actor):
+			result[str(state.actor.name)] = float(state.strength)
 	return result
 
-func reset(groups: Dictionary) -> void:
-	for meshes: Array in groups.values():
-		for mesh: MeshInstance3D in meshes:
-			mesh.set_instance_shader_parameter("occlusion_fade", 0.0)
-			mesh.set_instance_shader_parameter("occlusion_weights", Vector2.ZERO)
-			for index: int in range(MAX_TARGETS):
-				mesh.set_instance_shader_parameter("occlusion_mask%d" % index, Vector4.ZERO)
-				mesh.set_instance_shader_parameter("occlusion_plane%d" % index, Vector4.ZERO)
+func reset() -> void:
+	for state: Dictionary in _states.values():
+		if is_instance_valid(state.actor):
+			state.actor.set_outline(0.0)
 	_states.clear()
-	_wanted.clear()
 	_query_elapsed = QUERY_INTERVAL

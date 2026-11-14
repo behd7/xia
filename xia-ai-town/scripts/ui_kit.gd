@@ -8,6 +8,9 @@ const JADE := Color("526b57")
 const RED := Color("a75342")
 const GOLD := Color("a48148")
 const PANEL_TEXTURE_PATH := "res://assets/ui/panel.png"
+# Same font for bootstrap and inherited UI: avoid transient Latin-font fallback
+# searches for every Chinese widget before it inherits Main.theme.
+const BODY_FONT = preload("res://assets/ui/body_font.tres")
 
 static func box(color: Color = PAPER, border: Color = LINE, radius: int = 4, padding: int = 16) -> StyleBoxFlat:
 	var style := StyleBoxFlat.new()
@@ -38,10 +41,7 @@ static func panel_box(padding: int = 16) -> StyleBox:
 
 static func make_theme() -> Theme:
 	var t := Theme.new()
-	var font := SystemFont.new()
-	font.font_names = PackedStringArray(["Noto Serif CJK SC", "Source Han Serif SC", "SimSun", "Microsoft YaHei"])
-	font.allow_system_fallback = true
-	t.default_font = font
+	t.default_font = BODY_FONT
 	t.default_font_size = 16
 	t.set_color("font_color", "Label", INK)
 	t.set_color("font_color", "Button", INK)
@@ -117,3 +117,15 @@ static func row(parent: Node, left: String, right: String, color: Color = INK) -
 	line.add_child(text)
 	line.add_child(label(right, 16, color))
 	return line
+
+static func set_text(node: Label, text: String) -> bool:
+	if node.text == text:
+		return false
+	node.text = text
+	return true
+
+static func set_bar(node: ProgressBar, value: float, maximum: float) -> void:
+	if node.max_value != maximum:
+		node.max_value = maximum
+	if node.value != value:
+		node.value = value

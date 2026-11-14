@@ -27,7 +27,7 @@ import httpx
 ROOT = Path(__file__).resolve().parents[2]
 PROJECT = ROOT / "xia-ai-town"
 SERVER = ROOT / "server"
-ERROR_LOG = re.compile(r"SCRIPT ERROR|\bERROR\s*:|Traceback \(most recent call last\)|SMOKE FAIL", re.I)
+from hd2d_validation import ERROR_LOG, run_errors
 
 
 def stop_process(process: subprocess.Popen) -> None:
@@ -126,7 +126,7 @@ def run() -> int:
             cwd=scratch, env=dict(os.environ, GODOT_SILENCE_ROOT_WARNING="1"),
             capture_output=True, text=True, timeout=180,
         )
-        if import_result.returncode != 0:
+        if run_errors(import_result.returncode, import_result.stdout + import_result.stderr):
             print(import_result.stdout + import_result.stderr, end="", flush=True)
             raise RuntimeError(f"Asset import failed ({import_result.returncode})")
         db = scratch / "xia.db"

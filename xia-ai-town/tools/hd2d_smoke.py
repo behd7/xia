@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import time
 from smoke_test import PROJECT, stage_project, stop_process
+from hd2d_validation import CONTRACT_END, ERROR_LOG, claim_output, probe_errors, run_errors
 
 
 def stage(destination: Path) -> None:
@@ -29,6 +30,37 @@ def stage(destination: Path) -> None:
     fixture = PROJECT/'tools/hd2d_contract.json'
     if fixture.exists():
         shutil.copy2(fixture, destination/'tools'/fixture.name)
+
+
+def renderer_options(args, env: dict, project: Path) -> tuple[list[str], str]:
+    """Validate the real entry without silently overriding its renderer.
+
+    P1 keeps its historical Forward+ default; --game defaults to project.
+    """
+    selected = args.renderer or ('project' if args.game else 'forward_plus')
+    if selected == 'project':
+        match = re.search(r'^renderer/rendering_method="([^"]+)"$',
+                          (project / 'project.godot').read_text(), re.MULTILINE)
+        if not match:
+            raise RuntimeError('Cannot determine project renderer; do not guess')
+        expected, options = match.group(1), []
+    else:
+        expected = selected
+        options = ['--rendering-method', selected, '--rendering-driver',
+                   'opengl3' if selected == 'gl_compatibility' else 'vulkan']
+    # OpenGL ignores VK_DRIVER_FILES: clear inherited PRIME overrides too.
+    for key in ('DRI_PRIME', '__NV_PRIME_RENDER_OFFLOAD', '__GLX_VENDOR_LIBRARY_NAME'):
+        env.pop(key, None)
+    if expected == 'gl_compatibility':
+        if args.gpu_device == 'nvidia':
+            env.update(__NV_PRIME_RENDER_OFFLOAD='1', __GLX_VENDOR_LIBRARY_NAME='nvidia')
+        else:
+            env.update(__GLX_VENDOR_LIBRARY_NAME='mesa')
+            for device in sorted(Path('/sys/class/drm').glob('card[0-9]/device')):
+                if (device / 'vendor').read_text().strip() == '0x1002':
+                    env['DRI_PRIME'] = 'pci-' + device.resolve().name.replace(':', '_').replace('.', '_')
+                    break
+    return options, expected
 
 
 def float_owned(pid: int) -> dict | None:
@@ -61,6 +93,8 @@ def run(argv: list[str] | None = None, *, private_display: dict | None = None,
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--gpu-device', choices=['nvidia','amd'], default='nvidia')
     parser.add_argument('--quality', choices=['standard','light'], default='standard')
+    parser.add_argument('--renderer', choices=['project', 'gl_compatibility', 'forward_plus'],
+                        help='game defaults to project (no override); P1 defaults to forward_plus')
     parser.add_argument('--pitch', type=float, default=38, help='P1 elevation from horizontal, 30..65 degrees')
     parser.add_argument('--yaw', type=float, default=30, help='P1 orbit angle, -180..180 degrees')
     parser.add_argument('--fov', type=float, default=35, help='vertical perspective FOV, 30..40 degrees')
@@ -70,36 +104,51 @@ def run(argv: list[str] | None = None, *, private_display: dict | None = None,
     parser.add_argument('--duration', type=float, default=0, help='0: interactive until window closes')
     parser.add_argument('--ime', action='store_true', help='opt-in real Rime composition/Esc check for --background --game; private input method only')
     parser.add_argument('--scene-review', action='store_true', help='scene/HUD regression only; use --game, hides NPCs and mobs in disposable harness')
+    parser.add_argument('--npc-matrix', action='store_true', help='7 NPC x work/commute/gather x near/far OS input; use --game')
     parser.add_argument('--game', action='store_true', help='P2 real-client regression with a disposable backend; use --background')
+    parser.add_argument('--profile', action='store_true', help='real-client repeatable noon route and opt-in subsystem counters; not P5')
+    parser.add_argument('--max-fps', type=int, default=60, help='--game frame cap; 0 uncaps engine for diagnosis, default 60')
+    parser.add_argument('--no-captures', action='store_true', help='--game --profile: state assertions only, no GPU screenshot readbacks')
     parser.add_argument('--baseline', action='store_true', help='original 2D world under the same P1 diagnostic HUD')
     parser.add_argument('--no-vsync', action='store_true', help='diagnose presentation stalls; caps at 120 FPS and records this separately')
-    parser.add_argument('--probe', action='store_true', help='GPU geometry + local-translucency assertions')
+    parser.add_argument('--probe', action='store_true', help='GPU hard geometry + actor-only outline assertions')
     parser.add_argument('--actor-probe', action='store_true', help='GPU eight-way gait gallery and volumetric actor-shadow assertions')
     parser.add_argument('--environment-probe', action='store_true', help='P3 full-map inventory, building occlusion and environment GPU gallery')
+    parser.add_argument('--resource-probe', action='store_true', help='R11 two-view resource isolation and native GPU grass checks')
     parser.add_argument('--logic', action='store_true', help='headless frozen 2D contract + projection test')
     parser.add_argument('--background', action='store_true', help='private gamescope/headless GPU + OS-input regression; never touches the foreground desktop')
     parser.add_argument('--compositor-gpu', choices=['amd','nvidia'], default='amd', help='background display compositor GPU (independent of the Godot GPU; default AMD)')
-    parser.add_argument('--output', type=Path, help='result directory; background defaults to a fresh /tmp directory, desktop to /tmp/xia-hd2d')
+    parser.add_argument('--output', type=Path, help='new or empty result directory; defaults to a fresh /tmp directory')
     args = parser.parse_args(argv)
+    if args.max_fps < 0 or args.max_fps > 1000:
+        parser.error('--max-fps must be 0..1000 (0 = uncapped)')
+    if (args.profile or args.max_fps != 60 or args.no_captures) and not args.game:
+        parser.error('--profile/--max-fps/--no-captures require --game')
+    if args.profile and (args.scene_review or args.npc_matrix or args.ime):
+        parser.error('--profile uses its own repeatable route; run scene/NPC/IME matrices separately')
+    if args.no_captures and not args.profile:
+        parser.error('--no-captures requires --profile; normal GPU evidence remains mandatory')
     if not math.isfinite(args.pitch) or not 30 <= args.pitch <= 65:
         parser.error('--pitch must be between 30 and 65')
     if not math.isfinite(args.yaw) or not -180 <= args.yaw <= 180:
         parser.error('--yaw must be between -180 and 180')
     if not math.isfinite(args.fov) or not 30 <= args.fov <= 40:
         parser.error('--fov must be between 30 and 40')
+    if args.npc_matrix and (not args.game or args.scene_review or args.ime):
+        parser.error('--npc-matrix requires --game and excludes --scene-review/--ime')
     if args.scene_review and not args.game:
         parser.error('--scene-review requires --game')
     if args.scene_review and args.ime:
         parser.error('--scene-review excludes dialogue; run --game --ime separately')
     if args.ime and not args.game:
         parser.error('--ime requires --game')
-    gpu_probe = args.probe or args.actor_probe or args.environment_probe
+    gpu_probe = args.probe or args.actor_probe or args.environment_probe or args.resource_probe
     if args.probe and args.yaw != 30:
         parser.error('--probe runs its own orbit matrix; omit --yaw')
     if args.duration < 0:
         parser.error('--duration cannot be negative')
-    if sum((args.baseline, args.probe, args.actor_probe, args.environment_probe, args.logic, args.game)) > 1:
-        parser.error('--baseline, --probe, --actor-probe, --environment-probe, --logic and --game are mutually exclusive')
+    if sum((args.baseline, args.probe, args.actor_probe, args.environment_probe, args.resource_probe, args.logic, args.game)) > 1:
+        parser.error('--baseline, GPU probes, --logic and --game are mutually exclusive')
     if args.background:
         if private_display is not None or args.logic or args.baseline:
             parser.error('--background is for the P1 GPU fixture/probe; --logic and --baseline retain their existing entries')
@@ -114,8 +163,11 @@ def run(argv: list[str] | None = None, *, private_display: dict | None = None,
             parser.error('--game requires --background (private GPU display + disposable backend)')
         from hd2d_game_smoke import run_game
         return run_game(args, private_display)
-    output = (args.output or Path('/tmp/xia-hd2d')).resolve()
-    output.mkdir(parents=True, exist_ok=True)
+    output = (args.output or Path(tempfile.mkdtemp(prefix='xia-hd2d-'))).resolve()
+    if private_display is None:
+        claim_output(output)
+    # The private worker inherits the directory already claimed by its parent.
+    print(f'OUTPUT: {output}', flush=True)
     godot = os.environ.get('GODOT_BIN','/usr/bin/godot')
     with tempfile.TemporaryDirectory(prefix='xia-hd2d-') as scratch:
         project = Path(scratch)/'project'
@@ -136,7 +188,7 @@ def run(argv: list[str] | None = None, *, private_display: dict | None = None,
         imported = subprocess.run([godot,'--headless','--path',str(project),'--import','--quit'],
                                   env=env,capture_output=True,text=True,timeout=180)
         (output/'import.log').write_text(imported.stdout+imported.stderr)
-        if imported.returncode or re.search(r'SCRIPT ERROR|Parse Error|Shader compilation failed', imported.stdout+imported.stderr):
+        if run_errors(imported.returncode, imported.stdout+imported.stderr):
             print((output/'import.log').read_text())
             return 1
         base = [godot,'--path',str(project),'--resolution','1440x900']
@@ -154,13 +206,12 @@ def run(argv: list[str] | None = None, *, private_display: dict | None = None,
                 raise RuntimeError(f'Missing GPU ICD: {icd}')
             env['VK_DRIVER_FILES'] = icd
             if args.baseline:
-                if args.gpu_device == 'nvidia':
-                    env.update(__NV_PRIME_RENDER_OFFLOAD='1',__GLX_VENDOR_LIBRARY_NAME='nvidia')
-                command = base+['--rendering-method','gl_compatibility']
-            else:
-                command = base+['--rendering-method','forward_plus','--rendering-driver','vulkan']
+                args.renderer = 'gl_compatibility'
+            renderer_flags, expected_renderer = renderer_options(args, env, project)
+            command = base + renderer_flags
             if gpu_probe:
-                script = ('hd2d_environment_probe.gd' if args.environment_probe else
+                script = ('hd2d_resource_probe.gd' if args.resource_probe else
+                          'hd2d_environment_probe.gd' if args.environment_probe else
                           'hd2d_actor_probe.gd' if args.actor_probe else 'hd2d_probe.gd')
                 command += ['--script', 'res://tools/' + script]
             else:
@@ -191,7 +242,7 @@ def run(argv: list[str] | None = None, *, private_display: dict | None = None,
                         if match:
                             rss.append({'seconds':elapsed,'rss_kib':int(match.group(1))})
                     logtext = (output/'engine.log').read_text()
-                    if re.search(r'SCRIPT ERROR|Parse Error|Shader compilation failed', logtext):
+                    if ERROR_LOG.search(logtext):
                         raise RuntimeError(f'Godot script/shader failed: {output / "engine.log"}')
                     if elapsed > (360 if args.environment_probe else 180 if gpu_probe or args.logic else args.duration+180) and (args.duration>0 or gpu_probe or args.logic):
                         raise RuntimeError('Godot run timed out')
@@ -207,19 +258,21 @@ def run(argv: list[str] | None = None, *, private_display: dict | None = None,
             raise RuntimeError(f'后台交互未完成：{automation.error}')
         logtext = (output/'engine.log').read_text()
         print(logtext)
-        if process.returncode or re.search(r'SCRIPT ERROR|\bERROR\s*:|HD2D_FAIL',logtext):
+        if run_errors(process.returncode, logtext, CONTRACT_END if args.logic else None):
             return 1
         if args.logic:
-            return 0 if 'HD2D_CONTRACT_PASS' in logtext else 1
+            return 0
         metrics = output/('probe.json' if gpu_probe else 'metrics.json')
         if not metrics.exists():
             raise RuntimeError('Missing GPU report (closing/crashing before completion is not a pass)')
         data = json.loads(metrics.read_text())
+        if gpu_probe and (errors := probe_errors(data)):
+            raise RuntimeError('; '.join(errors))
         expected = 'nvidia' if args.gpu_device=='nvidia' else 'amd'
         device = data['device'].lower()
         if expected not in device and not (expected=='amd' and 'radeon' in device):
             raise RuntimeError(f'Wrong GPU: requested {expected}, got {device}')
-        if not args.baseline and data['backend'] != 'forward_plus':
+        if data['backend'] != expected_renderer:
             raise RuntimeError(f'Unexpected renderer fallback: {data["backend"]}')
         if not gpu_probe:
             # Monotonic frame intervals are streamed after a 3-second warmup.

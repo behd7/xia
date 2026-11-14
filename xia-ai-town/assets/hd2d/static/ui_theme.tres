@@ -1,6 +1,7 @@
 [gd_resource type="Theme" format=3]
 
 [ext_resource type="Texture2D" path="res://assets/ui/panel.png" id="1"]
+[ext_resource type="SystemFont" path="res://assets/ui/body_font.tres" id="2"]
 
 [sub_resource type="StyleBoxFlat" id="Resource_1"]
 content_margin_left = 12.0
@@ -157,11 +158,8 @@ corner_radius_top_right = 1
 corner_radius_bottom_right = 1
 corner_radius_bottom_left = 1
 
-[sub_resource type="SystemFont" id="Resource_11"]
-font_names = PackedStringArray("Noto Serif CJK SC", "Source Han Serif SC", "SimSun", "Microsoft YaHei")
-
 [resource]
-default_font = SubResource("Resource_11")
+default_font = ExtResource("2")
 default_font_size = 16
 Button/colors/font_color = Color(0.16078432, 0.23137255, 0.21568628, 1)
 Button/colors/font_disabled_color = Color(0.5882353, 0.6117647, 0.5686275, 1)

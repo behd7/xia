@@ -4,6 +4,9 @@ shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_disabled, diffuse_lambert_wrap, specular_disabled;
 uniform sampler2D albedo_texture : source_color, filter_nearest, repeat_disable;
 uniform bool unshaded = false;
+// Compatibility has an LDR output: reserve headroom for the scene key light.
+// This is body-only exposure, not a texture edit or an environment change.
+uniform float compatibility_exposure : hint_range(0.1, 1.0) = 0.80;
 
 void vertex() {
 	// Match Sprite3D's fixed-Y billboard, including its pitch scale and foot.
@@ -26,6 +29,7 @@ void fragment() {
 	vec3 sky_normal = (VIEW_MATRIX * vec4(0.0, 1.0, 0.0, 0.0)).xyz;
 	NORMAL = normalize(NORMAL * 0.5 + sky_normal * 0.8660254);
 	ROUGHNESS = 1.0;
-	ALBEDO = unshaded ? vec3(0.0) : tex.rgb;
+	float exposure = OUTPUT_IS_SRGB ? compatibility_exposure : 1.0;
+	ALBEDO = unshaded ? vec3(0.0) : tex.rgb * exposure;
 	EMISSION = unshaded ? tex.rgb : vec3(0.0);
 }

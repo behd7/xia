@@ -6,6 +6,19 @@ const Actor = preload("res://scripts/hd2d/actors.gd")
 const ActorScene = preload("res://scenes/hd2d/actor.tscn")
 const Occlusion = preload("res://scripts/hd2d/occlusion.gd")
 var full_map := false
+var profile_enabled := false
+var profile_frames := 0
+var profile_usec: Dictionary = {}
+var _occlusion_actors: Array = []
+var _occlusion_priority := 0
+
+func _profile_stage(stage: String, since: int) -> int:
+	if not profile_enabled:
+		return 0
+	var now := Time.get_ticks_usec()
+	profile_usec[stage] = int(profile_usec.get(stage, 0)) + now - since
+	return now
+
 var population: Dictionary = {}
 var actor_entries: Array[Dictionary] = []
 var current_target := ""
@@ -15,7 +28,6 @@ var lighting: Node3D
 var hero: Node3D
 var target: Node3D
 var occlusion = Occlusion.new()
-var protect_target := false
 var target_position := Vector2(540, 244)
 var zoom := 2
 var quality := "standard"
@@ -23,6 +35,7 @@ var applied_quality := ""
 var focus := Vector2.ZERO
 var initialized := false
 var focus_height := 0.0
+var last_actor_position := Vector2.ZERO
 var foreground_clip_depth := -1.0
 var pitch := Projector.fixture_pitch()
 var yaw := Projector.fixture_yaw()
@@ -31,6 +44,11 @@ var orthogonal := Projector.fixture_orthogonal()
 
 func setup(world: Node2D, use_full_map: bool = false) -> void:
 	full_map = use_full_map
+	if full_map:
+		pitch = Projector.GAME_PITCH
+		yaw = Projector.GAME_YAW
+		fov = Projector.FOV
+		orthogonal = false
 	camera = $Camera
 	lighting = $Lighting
 	lighting.distance_fog = not full_map
@@ -38,6 +56,7 @@ func setup(world: Node2D, use_full_map: bool = false) -> void:
 	scenery = $Scenery
 	hero = $Hero
 	hero.scenic_terrain = full_map
+	hero.set_outline_kind("hero")
 	if not full_map:
 		target = $Target
 	else:
@@ -61,33 +80,36 @@ func set_fov(value: float) -> void:
 	fov = clampf(value, Projector.MIN_FOV, Projector.MAX_FOV)
 
 func reset_camera() -> void:
-	set_pitch(Projector.PITCH)
-	set_yaw(Projector.YAW)
+	set_pitch(Projector.GAME_PITCH if full_map else Projector.PITCH)
+	set_yaw(Projector.GAME_YAW if full_map else Projector.YAW)
 	set_fov(Projector.FOV)
 
 func update(world: Node2D, pixels: Vector2, game_seconds: float, delta: float, target_key: String = "") -> void:
+	var profile_at := Time.get_ticks_usec() if profile_enabled else 0
 	hero.sync(world.actor_pos, delta)
 	if full_map:
 		_sync_population(world, delta)
 		current_target = target_key
 		target = population.get(target_key)
-		protect_target = is_instance_valid(target)
 	else:
 		target.sync(target_position, delta)
+	profile_at = _profile_stage("actors", profile_at)
 	var back := Projector.ground_back(yaw)
 	var wanted: Vector2 = world.actor_pos - Vector2(back.x, back.z) * 68.0
 	if full_map:
 		wanted = wanted.clamp(Layout.CAMERA_FOCUS_BOUNDS.position, Layout.CAMERA_FOCUS_BOUNDS.end)
-	focus = focus.lerp(wanted, minf(delta*8, 1)) if initialized else wanted
+	var wanted_height: float = hero.position.y / Projector.SCALE
+	if initialized and world.actor_pos.distance_to(last_actor_position) > 128.0:
+		reset_follow()
+	_smooth_follow(wanted, wanted_height, delta)
+	last_actor_position = world.actor_pos
 	if full_map:
 		focus = focus.clamp(Layout.CAMERA_FOCUS_BOUNDS.position, Layout.CAMERA_FOCUS_BOUNDS.end)
-	initialized = true
-	var wanted_height: float = hero.position.y / Projector.SCALE
-	focus_height = lerpf(focus_height, wanted_height, minf(delta * 8, 1.0)) if delta > 0 else wanted_height
 	if full_map:
 		focus = CameraLimits.configure(camera, pixels, zoom, focus, pitch, yaw, orthogonal, fov, world.actor_pos, focus_height, wanted_height, hero.occlusion_bounds)
 	else:
 		Projector.configure(camera, pixels, zoom, focus, pitch, yaw, orthogonal, fov, world.actor_pos, focus_height, wanted_height)
+	profile_at = _profile_stage("camera", profile_at)
 	if full_map:
 		# Clip only very close foreground surfaces; preserve the player and nearby cover.
 		# A fraction of eye distance is bounded in world units. A hero-relative
@@ -101,14 +123,44 @@ func update(world: Node2D, pixels: Vector2, game_seconds: float, delta: float, t
 	if applied_quality != quality:
 		RenderingServer.directional_shadow_atlas_set_size(2048 if quality == "standard" else 1024, true)
 		applied_quality = quality
+	profile_at = _profile_stage("clip_quality", profile_at)
 	lighting.quality = quality
 	lighting.update(game_seconds, scenery, -camera.to_local(hero.global_position).z, hero.global_position)
 	if full_map:
 		_update_sky(game_seconds)
-	var actors := [hero]
-	if protect_target:
+	profile_at = _profile_stage("lighting", profile_at)
+	# Player and current target first: they are ray-tested on every query.
+	var actors: Array = [hero]
+	if is_instance_valid(target):
 		actors.append(target)
-	occlusion.update(self, camera, actors, scenery.fade_groups, delta)
+	var priority := actors.size()
+	for actor: Node3D in population.values():
+		if actor != target:
+			actors.append(actor)
+	_occlusion_actors = actors
+	_occlusion_priority = priority
+	occlusion.advance(actors, delta)
+	_profile_stage("occlusion", profile_at)
+	if profile_enabled:
+		profile_frames += 1
+
+func _physics_process(delta: float) -> void:
+	if not initialized or not is_instance_valid(camera) or _occlusion_actors.is_empty():
+		return
+	occlusion.query(self, camera, _occlusion_actors, _occlusion_priority, delta)
+
+func reset_follow() -> void:
+	initialized = false
+
+func _smooth_follow(wanted: Vector2, wanted_height: float, delta: float) -> void:
+	if not initialized or delta <= 0:
+		focus = wanted
+		focus_height = wanted_height
+	else:
+		var weight := 1.0 - exp(-8.0 * delta)
+		focus = focus.lerp(wanted, weight)
+		focus_height = lerpf(focus_height, wanted_height, weight)
+	initialized = true
 
 func _update_sky(game_seconds: float) -> void:
 	var hour := fposmod(game_seconds / 3600.0, 24.0)
@@ -116,9 +168,6 @@ func _update_sky(game_seconds: float) -> void:
 	var color := Color("202d3b").lerp(Color("9daaa6"), daylight)
 	lighting.environment.background_color = color
 	lighting.environment.fog_light_color = color
-
-func label_visible(actor: Node3D, protected: bool) -> bool:
-	return (occlusion.enabled and protected) or not occlusion.actor_blocked(self, camera, actor)
 
 func _all_actors() -> Array:
 	var actors: Array = [hero]
@@ -141,6 +190,7 @@ func _population_actor(key: String, asset_key: String, legacy_path: String = "")
 	$Population.add_child(actor)
 	actor.set_pitch(pitch)
 	actor.set_yaw(yaw)
+	actor.set_outline_kind("mob" if key.begins_with("mob/") else "npc")
 	population[key] = actor
 	return actor
 

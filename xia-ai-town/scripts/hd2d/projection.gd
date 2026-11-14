@@ -9,6 +9,11 @@ const MAX_FOV := 40.0
 const MIN_PITCH := 30.0
 const MAX_PITCH := 65.0
 const PITCH_PRESETS := [38.0, 45.0, 40.0, 55.0]
+# The playable town has ONE camera: no orbit (azimuth 0, facades face the
+# player) at the lowest elevation tier. PITCH/YAW above stay the P1 fixture's
+# adjustable defaults; the game never reads them or the XIA_HD2D_* overrides.
+const GAME_PITCH := MIN_PITCH
+const GAME_YAW := 0.0
 const BODY_PIXELS := 36.0
 
 static func fixture_pitch() -> float:

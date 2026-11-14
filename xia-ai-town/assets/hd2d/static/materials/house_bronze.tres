@@ -12,7 +12,6 @@ shader_parameter/tint = Color(0.65, 0.57, 0.39, 1)
 shader_parameter/uv_scale = null
 shader_parameter/flat_color = Color(0.58431375, 0.5019608, 0.38431373, 1)
 shader_parameter/color_mix = 0.8
-shader_parameter/fade_residue = null
 shader_parameter/upright = null
 shader_parameter/foliage_sway = null
 shader_parameter/volume_foliage = null

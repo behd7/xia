@@ -22,6 +22,13 @@ from hd2d_background import BackgroundInteraction, write_json
 from smoke_test import SERVER, ERROR_LOG, fixture, reserve_listener, stop_process
 
 
+def performance_environment(args) -> dict[str, str]:
+    """Keep the measurement policy explicit; zero must survive both processes."""
+    return {"XIA_HD2D_MAX_FPS": str(args.max_fps),
+            "XIA_HD2D_PROFILE": str(int(args.profile)),
+            "XIA_HD2D_NO_CAPTURES": str(int(args.no_captures))}
+
+
 class GameInteraction(BackgroundInteraction):
     def focus(self) -> None:
         if int(self.xdo('getwindowpid', self.window)) != self.pid:
@@ -38,12 +45,15 @@ class GameInteraction(BackgroundInteraction):
             for path in sorted(set(self.output.glob('manual-*.json')) - old):
                 try:
                     data = json.loads(path.read_text())
-                    from PIL import Image
-                    with Image.open(path.with_suffix('.png')) as image:
-                        image.load()
-                        if image.size != tuple(data['window']):
-                            raise AssertionError('GPU screenshot is not native window size')
-                    self.screenshots[name] = path.with_suffix('.png').name
+                    if self.env.get('XIA_HD2D_NO_CAPTURES') != '1':
+                        from PIL import Image
+                        with Image.open(path.with_suffix('.png')) as image:
+                            image.load()
+                            if image.size != tuple(data['window']):
+                                raise AssertionError('GPU screenshot is not native window size')
+                        self.screenshots[name] = path.with_suffix('.png').name
+                    elif not data['no_captures']:
+                        raise AssertionError('no-captures policy was not applied by the engine')
                     return data
                 except (FileNotFoundError, json.JSONDecodeError):
                     pass
@@ -86,10 +96,9 @@ class GameInteraction(BackgroundInteraction):
         before = self.state(lambda s: s['position'] == [832, 624], '诊断落点尚未同步')
         self.move('d', .5)
         after = self.state(lambda s: s['position'] != before['position'], '真实WASD没有移动')
-        self.check('camera_relative_wasd', after['position'][0] > before['position'][0] + 20 and after['position'][1] < before['position'][1] - 10)
+        self.check('screen_axis_wasd', after['position'][0] > before['position'][0] + 20 and abs(after['position'][1] - before['position'][1]) < 2)
         # Schedule pacing can put Zhang outside 38px of the fixed town spawn.
-        # Inspect the bubble as the actual nearby target; ordinary occluded NPCs
-        # correctly keep their labels hidden and must not make this flaky.
+        # Inspect the bubble on the actual nearby target.
         self.key('F5')
         self.state(lambda s: s['target'] == 'npc/zhang_mantou', '气泡检查没有接近真实NPC目标')
         self.key('F9')
@@ -98,25 +107,14 @@ class GameInteraction(BackgroundInteraction):
         self.state(lambda s: 'npc/zhang_mantou/bubble' not in s['labels'], 'tick时钟气泡没有正常到期')
         self.check('native_bubble_and_monotonic_expiry', True)
         self.key('F4')
+        fixed = self.sample()
         self.key('c')
-        self.state(lambda s: s['camera_panel'], '视角面板没有打开')
-        for key, fraction in (('fov', .8), ('pitch', .75), ('yaw', .25)):
-            before_value = self.sample()[key]
-            slider = self.sample()['sliders'][key]
-            center = [slider['position'][0] + slider['size'][0] * fraction,
-                      slider['position'][1] + slider['size'][1] * .5]
-            self.click_at(center)
-            self.state(lambda s: abs(s[key] - before_value) > 1, f'原生{key}滑条实际点击无效')
         self.key('Home')
-        self.state(lambda s: s['pitch'] == 38 and s['yaw'] == 30 and s['fov'] == 35, '滑条吞掉Home复位键')
-        self.check('native_camera_mouse_sliders_and_keyboard_focus', True)
-        self.key('Escape')
-        self.state(lambda s: not s['camera_panel'], 'Esc没有收起视角面板')
         self.drag_camera(100, 80)
-        self.state(lambda s: abs(s['yaw'] - 30) > 10 and abs(s['pitch'] - 38) > 5, '中键拖动没有改变视角')
-        self.key('Home')
-        self.state(lambda s: s['pitch'] == 38 and s['yaw'] == 30 and s['fov'] == 35, '视角复位失败')
-        self.check('native_camera_controls', True)
+        self.sleep(.3)
+        after = self.sample()
+        self.check('fixed_camera_ignores_orbit_inputs', (after['pitch'], after['yaw'], after['fov']) == (30, 0, 35)
+                   and (fixed['pitch'], fixed['yaw']) == (30, 0) and not after['modal'], {k: after[k] for k in ('pitch', 'yaw', 'fov')})
         for zoom, clicks in ((3, ['4']), (1, ['5', '5']), (2, ['4'])):
             self.focus()
             self.xdo('mousemove', '--window', self.window, 720, 600)
@@ -126,10 +124,10 @@ class GameInteraction(BackgroundInteraction):
             self.state(lambda s: s['zoom'] == zoom, f'滚轮{zoom}×失败')
         self.check('os_wheel_1_2_3x', True)
         self.key('F2')
-        self.state(lambda s: bool(s['fade_groups']), '正式客户端屋后局部虚化没有触发')
-        self.capture('inn_local_reveal')
+        self.state(lambda s: s['outlines'].get('Hero') == 1, '正式客户端屋后人物描边没有触发')
+        self.capture('inn_hidden_outline')
         self.key('F7')
-        self.state(lambda s: not s['occlusion_enabled'] and not s['fade_groups'], '关闭局部虚化没有恢复')
+        self.state(lambda s: not s['occlusion_enabled'] and not s['outlines'], '关闭人物描边没有恢复')
         self.capture('inn_hard_occlusion')
         self.key('F7')
         self.key('F4')
@@ -156,9 +154,15 @@ class GameInteraction(BackgroundInteraction):
         self.key('F3')
         self.key('e')
         shop = self.state(lambda s: s['modal'] == 'shop' and not s['busy'], '门口交互未进入药铺')
-        self.click_button('购入 · 15')
+        for _ in range(16):
+            if self.sample().get('focus_text', '').startswith('购入 · 15'):
+                break
+            self.key('Tab')
+            self.sleep(.2)
+        self.state(lambda s: s.get('focus_text', '').startswith('购入 · 15') and s['focus_inside_modal'], 'Tab没有到达药铺购买按钮')
+        self.key('Return')
         self.state(lambda s: not s['busy'] and s['gold'] == shop['gold'] - 15, '真实后端购买未同步到HUD')
-        self.check('shop_os_click_and_server_settlement', True)
+        self.check('shop_keyboard_enter_and_server_settlement', True)
         self.capture('shop_purchase')
         self.key('Escape')
         self.key('F5')
@@ -167,7 +171,9 @@ class GameInteraction(BackgroundInteraction):
         self.sleep(1)
         self.check('dialogue_freezes_current_npc', self.sample()['npcs']['zhang_mantou'] == dialogue['npcs']['zhang_mantou'])
         # ASCII is sufficient to test the native LineEdit. No Chinese key injection.
-        self.xdo('type', '--clearmodifiers', '--delay', '70', 'p2-stream-check')
+        self.xdo('type', '--clearmodifiers', '--delay', '70', 'ibkme-p2-stream-check')
+        self.state(lambda s: s['modal'] == 'dialogue' and s['input_text'] == 'ibkme-p2-stream-check', '输入框业务快捷键透传')
+        self.check('chat_shortcuts_are_text_not_actions', True)
         self.click_button('作 揖')
         partial = self.state(lambda s: s['busy'] and '山路' in s['text'], 'SSE token没有在done前显示')
         done = self.state(lambda s: not s['busy'] and '山路清静，慢行即可。' in s['text'], 'SSE完成态没有恢复UI')
@@ -190,12 +196,110 @@ class GameInteraction(BackgroundInteraction):
         self.click_button('收剑')
         self.state(lambda s: not s['modal'] and 'mob/wolf_1' not in s['population'], '击杀怪物未从3D展示移除')
         self.check('battle_os_input_server_result_and_actor_removal', result['battle']['result'] == 'win')
-        while self.sample()['seconds'] < self.duration - 4:
-            self.key('F4')
-            self.move('d', .65)
-            self.move('a', .65)
+        if self.env.get('XIA_HD2D_PROFILE') == '1':
+            self.profile_route()
+        else:
+            self.ui_checks()
+            while self.sample()['seconds'] < self.duration - 4:
+                self.key('F4')
+                self.move('d', .65)
+                self.move('a', .65)
         self.capture('main_after_interaction')
         self.completed = True
+
+    def profile_route(self) -> None:
+        """Repeat real walking, menu and dialogue work in ONE loaded client.
+
+        F4/F5 are explicit fixture relocations, not load/close cycles. Movement,
+        focus and SSE still go through OS events and the disposable real API.
+        """
+        cycle = 0
+        while self.sample()["seconds"] < self.duration - 16:
+            cycle += 1
+            (self.output / "stage.request").write_text("route_walk")
+            self.key("F4")
+            self.state(lambda s: s["position"] == [832, 624], "性能路线起点未同步")
+            for key, seconds in (("a", 1.0), ("w", 2.0), ("s", 2.0), ("d", 1.0)):
+                self.move(key, seconds)
+            (self.output / "stage.request").write_text("route_menu")
+            self.key("b")
+            locked = self.state(lambda s: s["modal"] == "inventory", "性能路线行囊未打开")
+            self.key("Tab")
+            self.move("d", .2)
+            self.check(f"route_{cycle}_modal_blocks_move", self.sample()["position"] == locked["position"])
+            self.key("Escape")
+            self.state(lambda s: not s["modal"], "性能路线行囊未关闭")
+            (self.output / "stage.request").write_text("route_dialogue")
+            self.key("F5")
+            self.key("e")
+            self.state(lambda s: s["modal"] == "dialogue" and not s["busy"], "性能路线对话未打开")
+            self.xdo("type", "--clearmodifiers", "--delay", "20", "route-check")
+            self.click_button("作 揖")
+            self.state(lambda s: not s["busy"] and "山路清静，慢行即可。" in s["text"], "性能路线SSE未完成")
+            self.key("Escape")
+            self.state(lambda s: not s["modal"], "性能路线对话未关闭")
+        (self.output / "stage.request").write_text("route_tail")
+        self.key("F4")
+        while self.sample()["seconds"] < self.duration - 4:
+            self.move("d", .45)
+            self.move("a", .45)
+        self.check("profile_continuous_route_cycles", cycle > 0, {"cycles": cycle})
+
+    def ui_checks(self) -> None:
+        self.key('F4')
+        self.sleep(.5)
+        idle = self.sample()
+        self.sleep(1.1)
+        after = self.sample()
+        self.check('idle_static_and_dynamic_map_retained', after['map_static_draws'] == idle['map_static_draws']
+                   and after['map_dynamic_draws'] == idle['map_dynamic_draws'])
+        self.check('hud_updates_only_on_text_change', after['hud_writes'] - idle['hud_writes'] <= 6)
+        for attempt in range(10):
+            opened = self.sample()['modal_opens']
+            self.key('m')
+            state = self.state(lambda s: s['modal'] == 'map' and s['focus_inside_modal'], '舆图没有初始焦点')
+            for key in ('Tab', 'shift+Tab', 'Left', 'Right', 'Up', 'Down'):
+                self.key(key)
+                self.sleep(.1)
+                self.state(lambda s: s['modal'] == 'map' and s['focus_inside_modal'], '模态焦点逃到背景')
+            self.key('i')
+            self.sleep(.15)
+            self.check('modal_no_background_shortcut_%02d' % attempt, self.sample()['modal'] == 'map'
+                       and self.sample()['modal_opens'] == opened + 1)
+            self.key('Return')
+            self.state(lambda s: not s['modal'] and s['focus_name'], 'Enter返回后没有回收焦点')
+        opened = self.sample()['modal_opens']
+        self.xdo('keydown', 'm')
+        self.sleep(1.0)
+        self.xdo('keyup', 'm')
+        state = self.state(lambda s: s['modal'] == 'map', '长按舆图键没有打开')
+        self.check('held_shortcut_opens_once', state['modal_opens'] == opened + 1)
+        self.key('Escape')
+        self.state(lambda s: not s['modal'], 'Esc没有关闭键盘打开的舆图')
+        revision = 0
+        for width, height in ((1100, 720), (1440, 900), (2560, 1080)):
+            self.xdo('windowsize', self.window, str(width), str(height))
+            self.state(lambda s: s['window'] == [width, height], 'UI矩阵resize失败')
+            for edge in (False, True):
+                revision += 1
+                write_json(self.output / 'ui.request', {'revision': revision, 'edge': edge})
+                state = self.state(lambda s: s['ui_revision'] == revision and len([k for k in s['labels'] if k.startswith('npc/') and not k.endswith('/bubble')]) == 7 and (edge or all((x-832)**2 + (y-616)**2 < 90**2 for x,y in s['npcs'].values())),
+                                   '七名聚集NPC没有全部显示', timeout=15)
+                self.sleep(.4)
+                state = self.capture('cluster_%dx%d_%s' % (width, height, 'edge' if edge else 'gather'))
+                rects = list(state['label_rects'].values())
+                enclosed = all(x >= 0 and y >= 0 and x + w <= width and y + h <= height for x,y,w,h in rects)
+                overlap = any(max(a[0],b[0]) < min(a[0]+a[2],b[0]+b[2]) and max(a[1],b[1]) < min(a[1]+a[3],b[1]+b[3])
+                              for i,a in enumerate(rects) for b in rects[i+1:])
+                self.check('cluster_layout_%dx%d_%s' % (width, height, edge), enclosed and not overlap and state['placement_failures'] == 0
+                           and not any(sign['overlay_overlap'] for sign in state['signs'].values()) and state['labels'].get('hero', '').startswith('◆ ')
+                           and (edge or state['labels'].get(state['target'], '').startswith('◇ ')), state['label_rects'])
+        revision += 1
+        write_json(self.output / 'ui.request', {'revision': revision, 'reset': True})
+        self.state(lambda s: s['ui_revision'] == revision, 'UI矩阵未恢复临时日程')
+        self.xdo('windowsize', self.window, '1440', '900')
+        self.state(lambda s: s['window'] == [1440,900], 'UI矩阵未恢复窗口')
+        self.key('F4')
 
     def ime_checks(self) -> None:
         for args in (('-s', 'rime'), ('-o',)):
@@ -232,9 +336,17 @@ class GameInteraction(BackgroundInteraction):
 
 # Only imported by a new isolated uvicorn process; production modules/files stay untouched.
 MODEL_FIXTURE = '''import asyncio
+import os
+from pathlib import Path
 from app import main
 
+_clock_file = Path(os.environ["XIA_HD2D_OUTPUT"]) / "clock.override"
+_original_now = main.clock.now
+main.clock.now = lambda: float(_clock_file.read_text()) if _clock_file.exists() else _original_now()
+
 async def talk_fixture(db, mem_store, npc_id, message, **kwargs):
+    with (Path(os.environ["XIA_HD2D_OUTPUT"]) / "talk-requests.txt").open("a") as report:
+        report.write(str(npc_id) + chr(10))
     yield "start", {"npc": "张馒头"}
     yield "token", {"text": "这段需要重试。"}
     await asyncio.sleep(0.35)
@@ -255,20 +367,23 @@ app = main.app
 
 
 def run_game(args, isolation: dict) -> int:
-    from hd2d_smoke import stage
+    from hd2d_smoke import stage, renderer_options
     output = args.output.resolve()
     duration = args.duration or 120
     with tempfile.TemporaryDirectory(prefix='xia-hd2d-game-') as folder:
         scratch = Path(folder)
         project = scratch / 'project'
         stage(project)
-        env = dict(os.environ, XIA_SMOKE_ROOT=str(scratch), XIA_WORLD_VIEW='hd2d',
+        env = dict(os.environ, XIA_HD2D_NPC_MATRIX=str(int(args.npc_matrix)), XIA_SMOKE_ROOT=str(scratch), XIA_WORLD_VIEW='hd2d',
                    DB_PATH=str(scratch / 'xia.db'), CHROMA_DIR=str(scratch / 'chroma'),
                    SCHEDULER_ENABLED='false', GODOT_SILENCE_ROOT_WARNING='1', PYTHONDONTWRITEBYTECODE='1',
                    XIA_HD2D_OUTPUT=str(output), XIA_HD2D_SCENE_REVIEW='1' if args.scene_review else '0', XIA_HD2D_DURATION=str(duration), XIA_HD2D_QUALITY=args.quality,
                    XIA_HD2D_PITCH=str(args.pitch), XIA_HD2D_YAW=str(args.yaw), XIA_HD2D_FOV=str(args.fov),
                    XIA_HD2D_PROJECTION=args.projection, NO_PROXY='localhost,127.0.0.1', no_proxy='localhost,127.0.0.1',
                    ENABLE_GAMESCOPE_WSI='0')
+        env.update(performance_environment(args))
+        if args.profile:
+            (output / 'clock.override').write_text('43200.0')
         for name in ('DATA', 'CONFIG', 'CACHE', 'STATE'):
             env[f'XDG_{name}_HOME'] = str(scratch / name.lower())
         if env.get('DISPLAY') != isolation['display']:
@@ -343,12 +458,19 @@ def run_game(args, isolation: dict) -> int:
                         if ime_process.poll() is not None or time.monotonic() > deadline:
                             raise RuntimeError('私有Rime未就绪；见ime.log')
                         time.sleep(.2)
+                renderer_flags, expected_renderer = renderer_options(args, env, project)
                 command = [godot, '--path', str(project), '--resolution', '1440x900', '--display-driver', 'x11',
-                           '--audio-driver', 'Dummy', '--rendering-method', 'forward_plus', '--rendering-driver', 'vulkan',
-                           '--script', 'res://tools/hd2d_game_probe.gd']
+                           '--audio-driver', 'Dummy', *renderer_flags, '--script', 'res://tools/hd2d_game_probe.gd']
+                write_json(output / 'launch.json', {'command': command, 'requested_renderer': args.renderer or 'project',
+                                                   'expected_renderer': expected_renderer, 'gpu': args.gpu_device,
+                                                   'profile': args.profile, 'max_fps': args.max_fps, 'no_captures': args.no_captures,
+                                                   'compositor_hz': isolation.get('compositor_hz', 60)})
                 with (output / 'engine.log').open('w') as engine_log:
                     process = subprocess.Popen(command, cwd=scratch, env=env, stdout=engine_log, stderr=subprocess.STDOUT)
-                    if args.scene_review:
+                    if args.npc_matrix:
+                        from hd2d_npc_interaction import NpcMatrixInteraction
+                        automation_class = NpcMatrixInteraction
+                    elif args.scene_review:
                         from hd2d_scene_interaction import SceneInteraction
                         automation_class = SceneInteraction
                     else:
@@ -370,12 +492,21 @@ def run_game(args, isolation: dict) -> int:
                     raise RuntimeError(f'P2 engine/interaction failed; see {output / "engine.log"}')
                 data = json.loads((output / 'metrics.json').read_text())
                 expected = 'nvidia' if args.gpu_device == 'nvidia' else 'radeon'
-                if expected not in data['device'].lower() or data['backend'] != 'forward_plus':
+                if expected not in data['device'].lower() or data['backend'] != expected_renderer:
                     raise RuntimeError(f'P2 unexpected GPU/renderer: {data["device"]}/{data["backend"]}')
                 intervals = sorted(float(line) for line in (output / 'frames.csv').read_text().splitlines())
                 summary = {key: data[key] for key in ('device', 'backend', 'quality', 'duration', 'distance', 'rendered_frames', 'input_events', 'window', 'viewport', 'scope')}
                 summary.update({f'p{p}_ms': intervals[min(len(intervals)-1, int(len(intervals)*p/100))] for p in (50, 95, 99)})
-                summary.update(frames_over_50ms=sum(value > 50 for value in intervals), rendered_fps=data['rendered_frames']/data['duration'])
+                summary.update(frames_over_50ms=sum(value > 50 for value in intervals), rendered_fps=data['rendered_frames']/data['duration'],
+                               avg_ms=sum(intervals)/len(intervals), max_ms=max(intervals),
+                               requested_renderer=args.renderer or 'project', features=data['features'])
+                if data['max_fps'] != args.max_fps or data['no_captures'] != args.no_captures:
+                    raise RuntimeError('P2 actual cap/capture policy differs from request')
+                if args.no_captures and (data['profile']['capture_count'] or list(output.glob('manual-*.png'))):
+                    raise RuntimeError('no-captures run performed a GPU screenshot readback')
+                summary.update(profile=args.profile, max_fps=data['max_fps'], no_captures=data['no_captures'],
+                               compositor_hz=isolation.get('compositor_hz', 60),
+                               measurement='render-loop intervals, NOT physical presentation; first 3s warmup excluded')
                 if data['distance'] < 500 or data['input_events'] < 50 or summary['rendered_fps'] < 20:
                     raise RuntimeError('P2 insufficient sustained OS input or GPU draw callbacks')
                 write_json(output / 'summary.json', summary)

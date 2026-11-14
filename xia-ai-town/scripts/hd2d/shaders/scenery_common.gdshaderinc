@@ -3,15 +3,6 @@ uniform vec4 tint : source_color = vec4(1.0);
 uniform vec2 uv_scale = vec2(1.0);
 uniform vec4 flat_color : source_color = vec4(1.0);
 uniform float color_mix : hint_range(0.0, 1.0) = 0.0;
-uniform float fade_residue : hint_range(0.0, 0.1) = 0.04;
-instance uniform float occlusion_fade = 0.0;
-instance uniform vec2 occlusion_weights = vec2(0.0);
-// Pixel-space center and half extent, relative to the native 3D viewport.
-instance uniform vec4 occlusion_mask0 = vec4(0.0);
-instance uniform vec4 occlusion_mask1 = vec4(0.0);
-// World-space vertical body plane, facing the camera: normal.xyz, distance.w.
-instance uniform vec4 occlusion_plane0 = vec4(0.0);
-instance uniform vec4 occlusion_plane1 = vec4(0.0);
 uniform bool upright = false;
 uniform bool foliage_sway = false;
 uniform bool volume_foliage = false;
@@ -51,16 +42,6 @@ void vertex() {
 	MODELVIEW_MATRIX = VIEW_MATRIX * world;
 	MODELVIEW_NORMAL_MATRIX = mat3(MODELVIEW_MATRIX);
 }
-float local_mask(vec2 pixel, vec4 mask, vec4 plane) {
-	if (mask.z <= 0.0 || mask.w <= 0.0) { return 0.0; }
-	// Keep faces behind the character opaque, even within a selected component.
-	float foreground = step(0.0001, dot(position_world, plane.xyz) - plane.w);
-	float corner = min(mask.z * 0.75, mask.w * 0.45);
-	vec2 q = abs(pixel - mask.xy) - (mask.zw - vec2(corner));
-	float distance = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - corner;
-	float feather = max(3.0, mask.z * 0.40);
-	return foreground * (1.0 - smoothstep(0.0, feather, distance));
-}
 void fragment() {
 	vec2 sample_uv = UV * uv_scale;
 	if (water_motion) {
@@ -85,20 +66,14 @@ void fragment() {
 		tex.rgb = mix(quiet, tex.rgb, 0.50);
 	}
 	if (tex.a < 0.5) { discard; }
-	vec2 pixel = SCREEN_UV * VIEWPORT_SIZE;
-	float reveal = min(occlusion_fade, max(
-		local_mask(pixel, occlusion_mask0, occlusion_plane0) * occlusion_weights.x,
-		local_mask(pixel, occlusion_mask1, occlusion_plane1) * occlusion_weights.y));
-	// Closed crowns AND the branched/rooted trunk can stack multiple front/
-	// back surfaces. Their material uses a lower residue; all other scenery
-	// keeps 4%. Outside the body mask and in shadow passes opacity stays one.
-	float opacity = IN_SHADOW_PASS ? 1.0 : mix(1.0, fade_residue, reveal);
+	// Cover is never faded for a hidden actor: actor_outline.gdshader draws the
+	// body's contour over it instead. Only the near-camera clip below is soft.
 	ALBEDO = mix(tex.rgb, flat_color.rgb * tint.rgb, color_mix);
 	if (vertex_color) { ALBEDO *= COLOR.rgb; }
 	if (volume_foliage || vertex_color) { SPECULAR = 0.0; }
 	ROUGHNESS = 0.95;
 	float view_depth = -(VIEW_MATRIX * vec4(position_world, 1.0)).z;
 	float close_visibility = IN_SHADOW_PASS || foreground_clip_depth <= 0.0 ? 1.0 : smoothstep(foreground_clip_depth, foreground_clip_depth + 2.0, view_depth);
-	ALPHA = tex.a * opacity * close_visibility;
+	ALPHA = tex.a * close_visibility;
 	EMISSION = tex.rgb * glow;
 }

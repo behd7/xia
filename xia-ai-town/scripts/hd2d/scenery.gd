@@ -1,5 +1,7 @@
 extends Node3D
 ## Static nodes/resources are authored in *_scenery.tscn; only binding is runtime.
+## `fade_group` metadata names a ray component for occlusion.gd; scenery itself
+## is never faded.
 const Projector = preload("res://scripts/hd2d/projection.gd")
 const FADE_SHADER = preload("res://scripts/hd2d/shaders/scenery.gdshader")
 const ROOT := "res://assets/hd2d/"
@@ -97,7 +99,6 @@ func register_occluder(mesh: MeshInstance3D, group: StringName) -> void:
 	if not fade_groups.has(group):
 		fade_groups[group] = []
 	fade_groups[group].append(mesh)
-	mesh.set_instance_shader_parameter("occlusion_fade", 0.0)
 	occluders.append(mesh)
 	if mesh.has_node("VisualOccluder"):
 		return

@@ -50,7 +50,6 @@ mesh = ExtResource("7")
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 32, 0, 20)
 
 [node name="structure" parent="客栈_Blender" index="0"]
-instance_shader_parameters/occlusion_fade = 0.0
 surface_material_override/0 = ExtResource("9")
 surface_material_override/1 = ExtResource("10")
 surface_material_override/2 = ExtResource("11")
@@ -74,7 +73,6 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 33.5, 0, 35.5)
 
 [node name="crown" parent="松树0_叶簇体积" index="0"]
 material_override = ExtResource("20")
-instance_shader_parameters/occlusion_fade = 0.0
 metadata/volume_foliage = true
 metadata/fade_group = &"prop/tree/0"
 
@@ -87,7 +85,6 @@ shape = ExtResource("21")
 
 [node name="trunk" parent="松树0_叶簇体积" index="1"]
 material_override = ExtResource("22")
-instance_shader_parameters/occlusion_fade = 0.0
 metadata/volume_foliage = false
 metadata/fade_group = &"prop/tree/0"
 
@@ -103,7 +100,6 @@ transform = Transform3D(0.7313537, 0, 0.6819984, 0, 1, 0, -0.6819984, 0, 0.73135
 
 [node name="crown" parent="松树1_叶簇体积" index="0"]
 material_override = ExtResource("20")
-instance_shader_parameters/occlusion_fade = 0.0
 metadata/volume_foliage = true
 metadata/fade_group = &"prop/tree/1"
 
@@ -116,7 +112,6 @@ shape = ExtResource("21")
 
 [node name="trunk" parent="松树1_叶簇体积" index="1"]
 material_override = ExtResource("22")
-instance_shader_parameters/occlusion_fade = 0.0
 metadata/volume_foliage = false
 metadata/fade_group = &"prop/tree/1"
 
@@ -130,7 +125,6 @@ shape = ExtResource("23")
 [node name="灯笼_inn_lantern_0" type="MeshInstance3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 29.875, 5.7642636, 24.9375)
 material_override = ExtResource("24")
-instance_shader_parameters/occlusion_fade = 0.0
 mesh = ExtResource("25")
 metadata/alpha_texture = ExtResource("26")
 metadata/alpha_quad = Vector2(1.125, 2.1754599)
@@ -154,7 +148,6 @@ omni_range = 8.0
 [node name="灯笼_inn_lantern_1" type="MeshInstance3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 34.125, 5.7642636, 24.9375)
 material_override = ExtResource("24")
-instance_shader_parameters/occlusion_fade = 0.0
 mesh = ExtResource("28")
 metadata/alpha_texture = ExtResource("26")
 metadata/alpha_quad = Vector2(1.125, 2.1754599)

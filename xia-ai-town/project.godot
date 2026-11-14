@@ -36,6 +36,10 @@ window/size/min_height=720
 
 enabled=PackedStringArray("res://addons/godot_ai/plugin.cfg")
 
+[gui]
+
+theme/custom_font="res://assets/ui/body_font.tres"
+
 [physics]
 
 3d/physics_engine="Jolt Physics"

@@ -2,6 +2,10 @@ extends Node3D
 const Projector = preload("res://scripts/hd2d/projection.gd")
 const SHEET = preload("res://assets/hd2d/characters/hero.png")
 static var body_material: ShaderMaterial = preload("res://assets/hd2d/static/materials/actor_body.tres")
+const OUTLINE_SHADER = preload("res://scripts/hd2d/shaders/actor_outline.gdshader")
+## Contour colours by role, readable on roofs, walls and pine crowns alike.
+const OUTLINE_COLORS := {"hero": Color("fff0b8"), "npc": Color("8fe6d0"), "mob": Color("ff8a70")}
+static var outline_materials: Dictionary = {}
 static var legacy_data: Dictionary = {}
 static var legacy_materials: Dictionary = {}
 static var p3_manifest: Dictionary = {}
@@ -27,6 +31,8 @@ var moving := false
 var pitch := Projector.PITCH
 var yaw := 0.0
 var occlusion_bounds := Rect2()
+var outline := 0.0
+var outline_material: ShaderMaterial
 
 # P2 fallback remains available until every P3 actor is present.
 func configure_legacy(texture: Texture2D) -> void:
@@ -94,7 +100,29 @@ func _ready() -> void:
 			material.set_shader_parameter("albedo_texture", sheet)
 			legacy_materials[sheet.resource_path] = material
 		sprite.material_override = legacy_materials[sheet.resource_path]
+	var outline_key := sheet.resource_path
+	if not outline_materials.has(outline_key):
+		var contour := ShaderMaterial.new()
+		contour.shader = OUTLINE_SHADER
+		# Scenery sorts in the alpha pass; the contour must be drawn after it.
+		contour.render_priority = 16
+		contour.set_shader_parameter("albedo_texture", sheet)
+		contour.set_shader_parameter("frames", Vector2(sprite.hframes, sprite.vframes))
+		contour.set_shader_parameter("edge_texels", maxf(1.0, roundf(1.0 / pixel_ratio)))
+		outline_materials[outline_key] = contour
+	outline_material = outline_materials[outline_key]
 	_set_frame(0)
+
+func set_outline_kind(kind: String) -> void:
+	sprite.set_instance_shader_parameter("outline_color", OUTLINE_COLORS.get(kind, OUTLINE_COLORS.npc))
+
+## 0 removes the extra pass; occlusion.gd drives it while cover hides the body.
+func set_outline(strength: float) -> void:
+	if is_equal_approx(outline, strength):
+		return
+	outline = strength
+	sprite.material_overlay = outline_material if strength > 0.0 else null
+	sprite.set_instance_shader_parameter("outline_strength", strength)
 
 func set_pitch(value: float) -> void:
 	pitch = value

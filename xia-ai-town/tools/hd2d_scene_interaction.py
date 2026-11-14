@@ -32,24 +32,15 @@ class SceneInteraction(GameInteraction):
         before = self.state(lambda s: s['position'] == [832, 624], '诊断落点尚未同步')
         self.move('d', .5)
         after = self.state(lambda s: s['position'] != before['position'], '真实WASD没有移动')
-        self.check('camera_relative_wasd', after['position'][0] > before['position'][0] + 20 and after['position'][1] < before['position'][1] - 10)
+        self.check('screen_axis_wasd', after['position'][0] > before['position'][0] + 20 and abs(after['position'][1] - before['position'][1]) < 2)
+        fixed = self.sample()
         self.key('c')
-        self.state(lambda s: s['camera_panel'], '视角面板没有打开')
-        for key, fraction in (('fov', .8), ('pitch', .75), ('yaw', .25)):
-            previous = self.sample()[key]
-            slider = self.sample()['sliders'][key]
-            self.click_at([slider['position'][0] + slider['size'][0] * fraction,
-                           slider['position'][1] + slider['size'][1] * .5])
-            self.state(lambda s: abs(s[key] - previous) > 1, f'{key}滑条点击无效')
         self.key('Home')
-        self.state(lambda s: (s['pitch'], s['yaw'], s['fov']) == (38, 30, 35), 'Home复位失败')
-        self.key('Escape')
-        self.state(lambda s: not s['camera_panel'], 'Esc没有收起视角面板')
         self.drag_camera(100, 80)
-        self.state(lambda s: abs(s['yaw'] - 30) > 10 and abs(s['pitch'] - 38) > 5, '中键拖动没有改变视角')
-        self.capture('orbit_view')
-        self.key('Home')
-        self.check('camera_mouse_sliders_orbit_reset', True)
+        self.sleep(.3)
+        after = self.sample()
+        self.check('fixed_camera_ignores_orbit_inputs', (after['pitch'], after['yaw'], after['fov']) == (30, 0, 35)
+                   and (fixed['pitch'], fixed['yaw']) == (30, 0) and not after['modal'], {k: after[k] for k in ('pitch', 'yaw', 'fov')})
         for zoom, clicks in ((3, ['4']), (1, ['5', '5']), (2, ['4'])):
             self.focus()
             self.xdo('mousemove', '--window', self.window, 720, 600)
@@ -60,13 +51,13 @@ class SceneInteraction(GameInteraction):
             self.check(f'foreground_clip_keeps_hero_{zoom}x', 0 <= state['foreground_clip'] < state['camera_depth'] - 8)
             self.capture(f'world_{zoom}x')
         self.key('F2')
-        self.state(lambda s: bool(s['fade_groups']), '屋后局部虚化未触发')
-        self.capture('inn_local_reveal')
+        self.state(lambda s: s['outlines'].get('Hero') == 1, '屋后人物描边未触发')
+        self.capture('inn_hidden_outline')
         self.key('F7')
-        self.state(lambda s: not s['occlusion_enabled'] and not s['fade_groups'], '关闭虚化没有恢复')
+        self.state(lambda s: not s['occlusion_enabled'] and not s['outlines'], '关闭人物描边没有恢复')
         self.capture('inn_hard_occlusion')
         self.key('F7')
-        self.check('local_reveal_and_restore', True)
+        self.check('hidden_outline_and_restore', True)
         self.key('F4')
         self.click_button('行囊 B')
         locked = self.state(lambda s: s['modal'] == 'inventory', '行囊未打开')
@@ -103,6 +94,48 @@ class SceneInteraction(GameInteraction):
             self.move('d', .7)
             state = self.capture(title)
             self.check(f'{title}_grounded', abs(state['hero_height'] - state['ground_height']) < .04)
+        # Real OS input around all seven facades. Geometry checks complement,
+        # but do not replace, native GPU screenshots at 1x/2x/3x and dusk/night.
+        titles = [('jianyang', '剑阳道馆'), ('xuantie', '玄铁堂'), ('yanyu', '烟雨小筑'),
+                  ('clinic', '药铺'), ('smith', '铁匠铺'), ('inn', '客栈'), ('temple', '破庙')]
+        for id, title in titles:
+            self.key('2')
+            self.sleep(.25)
+            state = self.capture(f'sign_{id}_2x')
+            sign = state['signs'][id]
+            self.check(f'sign_{id}_front_clear', sign['text'] == title and sign['clear_samples'] == 9
+                       and sign['on_screen'] and sign['depth_test'] and sign['billboard'] == 0
+                       and sign['cutout'] and not sign['overlay_overlap'], sign)
+            self.key('4')
+            self.state(lambda s: all(not entry['visible'] for entry in s['signs'].values()),
+                       '功能剪影对照没有隐藏原生文字')
+            hidden = self.capture(f'sign_{id}_no_text_2x')
+            self.check(f'sign_{id}_text_only_toggle_same_frame',
+                       not hidden['signs'][id]['visible'] and hidden['position'] == state['position']
+                       and hidden['zoom'] == state['zoom'] and hidden['pitch'] == state['pitch']
+                       and hidden['yaw'] == state['yaw'] and hidden['signs'][id]['size'] == sign['size'])
+            self.key('4')
+            self.state(lambda s: all(entry['visible'] for entry in s['signs'].values()),
+                       '功能剪影对照后文字未恢复')
+        for zoom, buttons in ((1, ['5']), (3, ['4', '4']), (2, ['5'])):
+            self.focus()
+            for button in buttons:
+                self.xdo('click', button)
+                self.sleep(.2)
+            self.state(lambda s: s['zoom'] == zoom, '牌匾缩放未同步')
+            state = self.capture(f'sign_temple_{zoom}x')
+            sign = state['signs']['temple']
+            self.check(f'sign_scale_{zoom}x', sign['clear_samples'] == 9 and sign['on_screen']
+                       and sign['size'][1] >= 13, sign)
+        self.key('3')
+        self.state(lambda s: s['position'] == [680, 624], 'north passage start missing')
+        self.capture('north_passage_start')
+        for _ in range(5):
+            self.move('w', .4)
+        passage = self.capture('north_passage_end')
+        self.check('north_passage_continuous_walk_and_direct_visibility',
+                   passage['position'][1] < 340 and abs(passage['position'][0] - 680) < 1
+                   and not passage['outlines'].get('Hero', 0), passage['position'])
         self.key('F1')
         self.key('l')
         self.sleep(.5)
@@ -121,15 +154,14 @@ class SceneInteraction(GameInteraction):
             state = self.capture(title)
             self.check(f'{title}_camera_frame', state['camera_ground_enclosed'] and state['hero_on_screen'] and not state['fog_enabled'])
         self.key('1')
-        self.state(lambda s: s['zoom'] == 3 and s['pitch'] == 65 and s['yaw'] == 30,
-                   '最外角3×/65°专项未就绪')
+        self.state(lambda s: s['zoom'] == 3, '最外角3×专项未就绪')
         for width, height in [(1440, 900), (1100, 720)]:
             self.xdo('windowsize', self.window, str(width), str(height))
             self.state(lambda s: s['window'] == s['viewport'] == [width, height] and s['hero_on_screen'],
                        '最外角头部被裁或原生视口未同步')
             self.move('d', .4)
             self.move('a', .4)
-            state = self.capture(f'outer_corner_3x_65_{width}')
+            state = self.capture(f'outer_corner_3x_{width}')
             self.check(f'outer_corner_full_body_{width}', state['hero_on_screen'] and state['camera_ground_enclosed'])
         self.xdo('windowsize', self.window, '1440', '900')
         self.state(lambda s: s['window'] == s['viewport'] == [1440, 900], '专项后窗口未恢复')
@@ -146,9 +178,6 @@ class SceneInteraction(GameInteraction):
             self.move('a', 1.0)
             self.move('s', .6)
             self.move('w', .6)
-            if cycle % 4 == 0:
-                self.drag_camera(70, 20)
-                self.key('Home')
             cycle += 1
         self.key('F1')
         self.capture('after_sustained_interaction')

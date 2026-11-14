@@ -23,6 +23,7 @@ func build(owner_node: Node3D, world: Node2D) -> void:
 		assert(rect.size == Vector2(float(spec.footprint[2]), float(spec.footprint[3])), "P3 building must match TownLayout")
 		var node := place(key, rect.get_center())
 		node.name = str(building.name) + "_Blender"
+		_building_sign(building)
 		for lamp: Array in spec.lanterns:
 			lantern(rect.get_center() + Vector2(float(lamp[0]), float(lamp[1])), float(lamp[2]))
 	for furniture: Dictionary in Layout.furniture():
@@ -44,6 +45,46 @@ func build(owner_node: Node3D, world: Node2D) -> void:
 	for x: int in [40, 66, 100, 432, 458, 488, 824, 850, 874, 1380, 1410, 1444]:
 		place("prop/bramble" if x % 3 == 0 else "prop/shrub", Vector2(x + 8, 56), 0.0, 0.65)
 
+func _building_sign(building: Dictionary) -> void:
+	var spec: Dictionary = Layout.BUILDING_SIGNS[building.id]
+	var offset: Vector3 = spec.offset
+	var rect: Rect2 = building.rect
+	var at := rect.get_center() + Vector2(offset.x, offset.z)
+	var center := Projector.point(at, Layout.height_at(rect.get_center()) + offset.y)
+	var board := place("prop/building_sign", at)
+	board.name = "牌匾_" + str(building.id)
+	board.position = center
+	board.scale.x = float(spec.width) / 64.0
+	board.set_meta("building_id", building.id)
+	# Native text, physical depth test, no billboard and no per-frame rebuild.
+	# Font selection matches the existing UI; shaping/fallback handles CJK.
+	var font := SystemFont.new()
+	font.font_names = PackedStringArray(["Noto Serif CJK SC", "Source Han Serif SC", "SimSun", "Microsoft YaHei"])
+	font.allow_system_fallback = true
+	var label := Label3D.new()
+	label.name = "牌匾文字_" + str(building.id)
+	label.text = str(building.name)
+	label.font = font
+	label.font_size = 64
+	label.pixel_size = Projector.SCALE * 18.0 / 64.0
+	label.outline_size = 3
+	label.modulate = Color("f6dfa2")
+	label.outline_modulate = Color("302319")
+	label.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	label.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+	label.no_depth_test = false
+	# Scenery has a near-camera alpha pass. Write glyph depth with cutout so
+	# transparent mesh sorting cannot paint the wooden board over its letters.
+	label.alpha_cut = Label3D.ALPHA_CUT_DISCARD
+	label.alpha_scissor_threshold = 0.4
+	label.shaded = false
+	label.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	label.position = center + Vector3(0, 0, 2.8 * Projector.SCALE)
+	label.set_meta("building_id", building.id)
+	label.set_meta("logical_height", 18.0)
+	label.set_meta("logical_width", spec.width)
+	scenery.add_child(label)
+
 func material(key: String) -> ShaderMaterial:
 	var cache_key := "p3/" + key
 	if scenery.materials.has(cache_key):
@@ -52,16 +93,12 @@ func material(key: String) -> ShaderMaterial:
 	var mat: ShaderMaterial = scenery.surface(str(spec.texture)).duplicate()
 	var rgb: Array = spec.tint
 	mat.set_shader_parameter("tint", Color(float(rgb[0]), float(rgb[1]), float(rgb[2])))
-	# Closed multi-surface assemblies can stack more foreground skins than the
-	# P1 fixture. Use the same 1% residue as closed foliage for robust contrast
-	# at 3x/low pitch on both GPUs; the mask and body-depth plane are unchanged.
-	mat.set_shader_parameter("fade_residue", 0.01)
+	mat.set_shader_parameter("glow", float(spec.get("glow", 0.0)))
 	if spec.has("color_mix"):
 		mat.set_shader_parameter("color_mix", float(spec.color_mix))
 		mat.set_shader_parameter("flat_color", Color(str(spec.flat_color)))
 	if bool(spec.get("foliage", false)) or key == "bark":
 		mat.shader = PINE_SHADER
-		mat.set_shader_parameter("fade_residue", 0.01)
 	if bool(spec.get("foliage", false)):
 		mat.set_shader_parameter("volume_foliage", true)
 		mat.set_shader_parameter("sway", 0.012)
@@ -275,6 +312,8 @@ func _backdrop() -> void:
 
 	var near_material := material("rock").duplicate() as ShaderMaterial
 	near_material.set_shader_parameter("tint", Color("87938b"))
+	near_material.set_shader_parameter("color_mix", 0.28)
+	near_material.set_shader_parameter("flat_color", Color("87938b"))
 	scenery.materials["p3/distant_ridge_near"] = near_material
 	var near_ridge := _ridge_mesh(Layout.DISTANT_RIDGE_NEAR, 192, Callable(self, "_distant_near_height"))
 	var near_node := _commit(near_ridge, "远山前岭", near_material, false)
@@ -282,6 +321,8 @@ func _backdrop() -> void:
 
 	var far_material := material("rock").duplicate() as ShaderMaterial
 	far_material.set_shader_parameter("tint", Color("6d7976"))
+	far_material.set_shader_parameter("color_mix", 0.6)
+	far_material.set_shader_parameter("flat_color", Color("6d7976"))
 	scenery.materials["p3/distant_ridge_far"] = far_material
 	var far_ridge := _ridge_mesh(Layout.DISTANT_RIDGE_FAR, 192, Callable(self, "_distant_far_height"))
 	var far_node := _commit(far_ridge, "远山后岭", far_material, false)

@@ -1,0 +1,5 @@
+[gd_resource type="SystemFont" format=3]
+
+[resource]
+font_names = PackedStringArray("Noto Serif CJK SC", "Source Han Serif SC", "SimSun", "Microsoft YaHei")
+allow_system_fallback = true

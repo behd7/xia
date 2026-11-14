@@ -29,6 +29,7 @@ house.OWNER = OWNER
 MATERIALS = {
     **{k: v for k, v in house.MATERIALS.items() if k != 'sign'},
     'iron': {'texture': 'materials/stone', 'tint': [.32, .36, .37]},
+    'ember': {'texture': 'materials/window_paper', 'tint': [.95, .33, .06], 'glow': 0.8},
     'rock': {'texture': 'materials/rock', 'tint': [.86, .86, .82]},
     'earth': {'texture': 'materials/earth', 'tint': [.92, .88, .72]},
     'cloth': {'texture': 'materials/window_paper', 'tint': [.48, .58, .57]},
@@ -111,6 +112,9 @@ def volume(part, center, size, material, seed=0, sides=8):
 
 def roof(part, half_x, half_z, eave, rise=32, worn=False):
     xs = [-half_x-10, -half_x, 0, half_x, half_x+10]
+    if worn:
+        xs = [-half_x-10, -half_x, -half_x*.65, -half_x*.45, -half_x*.25, 0, half_x, half_x+10]
+    missing = lambda xi, row, sign: worn and sign == 1 and ((xi == 2 and row >= 1) or (xi == 3 and row == 2))
     depth = half_z+12
     profile = [(0, eave+rise), (half_z*.45, eave+rise*.63),
                (half_z, eave+2), (depth, eave+3)]
@@ -118,24 +122,28 @@ def roof(part, half_x, half_z, eave, rise=32, worn=False):
     for sign in (-1, 1):
         for xi, (x0, x1) in enumerate(zip(xs, xs[1:])):
             for row, ((z0, h0), (z1, h1)) in enumerate(zip(profile, profile[1:])):
+                # Real missing tiles expose rafters, not a painted crack.
+                if missing(xi, row, sign):
+                    continue
                 top = [(x0, h0+lift(x0), sign*z0), (x1, h0+lift(x1), sign*z0),
                        (x1, h1+lift(x1), sign*z1), (x0, h1+lift(x0), sign*z1)]
-                # One chipped section in the temple eave, with a closed break.
-                if worn and xi == 0 and row == 2 and sign == 1:
-                    top[2] = (top[2][0], top[2][1]-3, top[2][2]-3)
-                    top[3] = (top[3][0], top[3][1]-3, top[3][2]-3)
                 low = [(x, h-3, z) for x, h, z in top]
                 part.face(top if sign < 0 else list(reversed(top)), 'roof')
                 part.face(low if sign > 0 else list(reversed(low)), 'wood')
-                if row == len(profile)-2:
+                if row == len(profile)-2 or missing(xi, row+1, sign):
                     part.face([low[3], low[2], top[2], top[3]], 'wood_light')
-                if xi == 0:
+                if row > 0 and missing(xi, row-1, sign):
+                    part.face([low[1], low[0], top[0], top[1]], 'wood_light')
+                if xi == 0 or missing(xi-1, row, sign):
                     part.face([low[0], low[3], top[3], top[0]], 'roof')
-                if xi == len(xs)-2:
+                if xi == len(xs)-2 or missing(xi+1, row, sign):
                     part.face([low[2], low[1], top[1], top[2]], 'roof')
         for x in range(int(-half_x), int(half_x)+1, 12):
             part.beam((x, eave-3, sign*(half_z-3)),
                       (x, eave+lift(x)-2, sign*(depth-1)), 2.5, 2.5, 'wood_light')
+    if worn:
+        part.beam((-half_x*.56, eave+rise*.63-5, half_z*.45),
+                  (-half_x*.46, eave+4, half_z-6), 1.7, 1.7, 'wood_light')
     # A single solid ridge meets both slopes. Gable infill does not close each
     # triangle fan internally; only the two outer slopes need a thickness cap.
     part.box((-half_x-10, eave+rise-.4, -2.5), (half_x+10, eave+rise+4, 2.5), 'roof')
@@ -342,6 +350,29 @@ def gable_steps(p, x, depth, base, peak):
         p.box((x-3,high,z0-1),(x+3,high+3,z1+1),'roof')
 
 
+def mortar(p, x, z, base):
+    # Closed cup with a real recessed bowl and a diagonal pestle, not a decal.
+    from mathutils import Vector
+    first_face = len(p.faces)
+    rings = [(5, base), (9, base+10), (6.5, base+10), (3, base+3)]
+    for i in range(8):
+        a, b = i*math.tau/8, (i+1)*math.tau/8
+        points = [[(x+math.cos(t)*r, h, z+math.sin(t)*r) for t in (a,b)] for r,h in rings]
+        for row, mat in enumerate(('stone', 'stone', 'wood_recess')):
+            p.face(list(reversed([points[row][0], points[row][1], points[row+1][1], points[row+1][0]])), mat)
+    p.face([(x+math.cos(i*math.tau/8)*5, base, z+math.sin(i*math.tau/8)*5) for i in range(8)], 'stone')
+    p.face([(x+math.cos(i*math.tau/8)*3, base+3, z+math.sin(i*math.tau/8)*3) for i in reversed(range(8))], 'wood_recess')
+    segment(p, (x-2,base+4,z), (x+11,base+22,z+3), 2, 'wood_light', 6, 1.4)
+    signed = 0.0
+    for face in p.faces[first_face:]:
+        a = Vector(p.vertices[face[0]])
+        for i in range(1, len(face)-1):
+            b, c = (Vector(p.vertices[j]) for j in (face[i], face[i+1]))
+            signed += a.dot(b.cross(c))/6
+    if signed <= 1e-12:
+        raise RuntimeError('Mortar has inward normals: '+p.name)
+
+
 def building(key):
     w,d,_,_ = BUILDINGS[key]
     p = house.Component(key+'_structure', 'building/'+key)
@@ -407,10 +438,14 @@ def building(key):
                 for h in (5,13,21):
                     p.box((xx-3,h,54),(xx+3,h+5,56),'wood_light')
                     p.box((xx-1,h+2,56),(xx+1,h+3,57),'bronze')
-        # Hanging herb bunches under the eave.
+        # Herb silhouettes stay outside the central sign/door envelope and in
+        # front of the awning, so they survive the fixed 30-degree game view.
         for x in (-52,-38,40,54):
-            segment(p,(x,62,52),(x,52,52),.5,'straw',5)
-            volume(p,(x,48,52),(6,11,5),'foliage',x,6)
+            segment(p,(x,62,63),(x,52,63),.7,'straw',5)
+            volume(p,(x,47,63),(11,17,8),'foliage',x,6)
+            for dx in (-3,3):
+                segment(p,(x+dx,53,63),(x+dx*1.3,37,64),.8,'straw',5,.3)
+        mortar(p,46,59,26)
     elif key == 'smith':
         hall(p,-24,-12,112,88,0,76,stone=True,open_front=True)
         roof_at(p,-24,-12,118,94,80,26)
@@ -422,15 +457,32 @@ def building(key):
         p.box((-62,52,-34),(-34,62,-10),'iron')
         p.box((-57,62,-30),(-39,148,-13),'stone')
         p.box((-60,146,-33),(-36,151,-10),'iron')
-        p.box((48,0,30),(66,12,50),'bark')
-        p.box((47,12,32),(68,24,48),'iron')
-        p.box((41,24,29),(74,28,50),'iron')
+        p.box((46,0,45),(64,12,65),'bark')
+        p.box((51,12,48),(59,24,62),'iron')
+        p.box((39,24,48),(67,28,62),'iron')
+        segment(p,(66,26,55),(80,26,55),3,'iron',4,.5)
+        # A side forge with an open front and warm coal bed remains visible
+        # beside the main roof. It is authored geometry, not a new light/VFX.
+        p.box((44,0,0),(78,5,35),'stone')
+        p.box((44,5,0),(49,34,32),'stone')
+        p.box((73,5,0),(78,34,32),'stone')
+        p.box((49,5,0),(73,34,6),'stone')
+        p.box((44,34,0),(78,39,29),'iron')
+        p.box((50,6,8),(72,9,34),'ember')
+        for x,z in ((53,26),(62,29),(68,24)):
+            volume(p,(x,10,z),(6,4,5),'ember',x,5)
+        segment(p,(33,3,49),(40,35,47),1.7,'wood_light',6)
+        p.box((33,32,43),(47,39,51),'iron')
     elif key == 'temple':
         hall(p,0,-5,w-18,d-18,6,91,open_front=True)
         roof_at(p,0,-5,w,d,96,38,True)
         for x in (-62,62):
-            segment(p,(x,5,53),(x,88,53),3,'wood_recess',8,2.6)
+            segment(p,(x,5,53),(x,44 if x < 0 else 88,53),3,'wood_recess',8,2.6)
             volume(p,(x,5,56),(20,8,18),'moss',int(x),7)
+        segment(p,(-62,46,53),(-38,15,60),3,'wood_recess',7,2.3)
+        for x,z in ((-61,46),(62,41)):
+            for dx in (-6,0,5):
+                segment(p,(x+dx,4,z),(x+dx*1.2,20+abs(dx),z+3),.8,'foliage',4,.2)
         # Recessed altar, cracked relief, fallen stones and weathered entrance.
         p.box((-26,6,-35),(26,32,-10),'stone')
         volume(p,(0,57,-23),(26,44,20),'stone',8,8)
@@ -444,7 +496,14 @@ def building(key):
 
 def prop(key):
     p = house.Component(key, 'prop/'+key)
-    if key in ('shrub', 'bramble', 'thorn_bush', 'flower_shrub'):
+    if key == 'building_sign':
+        # One reusable 64 x 26px plaque. Godot scales width only and owns text.
+        # Closed frame and hanging straps are genuine geometry, not a HUD label.
+        p.box((-32, -13, -1.5), (32, 13, 1.5), 'wood_recess')
+        p.front_frame(-33, 33, -14, 14, 1.5, 2.5, 1.5, 'wood_light')
+        for x in (-23, 23):
+            p.box((x-1, 13, -1), (x+1, 21, 1), 'wood')
+    elif key in ('shrub', 'bramble', 'thorn_bush', 'flower_shrub'):
         for i, (x, z, h, width) in enumerate(((-6, 1, 9, 15), (4, -3, 12, 17), (0, 5, 7, 15))):
             volume(p, (x, h, z), (width, h*1.6, width*.8), 'foliage', i)
             segment(p, (x, 0, z), (x, h, z), 1, 'bark', 5, .5)
@@ -721,6 +780,7 @@ def build(output=OUT, save_source=True):
             record = export_asset(key, prop(key), output/'props', materials, save_source)
             record['index'] = index
             assets['prop/'+key] = record
+    assets['prop/building_sign'] = export_asset('building_sign', prop('building_sign'), output/'props', materials, save_source)
     assets['prop/lantern_post'] = export_asset('lantern_post', prop('lantern_post'), output/'props', materials, save_source)
     assets['town/gate'] = export_asset('gate', gate(), output/'props', materials, save_source)
     metadata = {'schema': 1, 'builder': 'tools/build_hd2d_environment.py',
